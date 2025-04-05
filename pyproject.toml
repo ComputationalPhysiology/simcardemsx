@@ -1,0 +1,163 @@
+[build-system] # Require setuptool version due to https://github.com/pypa/setuptools/issues/2938
+requires = ["setuptools>=61.0.0", "wheel"]
+
+[project]
+name = "simcardemsx"
+version = "0.1.0"
+description = "Next generation cardiac electro-mechanics solver based on FEniCSx"
+authors = [{name = "Henrik Finsberg", email = "henriknf@simula.no"}]
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.10.0"
+dependencies = ["fenics-dolfinx", "fenicsx-pulse", "fenicsx-beat"]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+    "cardiac-geometriesx",
+]
+dev = [
+    "pdbpp",
+    "ipython",
+    "bump2version",
+    "pre-commit",
+]
+demo = [
+    "cardiac-geometriesx",
+    "fenicsx-ldrb",
+    "circulation",
+    "gotranx",
+    "adios4dolfinx",
+    "scipy",
+]
+docs = [
+   "jupyter-book",
+   "jupytext",
+   "jupyter",
+   "pyvista[all]>=0.43.0",
+   "trame-vuetify",
+   "ipywidgets",
+   "fenicsx_pulse[demo]",
+]
+benchmark = [
+    "pytest-codspeed",
+    "fenicsx_pulse[test]",
+]
+
+all = [
+    "fenicsx_pulse[test]",
+    "fenicsx_pulse[docs]",
+    "fenicsx_pulse[dev]",
+    "fenicsx_pulse[demo]",
+]
+
+[tool.pytest.ini_options]
+addopts = [
+   "--cov=fenicsx_pulse",
+   "--cov-report=html",
+   "--cov-report=xml",
+   "--cov-report=term-missing",
+   "-v",
+]
+testpaths = [
+    "tests"
+]
+
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    "demo/*.py",
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "demos",
+]
+
+# Same as Black.
+line-length = 100
+
+# Allow unused variables when underscore-prefixed.
+
+# Assume Python 3.10.
+target-version = "py310"
+
+
+[tool.ruff.lint]
+# Enable pycodestyle (`E`) and Pyflakes (`F`) codes by default.
+select = ["E", "F", "I"]
+ignore = ["E402", "E741", "E743", "E731"]
+
+# Allow autofix for all enabled rules (when `--fix`) is provided.
+fixable = ["A", "B", "C", "D", "E", "F", "I"]
+unfixable = []
+
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.mccabe]
+# Unlike Flake8, default to a complexity level of 10.
+max-complexity = 10
+
+
+[tool.ruff.lint.isort]
+known-first-party = ["cardiac_geometries"]
+known-third-party = [
+    "basix",
+    "dolfinx",
+    "ffcx",
+    "ufl",
+    "gmsh",
+    "numpy",
+    "pytest",
+]
+section-order = [
+    "future",
+    "standard-library",
+    "mpi",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+[tool.ruff.lint.isort.sections]
+"mpi" = ["mpi4py", "petsc4py"]
+
+
+[tool.bumpversion]
+allow_dirty = false
+commit = true
+message = "Bump version: {current_version} → {new_version}"
+tag = true
+sign_tags = false
+tag_name = "v{new_version}"
+tag_message = "Bump version: {current_version} → {new_version}"
+current_version = "0.2.0"
+
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+
+[[tool.bumpversion.files]]
+filename = "README.md"
+search = "ghcr.io/finsberg/fenicsx-pulse:v{current_version}"
+replace = "ghcr.io/finsberg/fenicsx-pulse:v{new_version}"
