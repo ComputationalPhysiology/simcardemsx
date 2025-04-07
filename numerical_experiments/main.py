@@ -67,7 +67,7 @@ def default_config():
             "markerfile": "meshes/mesh_mech_0.5dx_0.5Lx_1.0Ly_2.0Lz_surface_ffun",
             "modelfile": "../odefiles/ToRORd_dynCl_endo_caisplit.ode",
             "outdir": "100ms_N1_cai_split_runcheck",
-            "sim_dur": 4,
+            "sim_dur": 40,
             "split_scheme": "cai",
         },
         "output": {
@@ -117,7 +117,11 @@ class Geometry(NamedTuple):
 def create_mesh(comm, Lx=0.5, Ly=1.0, Lz=2.0, nx=2, ny=4, nz=8, stimx=0.5, stimy=0.5, stimz=0.5):
     logger.debug("Creating mesh")
     mesh = dolfinx.mesh.create_box(
-        comm, [[0.0, 0.0, 0.0], [Lx, Ly, Lz]], [nx, ny, nz], dolfinx.mesh.CellType.tetrahedron
+        comm,
+        [[0.0, 0.0, 0.0], [Lx, Ly, Lz]],
+        [nx, ny, nz],
+        dolfinx.mesh.CellType.tetrahedron,
+        ghost_mode=dolfinx.mesh.GhostMode.none,
     )
     fdim = mesh.topology.dim - 1
     x0_facets = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[0], 0))
@@ -192,19 +196,12 @@ def create_mesh(comm, Lx=0.5, Ly=1.0, Lz=2.0, nx=2, ny=4, nz=8, stimx=0.5, stimy
 
 def refine(geo: Geometry) -> Geometry:
     mesh = geo.mesh
-    mesh.topology.create_entities(2)
-    mesh.topology.create_connectivity(2, 3)
     mesh.topology.create_entities(1)
     mesh.topology.create_connectivity(2, 3)
-    # ep_mesh, _, _ = dolfinx.mesh.refine(mesh)
-    # ep_mesh.topology.create_entities(1)
-    # ep_mesh, _, _ = dolfinx.mesh.refine(ep_mesh)
 
     new_mesh, parent_cell, parent_facet = dolfinx.mesh.refine(
         mesh, partitioner=None, option=dolfinx.mesh.RefinementOption.parent_cell_and_facet
     )
-    new_mesh.topology.create_entities(2)
-    new_mesh.topology.create_connectivity(2, 3)
     new_mesh.topology.create_entities(1)
     new_mesh.topology.create_connectivity(2, 3)
     new_stim_tags = dolfinx.mesh.transfer_meshtag(
@@ -265,6 +262,7 @@ def main():
 
     comm = MPI.COMM_WORLD
     mech_geo = create_mesh(comm)
+    # ep_geo = refine(refine(refine(mech_geo)))
     ep_geo = refine(refine(mech_geo))
 
     mesh = mech_geo.mesh
@@ -341,14 +339,12 @@ def main():
     p_ep = np.zeros((len(p_ep_), num_points_ep))
     p_ep.T[:] = p_ep_  # Initialise p_ep with initial values defined in ep_model
 
-    mesh_unit = "mm"
-    # pde = setup_monodomain_model(config, ep_mesh)
+    mesh_unit = "cm"
     chi = 1400.0 * beat.units.ureg("cm**-1")
     s_l = 0.24 * beat.units.ureg("S/cm")
     s_t = 0.0456 * beat.units.ureg("S/cm")
     s_l = (s_l / chi).to("uA/mV").magnitude
     s_t = (s_t / chi).to("uA/mV").magnitude
-    # dim = geo.mesh.topology().dim()
     M = s_l * ufl.outer(ep_geo.f0, ep_geo.f0) + s_t * (
         ufl.Identity(3) - ufl.outer(ep_geo.f0, ep_geo.f0)
     )
@@ -408,18 +404,35 @@ def main():
         material=material,
         active=active_model,
         compressibility=comp_model,
-        # viscoelasticity=viscoeleastic_model,
     )
 
     def dirichlet_bc(
         V: dolfinx.fem.FunctionSpace,
     ) -> list[dolfinx.fem.bcs.DirichletBC]:
-        facets = mech_geo.facet_tags.find(1)  # Specify the marker used on the boundary
-        mesh.topology.create_connectivity(mesh.topology.dim - 1, mesh.topology.dim)
-        dofs = dolfinx.fem.locate_dofs_topological(V, 2, facets)
-        u_fixed = dolfinx.fem.Function(V)
-        u_fixed.x.array[:] = 0.0
-        return [dolfinx.fem.dirichletbc(u_fixed, dofs)]
+        V0, _ = V.sub(0).collapse()
+        zero = dolfinx.fem.Function(V0)
+        zero.x.array[:] = 0.0
+        x0_dofs = dolfinx.fem.locate_dofs_topological(
+            (V.sub(0), V0),
+            mech_geo.facet_tags.dim,
+            mech_geo.facet_tags.find(mech_geo.markers["X0"][1]),
+        )
+        y0_dofs = dolfinx.fem.locate_dofs_topological(
+            (V.sub(1), V0),
+            mech_geo.facet_tags.dim,
+            mech_geo.facet_tags.find(mech_geo.markers["Y0"][1]),
+        )
+        z0_dofs = dolfinx.fem.locate_dofs_topological(
+            (V.sub(2), V0),
+            mech_geo.facet_tags.dim,
+            mech_geo.facet_tags.find(mech_geo.markers["Z0"][1]),
+        )
+
+        return [
+            dolfinx.fem.dirichletbc(zero, x0_dofs, V.sub(0)),
+            dolfinx.fem.dirichletbc(zero, y0_dofs, V.sub(1)),
+            dolfinx.fem.dirichletbc(zero, z0_dofs, V.sub(2)),
+        ]
 
     bcs = fenicsx_pulse.BoundaryConditions(
         dirichlet=(dirichlet_bc,),
@@ -458,7 +471,7 @@ def main():
         collector.timers.start_ep()
         ep_solver.step((ti, ti + config["sim"]["dt"]))
 
-        # collector.timers.stop_ep()
+        collector.timers.stop_ep()
 
         # Assign values to ep function
         for out_ep_var in collector.out_ep_names:
@@ -466,8 +479,7 @@ def main():
                 ep_model["state_index"](out_ep_var)
             ]
 
-        # collector.write_node_data_ep(i)
-        # exit()
+        collector.write_node_data_ep(i)
 
         if i % config["sim"]["N"] != 0:
             collector.timers.stop_single_loop()
@@ -512,7 +524,7 @@ def main():
             missing_ep.ep_function_to_values()
         collector.timers.stop_var_transfer()
 
-        # collector.write_node_data_mech(i)
+        collector.write_node_data_mech(i)
 
         collector.timers.start_var_transfer
         # Use previous cai in mech to be consistent with zeta split

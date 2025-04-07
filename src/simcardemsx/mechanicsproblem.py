@@ -20,5 +20,4 @@ class MechanicsProblem(fenicsx_pulse.StaticProblem):
         Pa = self.model.active.Ta(lmbda) * ufl.outer(f, f0)
         forms[0] += ufl.inner(Pa, ufl.grad(self.u_test)) * self.geometry.dx
 
-        # return self._create_residual_form(internal_energy)
         return forms
