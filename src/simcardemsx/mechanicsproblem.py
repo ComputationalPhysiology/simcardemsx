@@ -21,3 +21,32 @@ class MechanicsProblem(fenicsx_pulse.StaticProblem):
         forms[0] += ufl.inner(Pa, ufl.grad(self.u_test)) * self.geometry.dx
 
         return forms
+
+    def post_solve(self):
+        F = ufl.grad(self.u) + ufl.Identity(3)
+        f = F * self.model.material.f0
+        lmbda = ufl.sqrt(f**2)
+
+        self.model.active.lmbda.interpolate(
+            dolfinx.fem.Expression(
+                lmbda, self.model.active.function_space.element.interpolation_points()
+            )
+        )
+
+        if self.model.active.dt > 0:
+            self.model.active._dLambda.interpolate(
+                dolfinx.fem.Expression(
+                    (lmbda - self.model.active.lmbda_prev) / self.model.active.dt,
+                    self.model.active.function_space.element.interpolation_points(),
+                )
+            )
+
+        self.model.active.Ta_current.interpolate(
+            dolfinx.fem.Expression(
+                self.model.active.Ta(lmbda),
+                self.model.active.function_space.element.interpolation_points(),
+            )
+        )
+
+        self.model.active.update_current(lmbda=lmbda)
+        self.model.active.update_prev()

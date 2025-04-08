@@ -75,19 +75,19 @@ class LandModel(fenicsx_pulse.active_model.ActiveModel):
         self._dLambda = dolfinx.fem.Function(self.function_space)
         self.lmbda_prev = dolfinx.fem.Function(self.function_space)
         self.lmbda_prev.x.array[:] = 1.0
-        if lmbda is not None:
-            self.lmbda_prev.assign(lmbda)
+        # if lmbda is not None:
+        #     self.lmbda_prev.assign(lmbda)
         self.lmbda = dolfinx.fem.Function(self.function_space)
 
         self._Zetas = dolfinx.fem.Function(self.function_space)
         self.Zetas_prev = dolfinx.fem.Function(self.function_space)
-        if Zetas is not None:
-            self.Zetas_prev.assign(Zetas)
+        # if Zetas is not None:
+        #     self.Zetas_prev.assign(Zetas)
 
         self._Zetaw = dolfinx.fem.Function(self.function_space)
         self.Zetaw_prev = dolfinx.fem.Function(self.function_space)
-        if Zetaw is not None:
-            self.Zetaw_prev.assign(Zetaw)
+        # if Zetaw is not None:
+        #     self.Zetaw_prev.assign(Zetaw)
 
         self.Ta_current = dolfinx.fem.Function(self.function_space, name="Ta")
         # self._projector = utils.Projector(self.function_space)

@@ -34,26 +34,18 @@ class MissingValue:
         self.values_ep = np.zeros((self.num_values, self.u_ep[0].x.array.size))
         self.values_mechanics = np.zeros((self.num_values, self.u_mechanics[0].x.array.size))
 
-        bbox_mechanics = dolfinx.geometry.bb_tree(
-            self.domain_mechanics, self.domain_mechanics.topology.dim, padding=1e-6
-        )
-        bbox_ep = dolfinx.geometry.bb_tree(
-            self.domain_ep, self.domain_ep.topology.dim, padding=1e-6
-        )
-
         # Mechanics to EP
-        global_mech_tree = bbox_mechanics.create_global_tree(self.domain_mechanics.comm)
-        collisions = dolfinx.geometry.compute_collisions_trees(bbox_ep, global_mech_tree)
-        self.cells_mech2ep = np.unique(collisions[:, 0])
-
+        cell_map = self.domain_ep.topology.index_map(self.domain_ep.topology.dim)
+        num_cells = cell_map.size_local + cell_map.num_ghosts
+        self.cells_mech2ep = np.arange(num_cells, dtype=np.int32)
         self.V_mechanics_interpolation_data_mech2ep = dolfinx.fem.create_interpolation_data(
             self.V_ep, self.V_mechanics, self.cells_mech2ep
         )
 
         # EP to Mechanics
-        global_ep_tree = bbox_ep.create_global_tree(self.domain_ep.comm)
-        collisions = dolfinx.geometry.compute_collisions_trees(bbox_mechanics, global_ep_tree)
-        self.cells_ep2mech = np.unique(collisions[:, 0])
+        cell_map = self.domain_mechanics.topology.index_map(self.domain_mechanics.topology.dim)
+        num_cells = cell_map.size_local + cell_map.num_ghosts
+        self.cells_ep2mech = np.arange(num_cells, dtype=np.int32)
         self.V_ep_interpolation_data_ep2mech = dolfinx.fem.create_interpolation_data(
             self.V_mechanics, self.V_ep, self.cells_ep2mech
         )

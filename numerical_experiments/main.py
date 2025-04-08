@@ -386,7 +386,8 @@ def main():
 
     ep_solver = beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=1)
 
-    material_params = fenicsx_pulse.HolzapfelOgden.orthotropic_parameters()
+    # material_params = fenicsx_pulse.HolzapfelOgden.orthotropic_parameters()
+    material_params = fenicsx_pulse.HolzapfelOgden.transversely_isotropic_parameters()
     material = fenicsx_pulse.HolzapfelOgden(f0=mech_geo.f0, s0=mech_geo.s0, **material_params)
     comp_model = fenicsx_pulse.compressibility.Incompressible()
     active_model = LandModel(
@@ -509,7 +510,7 @@ def main():
 
         active_model.t.value = ti + config["sim"]["N"] * config["sim"]["dt"]  # Addition!
         nit = problem.solve()  # ti, config["sim"]["N"] * config["sim"]["dt"])
-
+        problem.post_solve()
         collector.timers.no_of_newton_iterations.append(nit)
         print(f"No of iterations: {nit}")
         active_model.update_prev()
