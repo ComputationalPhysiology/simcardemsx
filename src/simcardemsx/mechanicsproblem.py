@@ -48,5 +48,6 @@ class MechanicsProblem(fenicsx_pulse.StaticProblem):
             )
         )
 
-        self.model.active.update_current(lmbda=lmbda)
-        self.model.active.update_prev()
+        self.model.active.update(lmbda=lmbda)
+        # self.model.active.update_current(lmbda=lmbda)
+        # self.model.active.update_prev()
