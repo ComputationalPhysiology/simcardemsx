@@ -359,7 +359,6 @@ def main():
 
     # Set the activation
     mech_ode_space = dolfinx.fem.functionspace(mesh, (family, degree))
-    activation = dolfinx.fem.Function(mech_ode_space)
 
     ep_ode_space = dolfinx.fem.functionspace(ep_mesh, (family, degree))
     v_ode = dolfinx.fem.Function(ep_ode_space)

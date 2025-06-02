@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 import typing
 from pathlib import Path
 import json
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 from mpi4py import MPI
 import dolfinx
@@ -403,7 +403,7 @@ class DataCollector:
                     True,
                 )
 
-    def finalize(self, inds, plot_results=False):
+    def finalize(self, inds, plot_results=True):
         self.timers.finalize(comm=self.comm, outdir=self.outdir)
         # Write averaged results for later analysis
         for out_ep_var in self.out_ep_coord_names:
