@@ -1,5 +1,6 @@
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
+
 import dolfinx
 import numpy as np
 import ufl
@@ -20,7 +21,8 @@ class MissingValue:
         self.V_mechanics = dolfinx.fem.functionspace(self.mechanics_mesh, self.element)
         self.V_ep_int = dolfinx.fem.functionspace(self.ep_mesh, self.interpolation_element)
         self.V_mechanics_int = dolfinx.fem.functionspace(
-            self.mechanics_mesh, self.interpolation_element
+            self.mechanics_mesh,
+            self.interpolation_element,
         )
 
         self.u_ep = [dolfinx.fem.Function(self.V_ep) for _ in range(self.num_values)]
@@ -39,7 +41,9 @@ class MissingValue:
         num_cells = cell_map.size_local + cell_map.num_ghosts
         self.cells_mech2ep = np.arange(num_cells, dtype=np.int32)
         self.V_mechanics_interpolation_data_mech2ep = dolfinx.fem.create_interpolation_data(
-            self.V_ep, self.V_mechanics, self.cells_mech2ep
+            self.V_ep,
+            self.V_mechanics,
+            self.cells_mech2ep,
         )
 
         # EP to Mechanics
@@ -47,7 +51,9 @@ class MissingValue:
         num_cells = cell_map.size_local + cell_map.num_ghosts
         self.cells_ep2mech = np.arange(num_cells, dtype=np.int32)
         self.V_ep_interpolation_data_ep2mech = dolfinx.fem.create_interpolation_data(
-            self.V_mechanics, self.V_ep, self.cells_ep2mech
+            self.V_mechanics,
+            self.V_ep,
+            self.cells_ep2mech,
         )
 
     @property
@@ -79,7 +85,9 @@ class MissingValue:
         for i in range(self.num_values):
             logger.debug(f"Interpolate {i}")
             self.u_mechanics[i].interpolate_nonmatching(
-                self.u_ep_int[i], self.cells_ep2mech, self.V_ep_interpolation_data_ep2mech
+                self.u_ep_int[i],
+                self.cells_ep2mech,
+                self.V_ep_interpolation_data_ep2mech,
             )
 
     def interpolate_mechanics_to_ep(self) -> None:

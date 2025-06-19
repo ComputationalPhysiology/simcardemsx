@@ -1,9 +1,9 @@
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
 from pathlib import Path
-import numpy as np
-import gotranx
+
 import dolfinx
+import gotranx
+import numpy as np
 
 from .interpolation import MissingValue
 from .ode2mechanics import ode2mechanics

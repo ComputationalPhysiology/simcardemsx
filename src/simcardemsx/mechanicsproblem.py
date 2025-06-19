@@ -1,10 +1,9 @@
-from dataclasses import dataclass
-import fenicsx_pulse
-import ufl
 import dolfinx
+import pulse
+import ufl
 
 
-class MechanicsProblem(fenicsx_pulse.StaticProblem):
+class MechanicsProblem(pulse.StaticProblem):
     def _material_form(self, u: dolfinx.fem.Function, p: dolfinx.fem.Function):
         F = ufl.grad(u) + ufl.Identity(3)
         internal_energy = self.model.strain_energy(F, p=p) * self.geometry.dx
@@ -29,8 +28,9 @@ class MechanicsProblem(fenicsx_pulse.StaticProblem):
 
         self.model.active.lmbda.interpolate(
             dolfinx.fem.Expression(
-                lmbda, self.model.active.function_space.element.interpolation_points()
-            )
+                lmbda,
+                self.model.active.function_space.element.interpolation_points(),
+            ),
         )
 
         if self.model.active.dt > 0:
@@ -38,14 +38,14 @@ class MechanicsProblem(fenicsx_pulse.StaticProblem):
                 dolfinx.fem.Expression(
                     (lmbda - self.model.active.lmbda_prev) / self.model.active.dt,
                     self.model.active.function_space.element.interpolation_points(),
-                )
+                ),
             )
 
         self.model.active.Ta_current.interpolate(
             dolfinx.fem.Expression(
                 self.model.active.Ta(lmbda),
                 self.model.active.function_space.element.interpolation_points(),
-            )
+            ),
         )
 
         self.model.active.update(lmbda=lmbda)

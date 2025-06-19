@@ -1,30 +1,32 @@
-from dataclasses import dataclass, field
-import typing
-from pathlib import Path
 import json
-import matplotlib.pyplot as plt
+import typing
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from mpi4py import MPI
-import dolfinx
-import ufl
-import toml
-import numpy as np
-# import adios4dolfinx
 
+import dolfinx
+import matplotlib.pyplot as plt
+import numpy as np
+import toml
+import ufl
+
+# import adios4dolfinx
 from .mechanicsproblem import MechanicsProblem
 
 
 def compute_function_average_over_mesh(func, mesh):
     volume = mesh.comm.allreduce(
         dolfinx.fem.assemble_scalar(
-            dolfinx.fem.form(dolfinx.fem.Constant(mesh, 1.0) * ufl.dx(domain=mesh))
+            dolfinx.fem.form(dolfinx.fem.Constant(mesh, 1.0) * ufl.dx(domain=mesh)),
         ),
         op=MPI.SUM,
     )
 
     return (
         mesh.comm.allreduce(
-            dolfinx.fem.assemble_scalar(dolfinx.fem.form(func * ufl.dx(domain=mesh))), op=MPI.SUM
+            dolfinx.fem.assemble_scalar(dolfinx.fem.form(func * ufl.dx(domain=mesh))),
+            op=MPI.SUM,
         )
         / volume
     )
@@ -51,7 +53,7 @@ class Timing(typing.NamedTuple):
 
 @dataclass
 class Timers:
-    timings_solveloop: list[float] = field(default_factory=list)
+    timings_solve_loop: list[float] = field(default_factory=list)
     timings_ep_steps: list[float] = field(default_factory=list)
     timings_mech_steps: list[float] = field(default_factory=list)
     no_of_newton_iterations: list[float] = field(default_factory=list)
@@ -79,7 +81,7 @@ class Timers:
 
     def stop_single_loop(self):
         self.timing_single_loop.stop()
-        self.timings_solveloop.append(self.timing_single_loop.elapsed()[0])
+        self.timings_solve_loop.append(self.timing_single_loop.elapsed()[0])
 
     def start_var_transfer(self):
         self.timing_var_transfer = dolfinx.common.Timer("mv and lambda transfer time")
@@ -162,7 +164,7 @@ class Timers:
         (outdir / "solve_timings.json").write_text(
             json.dumps(
                 {
-                    "Loop total times": self.timings_solveloop,
+                    "Loop total times": self.timings_solve_loop,
                     "Ep steps times": self.timings_ep_steps,
                     "Mech steps times": self.timings_mech_steps,
                     "No of mech iterations": self.no_of_newton_iterations,
@@ -171,7 +173,7 @@ class Timers:
                     "timings": timings,
                 },
                 indent=4,
-            )
+            ),
         )
 
 
@@ -213,7 +215,10 @@ class DataCollector:
         shutil.rmtree(self.outdir / "disp.bp", ignore_errors=True)
         shutil.rmtree(self.outdir / "ep.bp", ignore_errors=True)
         self.vtx_disp = dolfinx.io.VTXWriter(
-            self.comm, self.outdir / "disp.bp", [self.problem.u], engine="BP5"
+            self.comm,
+            self.outdir / "disp.bp",
+            [self.problem.u],
+            engine="BP5",
         )
         self.vtx_ep = dolfinx.io.VTXWriter(
             self.comm,
@@ -247,7 +252,6 @@ class DataCollector:
             self.out_mech_volume_average_timeseries[out_mech_var] = np.zeros(len(self.t))
 
         self.timers = Timers()
-        # adios4dolfinx.write_mesh(self.disp_file, self.problem.geometry.mesh)
 
         self._setup_eval_mech()
         self._setup_eval_ep()
@@ -318,10 +322,6 @@ class DataCollector:
     def outdir(self):
         return Path(self.config["sim"]["outdir"])
 
-    @property
-    def disp_file(self):
-        return self.outdir / "displacement.xdmf"
-
     def _broadcast(self, values, u, indices):
         bs = u.function_space.dofmap.index_map_bs
         # Create array to store values and fill with -inf
@@ -356,13 +356,15 @@ class DataCollector:
             out_mech_var = data["name"]
             # Trace variable in coordinate
             self.out_mech_example_nodes[out_mech_var][i] = self._eval_mech(
-                self.mech_variables[out_mech_var], var_nr
+                self.mech_variables[out_mech_var],
+                var_nr,
             )
 
             # Compute volume averages
             self.out_mech_volume_average_timeseries[out_mech_var][i] = (
                 compute_function_average_over_mesh(
-                    self.mech_variables[out_mech_var], self.mech_mesh
+                    self.mech_variables[out_mech_var],
+                    self.mech_mesh,
                 )
             )
 
@@ -371,7 +373,8 @@ class DataCollector:
             out_ep_var = data["name"]
             # Trace variable in coordinate
             self.out_ep_example_nodes[out_ep_var][i] = self._eval_ep(
-                self.out_ep_funcs[out_ep_var], var_nr
+                self.out_ep_funcs[out_ep_var],
+                var_nr,
             )
 
             # Compute volume averages
@@ -384,24 +387,7 @@ class DataCollector:
         self.vtx_ep.write(j)
 
     def write_ep(self, j):
-        for out_ep_var in self.out_ep_var_names:
-            with dolfin.XDMFFile(self.out_ep_files[out_ep_var].as_posix()) as file:
-                file.write_checkpoint(
-                    self.out_ep_funcs[out_ep_var],
-                    out_ep_var,
-                    j,
-                    dolfin.XDMFFile.Encoding.HDF5,
-                    True,
-                )
-        for out_mech_var in self.out_mech_var_names:
-            with dolfin.XDMFFile(self.out_mech_files[out_mech_var].as_posix()) as file:
-                file.write_checkpoint(
-                    self.mech_variables[out_mech_var],
-                    out_mech_var,
-                    j,
-                    dolfin.XDMFFile.Encoding.HDF5,
-                    True,
-                )
+        self.vtx_ep.write(j)
 
     def finalize(self, inds, plot_results=True):
         self.timers.finalize(comm=self.comm, outdir=self.outdir)
@@ -425,7 +411,8 @@ class DataCollector:
             out_ep_var = data["name"]
             x = np.squeeze(self.ep_coords[var_nr])
             path = self.outdir / f"{out_ep_var}_ep_coord{x[0]},{x[1]},{x[2]}.txt".replace(  # noqa: E501
-                " ", ""
+                " ",
+                "",
             )
             np.savetxt(path, self.out_ep_example_nodes[out_ep_var][inds])
 
@@ -467,7 +454,8 @@ class DataCollector:
                 ax = np.array([ax])
             for i, out_mech_var in enumerate(self.out_mech_coord_names):
                 ax[i].plot(
-                    self.t[inds], self.out_mech_volume_average_timeseries[out_mech_var][inds]
+                    self.t[inds],
+                    self.out_mech_volume_average_timeseries[out_mech_var][inds],
                 )
                 ax[i].set_title(f"{out_mech_var} volume average")
                 ax[i].set_xlabel("Time (ms)")

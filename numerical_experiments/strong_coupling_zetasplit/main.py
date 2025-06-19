@@ -1,24 +1,22 @@
-from dataclasses import dataclass
-from typing import NamedTuple
 import logging
 from pathlib import Path
+from typing import NamedTuple
 
-import simcardemsx.ode_model
-import ufl
-import numpy as np
 from mpi4py import MPI
+
+import beat
 import dolfinx
 import fenicsx_pulse
-import beat
-import gotranx
-import numba
+import numpy as np
+import ufl
 
+import cardiac_geometries
 import simcardemsx
-from simcardemsx.mechanicsproblem import MechanicsProblem
+import simcardemsx.ode_model
+
 # from simcardemsx.land import LandModel
-
 from simcardemsx.datacollector import DataCollector
-
+from simcardemsx.mechanicsproblem import MechanicsProblem
 
 logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
@@ -70,9 +68,11 @@ def default_config():
             "mech_mesh": "meshes/mesh_mech_0.5dx_0.5Lx_1.0Ly_2.0Lz",
             "markerfile": "meshes/mesh_mech_0.5dx_0.5Lx_1.0Ly_2.0Lz_surface_ffun",
             "modelfile": "../odefiles/ToRORd_dynCl_endo_zetasplit.ode",
-            "outdir": "100ms_N1_cai_split_runcheck",
+            "outdir": "output",
             "sim_dur": 40,
             "split_scheme": "cai",
+            "save_frequency_ep": 20,
+            "save_frequency_mech": 1,
         },
         "output": {
             "all_ep": ["v"],
@@ -128,156 +128,9 @@ class Geometry(NamedTuple):
         )
 
 
-def create_mesh(comm, Lx=2.0, Ly=1.0, Lz=0.5, nx=4, ny=2, nz=1, stimx=1.5, stimy=1.5, stimz=1.5):
-    logger.debug("Creating mesh")
-    mesh = dolfinx.mesh.create_box(
-        comm,
-        [[0.0, 0.0, 0.0], [Lx, Ly, Lz]],
-        [nx, ny, nz],
-        dolfinx.mesh.CellType.tetrahedron,
-        ghost_mode=dolfinx.mesh.GhostMode.none,
-    )
-    fdim = mesh.topology.dim - 1
-    x0_facets = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[0], 0))
-    x1_facets = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[0], Lx))
-    y0_facets = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[1], 0))
-    y1_facets = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[1], Ly))
-    z0_facets = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[2], 0))
-    z1_facets = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[2], Lz))
-
-    # Concatenate and sort the arrays based on facet indices.
-    # Left facets marked with 1, right facets with two
-    marked_facets = np.hstack([x0_facets, x1_facets, y0_facets, y1_facets, z0_facets, z1_facets])
-
-    marked_values = np.hstack(
-        [
-            np.full_like(x0_facets, 1),
-            np.full_like(x1_facets, 2),
-            np.full_like(y0_facets, 3),
-            np.full_like(y1_facets, 4),
-            np.full_like(z0_facets, 5),
-            np.full_like(z1_facets, 6),
-        ],
-    )
-    sorted_facets = np.argsort(marked_facets)
-    ft = dolfinx.mesh.meshtags(
-        mesh,
-        fdim,
-        marked_facets[sorted_facets],
-        marked_values[sorted_facets],
-    )
-    ft.name = "facet_tags"
-    markers = {
-        "X0": (2, 1),
-        "X1": (2, 2),
-        "Y0": (2, 3),
-        "Y1": (2, 4),
-        "Z0": (2, 5),
-        "Z1": (2, 6),
-    }
-
-    f0 = dolfinx.fem.Constant(mesh, (1.0, 0.0, 0.0))
-    s0 = dolfinx.fem.Constant(mesh, (0.0, 1.0, 0.0))
-    n0 = dolfinx.fem.Constant(mesh, (0.0, 0.0, 1.0))
-
-    tol = 1e-6
-
-    def S1_subdomain(x):
-        return np.logical_and(
-            np.logical_and(x[0] <= stimx + tol, x[1] <= stimy + tol),
-            x[2] <= stimz + tol,
-        )
-
-    cells = dolfinx.mesh.locate_entities(mesh, mesh.topology.dim, S1_subdomain)
-    stim_marker = 1
-    stim_tags = dolfinx.mesh.meshtags(
-        mesh,
-        mesh.topology.dim,
-        cells,
-        np.full(len(cells), stim_marker, dtype=np.int32),
-    )
-    stim_tags.name = "stimulus"
-
-    with dolfinx.io.XDMFFile(mesh.comm, "tags.xdmf", "w") as xdmf:
-        xdmf.write_mesh(mesh)
-        xdmf.write_meshtags(ft, mesh.geometry)
-        xdmf.write_meshtags(stim_tags, mesh.geometry)
-
-    return Geometry(
-        mesh=mesh,
-        facet_tags=ft,
-        markers=markers,
-        f0=f0,
-        s0=s0,
-        n0=n0,
-        stim_tags=stim_tags,
-        stim_marker=stim_marker,
-    )
-
-
-def refine(geo: Geometry) -> Geometry:
-    mesh = geo.mesh
-    mesh.topology.create_entities(1)
-    mesh.topology.create_connectivity(2, 3)
-
-    new_mesh, parent_cell, parent_facet = dolfinx.mesh.refine(
-        mesh, partitioner=None, option=dolfinx.mesh.RefinementOption.parent_cell_and_facet
-    )
-    new_mesh.topology.create_entities(1)
-    new_mesh.topology.create_connectivity(2, 3)
-    new_stim_tags = dolfinx.mesh.transfer_meshtag(
-        geo.stim_tags, new_mesh, parent_cell, parent_facet
-    )
-    new_facet_tags = dolfinx.mesh.transfer_meshtag(
-        geo.facet_tags, new_mesh, parent_cell, parent_facet
-    )
-
-    f0 = dolfinx.fem.Constant(new_mesh, (1.0, 0.0, 0.0))
-    s0 = dolfinx.fem.Constant(new_mesh, (0.0, 1.0, 0.0))
-    n0 = dolfinx.fem.Constant(new_mesh, (0.0, 0.0, 1.0))
-
-    # Create a new Geometry object with the refined mesh
-    return Geometry(
-        mesh=new_mesh,
-        facet_tags=new_facet_tags,
-        markers=geo.markers,
-        f0=f0,
-        s0=s0,
-        n0=n0,
-        stim_tags=new_stim_tags,
-        stim_marker=geo.stim_marker,
-    )
-
-
-def setup_ep_ode_model(odefile):
-    module_file = Path("ep_model.py")
-    if not module_file.is_file():
-        ode = gotranx.load_ode(odefile)
-
-        mechanics_comp = ode.get_component("mechanics")
-        mechanics_ode = mechanics_comp.to_ode()
-
-        ep_ode = ode - mechanics_comp
-
-        # Generate code for the electrophysiology model
-        code_ep = gotranx.cli.gotran2py.get_code(
-            ep_ode,
-            scheme=[gotranx.schemes.Scheme.forward_generalized_rush_larsen],
-            missing_values=mechanics_ode.missing_variables,
-        )
-
-        Path(module_file).write_text(code_ep)
-        # Currently 3D mech needs to be written manually
-
-    return __import__(str(module_file.stem)).__dict__
-
-
 def disable_logger():
     for lib in ["numba", "matplotlib"]:
         logging.getLogger(lib).setLevel(logging.WARNING)
-
-
-import cardiac_geometries
 
 
 def create_stim_tags(mesh, stim_marker=1, stimx=1.5, stimy=1.5, stimz=1.5):
@@ -332,20 +185,22 @@ def main():
         comm=MPI.COMM_WORLD,
         folder=geodir,
     )
+    geo.quadrature_degree = QUAD_DEGREE
 
     stim_marker = 1
     stim_tags = create_stim_tags(geo.mesh, stim_marker=stim_marker)
-
-    mech_geo = Geometry(
-        mesh=geo.mesh,
-        facet_tags=geo.ffun,
-        markers=geo.markers,
-        f0=geo.f0,
-        s0=geo.s0,
-        n0=geo.n0,
-        stim_tags=stim_tags,
-        stim_marker=stim_marker,
-    )
+    geo.cfun = stim_tags  # Use the facet function as the cell function
+    mech_geo = geo
+    # mech_geo = Geometry(
+    #     mesh=geo.mesh,
+    #     facet_tags=geo.ffun,
+    #     markers=geo.markers,
+    #     f0=geo.f0,
+    #     s0=geo.s0,
+    #     n0=geo.n0,
+    #     stim_tags=stim_tags,
+    #     stim_marker=stim_marker,
+    # )
 
     # ep_geo = refine(refine(refine(mech_geo)))
     # ep_geo = refine(refine(mech_geo))
@@ -369,7 +224,9 @@ def main():
 
     odefile = Path(config["sim"]["modelfile"])
     ode_model = simcardemsx.ode_model.ODEModel(
-        odefile=odefile, mech_ode_space=mech_ode_space, ep_ode_space=ep_ode_space
+        odefile=odefile,
+        mech_ode_space=mech_ode_space,
+        ep_ode_space=ep_ode_space,
     )
 
     mesh_unit = "mm"
@@ -391,8 +248,8 @@ def main():
         mesh=ep_mesh,
         chi=chi,
         time=time,
-        subdomain_data=ep_geo.stim_tags,
-        marker=ep_geo.stim_marker,
+        subdomain_data=stim_tags,
+        marker=stim_marker,
         mesh_unit=mesh_unit,
         amplitude=50_000.0 * beat.units.ureg("uA/cm**3"),
     )
@@ -503,6 +360,7 @@ def main():
         config=config,
         mech_variables=mech_variables,
     )
+
     # t = np.arange(0, config["sim"]["sim_dur"], config["sim"]["dt"])
     for i, ti in enumerate(collector.t):
         collector.timers.start_single_loop()
@@ -512,7 +370,6 @@ def main():
 
         collector.timers.start_ep()
         ep_solver.step((ti, ti + config["sim"]["dt"]))
-
         collector.timers.stop_ep()
 
         # Assign values to ep function
@@ -521,7 +378,9 @@ def main():
                 ode_model.module["state_index"](out_ep_var)
             ]
 
-        collector.write_node_data_ep(i)
+        if i % config["sim"]["save_frequency_ep"] == 0:
+            collector.write_ep(ti)
+            collector.write_node_data_ep(i)
 
         if i % config["sim"]["N"] != 0:
             collector.timers.stop_single_loop()
@@ -562,16 +421,13 @@ def main():
             ode_model.missing_ep.ep_function_to_values()
         collector.timers.stop_var_transfer()
 
-        collector.write_node_data_mech(i)
+        if j % config["sim"]["save_frequency_mech"] == 0:
+            collector.write_node_data_mech(j)
+            collector.write_disp(ti)
 
-        collector.timers.start_var_transfer
         # Use previous cai in mech to be consistent with zeta split
         ode_model.update_prev_missing_mech()
-
-        collector.timers.stop_var_transfer()
         collector.timers.collect_var_transfer()
-
-        collector.write_disp(j)
 
         j += 1
         collector.timers.stop_single_loop()

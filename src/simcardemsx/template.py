@@ -1,20 +1,18 @@
 from __future__ import annotations
+
 from textwrap import dedent, indent
-import functools
-from structlog import get_logger
 
 from gotranx.templates.python import (
-    # acc,
-    state_index,
-    parameter_index,
-    monitor_index,
-    missing_index,
+    init_parameter_values,
     # method,
     init_state_values,
-    init_parameter_values,
-    init_parameter_values,
+    missing_index,
+    monitor_index,
+    parameter_index,
+    # acc,
+    state_index,
 )
-
+from structlog import get_logger
 
 __all__ = [
     "init_state_values",

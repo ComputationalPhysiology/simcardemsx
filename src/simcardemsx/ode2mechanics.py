@@ -1,8 +1,9 @@
-import sympy
 from textwrap import dedent
-from sympy.printing.pycode import PythonCodePrinter
+
 import gotranx
-from gotranx.codegen.python import PythonCodeGenerator, GotranPythonCodePrinter
+import sympy
+from gotranx.codegen.python import PythonCodeGenerator
+from sympy.printing.pycode import PythonCodePrinter
 
 from . import template
 
@@ -17,9 +18,9 @@ rel_op_2_ufl = {
 
 LAND_MODEL = dedent(
     """
-import fenicsx_pulse
+import pulse
 
-class LandModel(fenicsx_pulse.active_model.ActiveModel):
+class LandModel(pulse.active_model.ActiveModel):
     def __init__(
         self,
         function_space: dolfinx.fem.FunctionSpace,
@@ -116,7 +117,7 @@ class LandModel(fenicsx_pulse.active_model.ActiveModel):
 
     def Fe(self, F: ufl.core.expr.Expr):
         return F
-"""
+""",
 )
 
 
@@ -220,7 +221,7 @@ class SimcardemsCodeGenerator(PythonCodeGenerator):
                     "import dolfinx",
                     "import ufl",
                     "import numpy",
-                ]
+                ],
             )
             + "\n"
             + LAND_MODEL
