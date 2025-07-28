@@ -188,6 +188,8 @@ class DataCollector:
         self.outdir.mkdir(exist_ok=True, parents=True)
 
         self._t = np.arange(0, self.config["sim"]["sim_dur"], self.config["sim"]["dt"])
+        self._t_ep = []
+        self._t_mech = []
         (self.outdir / "config.txt").write_text(toml.dumps(self.config))
 
         self.out_ep_var_names = self.config["output"]["all_ep"]
@@ -241,15 +243,19 @@ class DataCollector:
 
         self.out_ep_example_nodes = {}
         self.out_ep_volume_average_timeseries = {}
+        N_ep = int(len(self.t) / self.config["sim"]["save_frequency_ep"])
         for out_ep_var in self.out_ep_coord_names:
-            self.out_ep_example_nodes[out_ep_var] = np.zeros(len(self.t))
-            self.out_ep_volume_average_timeseries[out_ep_var] = np.zeros(len(self.t))
+            self.out_ep_example_nodes[out_ep_var] = np.zeros(N_ep)
+            self.out_ep_volume_average_timeseries[out_ep_var] = np.zeros(N_ep)
 
         self.out_mech_example_nodes = {}
         self.out_mech_volume_average_timeseries = {}
+        N_mech = int(
+            len(self.t) / self.config["sim"]["N"] / self.config["sim"]["save_frequency_mech"],
+        )
         for out_mech_var in self.out_mech_coord_names:
-            self.out_mech_example_nodes[out_mech_var] = np.zeros(len(self.t))
-            self.out_mech_volume_average_timeseries[out_mech_var] = np.zeros(len(self.t))
+            self.out_mech_example_nodes[out_mech_var] = np.zeros(N_mech)
+            self.out_mech_volume_average_timeseries[out_mech_var] = np.zeros(N_mech)
 
         self.timers = Timers()
 
@@ -352,16 +358,18 @@ class DataCollector:
         return self._broadcast(values, u, indices)
 
     def write_node_data_mech(self, i):
+        i_ = int(i / self.config["sim"]["save_frequency_mech"])
+        self._t_mech.append(self.t[int(i_ * self.config["sim"]["N"])])
         for var_nr, data in enumerate(self.config["output"]["point_mech"]):
             out_mech_var = data["name"]
             # Trace variable in coordinate
-            self.out_mech_example_nodes[out_mech_var][i] = self._eval_mech(
+            self.out_mech_example_nodes[out_mech_var][i_] = self._eval_mech(
                 self.mech_variables[out_mech_var],
                 var_nr,
             )
 
             # Compute volume averages
-            self.out_mech_volume_average_timeseries[out_mech_var][i] = (
+            self.out_mech_volume_average_timeseries[out_mech_var][i_] = (
                 compute_function_average_over_mesh(
                     self.mech_variables[out_mech_var],
                     self.mech_mesh,
@@ -369,16 +377,18 @@ class DataCollector:
             )
 
     def write_node_data_ep(self, i):
+        i_ = int(i / self.config["sim"]["save_frequency_ep"])
+        self._t_ep.append(self.t[i_])
         for var_nr, data in enumerate(self.config["output"]["point_ep"]):
             out_ep_var = data["name"]
             # Trace variable in coordinate
-            self.out_ep_example_nodes[out_ep_var][i] = self._eval_ep(
+            self.out_ep_example_nodes[out_ep_var][i_] = self._eval_ep(
                 self.out_ep_funcs[out_ep_var],
                 var_nr,
             )
 
             # Compute volume averages
-            self.out_ep_volume_average_timeseries[out_ep_var][i] = (
+            self.out_ep_volume_average_timeseries[out_ep_var][i_] = (
                 compute_function_average_over_mesh(self.out_ep_funcs[out_ep_var], self.ep_mesh)
             )
 
@@ -391,19 +401,30 @@ class DataCollector:
 
     def finalize(self, inds, plot_results=True):
         self.timers.finalize(comm=self.comm, outdir=self.outdir)
+        print(f"Solved on {100 * len(inds) / len(self.t)}% of the time steps")
+        inds = np.array(inds)
+
+        np.savetxt(
+            self.outdir / "t_ep.txt",
+            self._t_ep,
+        )
+        np.savetxt(
+            self.outdir / "t_mech.txt",
+            self._t_mech,
+        )
         # Write averaged results for later analysis
         for out_ep_var in self.out_ep_coord_names:
             # with open(Path(outdir / f"{out_ep_var}_out_ep_volume_average.txt"), "w") as f:
             np.savetxt(
                 self.outdir / f"{out_ep_var}_out_ep_volume_average.txt",
-                self.out_ep_volume_average_timeseries[out_ep_var][inds],
+                self.out_ep_volume_average_timeseries[out_ep_var],
             )
 
         for out_mech_var in self.out_mech_coord_names:
             # with open(Path(outdir / f"{out_mech_var}_out_mech_volume_average.txt"), "w") as f:
             np.savetxt(
                 self.outdir / f"{out_mech_var}_out_mech_volume_average.txt",
-                self.out_mech_volume_average_timeseries[out_mech_var][inds],
+                self.out_mech_volume_average_timeseries[out_mech_var],
             )
 
         # Write point traces for later analysis
@@ -414,7 +435,7 @@ class DataCollector:
                 " ",
                 "",
             )
-            np.savetxt(path, self.out_ep_example_nodes[out_ep_var][inds])
+            np.savetxt(path, self.out_ep_example_nodes[out_ep_var])
 
         for var_nr, data in enumerate(self.config["output"]["point_mech"]):
             out_mech_var = data["name"]
@@ -422,17 +443,14 @@ class DataCollector:
             path = (
                 self.outdir / f"{out_mech_var}_mech_coord{x[0]},{x[1]},{x[2]}.txt"  # noqa: E501
             )
-            np.savetxt(path, self.out_mech_example_nodes[out_mech_var][inds])
-
-        print(f"Solved on {100 * len(inds) / len(self.t)}% of the time steps")
-        inds = np.array(inds)
+            np.savetxt(path, self.out_mech_example_nodes[out_mech_var])
 
         if plot_results:
             fig, ax = plt.subplots(len(self.out_ep_coord_names), 1, figsize=(10, 10))
             if len(self.out_ep_coord_names) == 1:
                 ax = np.array([ax])
             for i, out_ep_var in enumerate(self.out_ep_coord_names):
-                ax[i].plot(self.t[inds], self.out_ep_volume_average_timeseries[out_ep_var][inds])
+                ax[i].plot(self._t_ep, self.out_ep_volume_average_timeseries[out_ep_var])
                 ax[i].set_title(f"{out_ep_var} volume average")
                 ax[i].set_xlabel("Time (ms)")
             fig.tight_layout()
@@ -443,7 +461,7 @@ class DataCollector:
                 ax = np.array([ax])
             for var_nr, data in enumerate(self.config["output"]["point_ep"]):
                 out_ep_var = data["name"]
-                ax[var_nr].plot(self.t[inds], self.out_ep_example_nodes[out_ep_var][inds])
+                ax[var_nr].plot(self._t_ep, self.out_ep_example_nodes[out_ep_var])
                 ax[var_nr].set_title(f"{out_ep_var} in coord {self.ep_coords[var_nr]}")
                 ax[var_nr].set_xlabel("Time (ms)")
             fig.tight_layout()
@@ -454,8 +472,8 @@ class DataCollector:
                 ax = np.array([ax])
             for i, out_mech_var in enumerate(self.out_mech_coord_names):
                 ax[i].plot(
-                    self.t[inds],
-                    self.out_mech_volume_average_timeseries[out_mech_var][inds],
+                    self._t_mech,
+                    self.out_mech_volume_average_timeseries[out_mech_var],
                 )
                 ax[i].set_title(f"{out_mech_var} volume average")
                 ax[i].set_xlabel("Time (ms)")
@@ -468,7 +486,7 @@ class DataCollector:
 
             for var_nr, data in enumerate(self.config["output"]["point_mech"]):
                 out_mech_var = data["name"]
-                ax[var_nr].plot(self.t[inds], self.out_mech_example_nodes[out_mech_var][inds])
+                ax[var_nr].plot(self._t_mech, self.out_mech_example_nodes[out_mech_var])
                 ax[var_nr].set_title(f"{out_mech_var} in coord {self.mech_coords[var_nr]}")
                 ax[var_nr].set_xlabel("Time (ms)")
             fig.tight_layout()

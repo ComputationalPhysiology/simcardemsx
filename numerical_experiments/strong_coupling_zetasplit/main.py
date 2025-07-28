@@ -72,7 +72,7 @@ def default_config():
             "sim_dur": 40,
             "split_scheme": "cai",
             "save_frequency_ep": 20,
-            "save_frequency_mech": 1,
+            "save_frequency_mech": 2,
         },
         "output": {
             "all_ep": ["v"],
@@ -187,9 +187,6 @@ def main():
     )
     geo.quadrature_degree = QUAD_DEGREE
 
-    stim_marker = 1
-    stim_tags = create_stim_tags(geo.mesh, stim_marker=stim_marker)
-    geo.cfun = stim_tags  # Use the facet function as the cell function
     mech_geo = geo
     # mech_geo = Geometry(
     #     mesh=geo.mesh,
@@ -204,7 +201,11 @@ def main():
 
     # ep_geo = refine(refine(refine(mech_geo)))
     # ep_geo = refine(refine(mech_geo))
-    ep_geo = mech_geo
+    ep_geo = mech_geo.refine(2)  # Refine the mesh for the electrophysiology model
+    stim_marker = 1
+    stim_tags = create_stim_tags(ep_geo.mesh, stim_marker=stim_marker)
+    ep_geo.cfun = stim_tags  # Use the facet function as the cell function
+    # ep_geo = mech_geo
     mesh = mech_geo.mesh
     ep_mesh = ep_geo.mesh
 
