@@ -72,11 +72,11 @@ def default_config():
             "sim_dur": 40,
             "split_scheme": "cai",
             "save_frequency_ep": 20,
-            "save_frequency_mech": 2,
+            "save_frequency_mech": 1,
         },
         "output": {
             "all_ep": ["v"],
-            "all_mech": ["Ta", "lambda"],
+            "all_mech": ["Ta", "lambda", "Zetas", "Zetaw", "XS", "XW", "dLambda"],
             "point_ep": [
                 {"name": "v", "x": 0, "y": 0, "z": 0},
             ],
@@ -185,27 +185,17 @@ def main():
         comm=MPI.COMM_WORLD,
         folder=geodir,
     )
+    # Scale mesh to meters
+    geo.mesh.geometry.x[:] *= 1e-3
     geo.quadrature_degree = QUAD_DEGREE
 
     mech_geo = geo
-    # mech_geo = Geometry(
-    #     mesh=geo.mesh,
-    #     facet_tags=geo.ffun,
-    #     markers=geo.markers,
-    #     f0=geo.f0,
-    #     s0=geo.s0,
-    #     n0=geo.n0,
-    #     stim_tags=stim_tags,
-    #     stim_marker=stim_marker,
-    # )
-
-    # ep_geo = refine(refine(refine(mech_geo)))
-    # ep_geo = refine(refine(mech_geo))
-    ep_geo = mech_geo.refine(2)  # Refine the mesh for the electrophysiology model
+    ep_geo = geo
+    # ep_geo = mech_geo.refine(2)  # Refine the mesh for the electrophysiology model
     stim_marker = 1
     stim_tags = create_stim_tags(ep_geo.mesh, stim_marker=stim_marker)
     ep_geo.cfun = stim_tags  # Use the facet function as the cell function
-    # ep_geo = mech_geo
+
     mesh = mech_geo.mesh
     ep_mesh = ep_geo.mesh
 
@@ -242,6 +232,7 @@ def main():
         g_el=config["ep"]["conductivities"]["sigma_el"] * beat.units.ureg("S/m"),
         g_et=config["ep"]["conductivities"]["sigma_et"] * beat.units.ureg("S/m"),
     )
+    # dolfinx.fem.assemble_scalar(dolfinx.fem.form(M**2 * ufl.dx))
 
     time = dolfinx.fem.Constant(ep_mesh, 0.0)
 
@@ -252,7 +243,8 @@ def main():
         subdomain_data=stim_tags,
         marker=stim_marker,
         mesh_unit=mesh_unit,
-        amplitude=50_000.0 * beat.units.ureg("uA/cm**3"),
+        amplitude=5000_000.0 * beat.units.ureg("uA/cm**3"),
+        # amplitude=50_000.0 * beat.units.ureg("uA/cm**3"),
     )
 
     pde = beat.MonodomainModel(
@@ -280,7 +272,7 @@ def main():
         init_states=y_ep,
         parameters=p_ep,
         num_states=len(y_ep),
-        v_index=ode_model.module["state_index"]("v"),
+        v_index=ode_model.ep_module["state_index"]("v"),
         missing_variables=ode_model.missing_ep.values_ep,
         num_missing_variables=ode_model.missing_ep.num_values,
     )
@@ -298,6 +290,7 @@ def main():
     active_model = LandModel(
         function_space=mech_ode_space,
         missing_values=ode_model.missing_mech.u_mechanics,
+        f0=mech_geo.f0,
     )
 
     model = fenicsx_pulse.CardiacModel(
@@ -341,11 +334,11 @@ def main():
 
     problem = MechanicsProblem(model=model, geometry=mech_geo, bcs=bcs)
     problem.solve()
-
+    # active_model.missing_values[0].name = "XS"
     mech_variables = {
         "Ta": active_model.Ta_current,
-        "Zetas": active_model.y[0],
         "Zetaw": active_model.y[1],
+        "Zetas": active_model.y[0],
         "lambda": active_model.lmbda,
         "XS": active_model.missing_values[0],
         "XW": active_model.missing_values[1],
@@ -376,7 +369,7 @@ def main():
         # Assign values to ep function
         for out_ep_var in collector.out_ep_names:
             collector.out_ep_funcs[out_ep_var].x.array[:] = ode._values[
-                ode_model.module["state_index"](out_ep_var)
+                ode_model.ep_module["state_index"](out_ep_var)
             ]
 
         if i % config["sim"]["save_frequency_ep"] == 0:
@@ -406,8 +399,14 @@ def main():
         collector.timers.start_mech()
 
         active_model.t.value = ti + config["sim"]["N"] * config["sim"]["dt"]  # Addition!
-        nit = problem.solve()  # ti, config["sim"]["N"] * config["sim"]["dt"])
-        problem.post_solve()
+
+        # for ramp_value in np.linspace(0, 1, 10)[1:]:
+        # active_model.ramp.value = ramp_value
+        # print(f"Ramp value: {ramp_value}")
+        problem.solve()  # ti, config["sim"]["N"] * config["sim"]["dt"])
+        nit = problem._solver._solver.getIterationNumber()
+        # breakpoint()
+        # problem.post_solve()
         collector.timers.no_of_newton_iterations.append(nit)
         print(f"No of iterations: {nit}")
         active_model.update_prev()
@@ -432,6 +431,7 @@ def main():
 
         j += 1
         collector.timers.stop_single_loop()
+        # breakpoint()
 
     collector.finalize(inds)
 

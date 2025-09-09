@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import dolfinx
 import gotranx
@@ -9,9 +10,9 @@ from .interpolation import MissingValue
 from .ode2mechanics import ode2mechanics
 
 
-def setup_ep_ode_model(odefile):
-    ep_module_file = Path("ep_model.py")
-    mechanics_module_file = Path("mechanics_model.py")
+def setup_ep_ode_model(
+    odefile, ep_module_file=Path("ep_model.py"), mechanics_module_file=Path("mechanics_model.py"),
+):
     if not (ep_module_file.is_file() and mechanics_module_file.is_file()):
         ode = gotranx.load_ode(odefile)
 
@@ -32,7 +33,9 @@ def setup_ep_ode_model(odefile):
         Path(ep_module_file).write_text(code_ep)
         # Currently 3D mech needs to be written manually
 
-    return __import__(str(ep_module_file.stem)).__dict__
+    return __import__(str(ep_module_file.stem)).__dict__, __import__(
+        str(mechanics_module_file.stem),
+    ).__dict__
 
 
 @dataclass
@@ -40,9 +43,18 @@ class ODEModel:
     odefile: Path
     mech_ode_space: dolfinx.fem.FunctionSpace
     ep_ode_space: dolfinx.fem.FunctionSpace
+    parameters: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        self.module = setup_ep_ode_model(self.odefile)
+        parameters = type(self).default_parameters()
+        parameters.update(self.parameters)
+        self.parameters = parameters
+
+        self.ep_module, self.mechanics_module = setup_ep_ode_model(
+            self.odefile,
+            ep_module_file=self.parameters["ep_module_file"],
+            mechanics_module_file=self.parameters["mechanics_module_file"],
+        )
         self._setup_missing_values()
         # fgr_ep = ep_model["forward_generalized_rush_larsen"]
 
@@ -52,16 +64,24 @@ class ODEModel:
         # y_ep_ = self.module["init_state_values"]()
         # p_ep_ = self.module["init_parameter_values"](i_Stim_Amplitude=0.0)
 
+    @staticmethod
+    def default_parameters() -> dict[str, Any]:
+        return {
+            "ep_module_file": Path("ep_model.py"),
+            "mechanics_module_file": Path("mechanics_model.py"),
+        }
+
     def _setup_missing_values(self):
-        ep_missing_values_ = np.zeros(len(self.module["missing"]))
-        # FIXME: This should be depend on the split
-        mechanics_missing_values_ = np.zeros(2)
+        ep_missing_values_ = np.zeros(len(self.ep_module["missing"]))
+        mechanics_missing_values_ = np.zeros(len(self.mechanics_module["missing"]))
+
         self.missing_mech = MissingValue(
             element=self.mech_ode_space.ufl_element(),
             interpolation_element=self.ep_ode_space.ufl_element(),
             mechanics_mesh=self.mech_ode_space.mesh,
             ep_mesh=self.ep_ode_space.mesh,
             num_values=len(mechanics_missing_values_),
+            names=list(self.mechanics_module["missing"].keys()),
         )
 
         self.missing_ep = MissingValue(
@@ -70,8 +90,8 @@ class ODEModel:
             mechanics_mesh=self.mech_ode_space.mesh,
             ep_mesh=self.ep_ode_space.mesh,
             num_values=len(ep_missing_values_),
+            names=list(self.ep_module["missing"].keys()),
         )
-        # breakpoint()
 
         self.missing_ep.values_mechanics.T[:] = ep_missing_values_
         self.missing_ep.values_ep.T[:] = ep_missing_values_
@@ -89,6 +109,7 @@ class ODEModel:
             mechanics_mesh=self.mech_ode_space.mesh,
             ep_mesh=self.ep_ode_space.mesh,
             num_values=len(mechanics_missing_values_),
+            names=list(self.mechanics_module["missing"].keys()),
         )
         self.update_prev_missing_mech()
 
@@ -105,16 +126,16 @@ class ODEModel:
 
     @property
     def fgr(self):
-        return self.module["generalized_rush_larsen"]
+        return self.ep_module["generalized_rush_larsen"]
 
     @property
     def mv(self):
-        return self.module["missing_values"]
+        return self.ep_module["missing_values"]
 
     @property
     def y(self):
-        return self.module["init_state_values"]
+        return self.ep_module["init_state_values"]
 
     @property
     def p(self):
-        return self.module["init_parameter_values"]
+        return self.ep_module["init_parameter_values"]

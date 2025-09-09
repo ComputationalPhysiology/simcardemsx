@@ -15,6 +15,7 @@ class MissingValue:
     mechanics_mesh: dolfinx.mesh.Mesh
     ep_mesh: dolfinx.mesh.Mesh
     num_values: int
+    names: list[str]
 
     def __post_init__(self):
         self.V_ep = dolfinx.fem.functionspace(self.ep_mesh, self.element)
@@ -25,12 +26,22 @@ class MissingValue:
             self.interpolation_element,
         )
 
-        self.u_ep = [dolfinx.fem.Function(self.V_ep) for _ in range(self.num_values)]
-        self.u_mechanics = [dolfinx.fem.Function(self.V_mechanics) for _ in range(self.num_values)]
+        self.u_ep = [
+            dolfinx.fem.Function(self.V_ep, name=f"{self.names[i]}_ep")
+            for i in range(self.num_values)
+        ]
+        self.u_mechanics = [
+            dolfinx.fem.Function(self.V_mechanics, name=f"{self.names[i]}_mechanics")
+            for i in range(self.num_values)
+        ]
 
-        self.u_ep_int = [dolfinx.fem.Function(self.V_ep_int) for _ in range(self.num_values)]
+        self.u_ep_int = [
+            dolfinx.fem.Function(self.V_ep_int, name=f"{self.names[i]}_ep_int")
+            for i in range(self.num_values)
+        ]
         self.u_mechanics_int = [
-            dolfinx.fem.Function(self.V_mechanics_int) for _ in range(self.num_values)
+            dolfinx.fem.Function(self.V_mechanics_int, name=f"{self.names[i]}_mechanics_int")
+            for i in range(self.num_values)
         ]
 
         self.values_ep = np.zeros((self.num_values, self.u_ep[0].x.array.size))

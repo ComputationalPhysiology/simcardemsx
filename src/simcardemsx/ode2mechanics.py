@@ -18,29 +18,54 @@ rel_op_2_ufl = {
 
 LAND_MODEL = dedent(
     """
+import ufl
+import dolfinx
 import pulse
+
 
 class LandModel(pulse.active_model.ActiveModel):
     def __init__(
         self,
         function_space: dolfinx.fem.FunctionSpace,
         missing_values: list[dolfinx.fem.Function],
+        f0: dolfinx.fem.Function | dolfinx.fem.Constant,
+        Ta_key: str = "Ta",
+        lmbda_key: str = "lmbda",
+        dLambda_key: str = "dLambda",
+        s0: dolfinx.fem.Function | dolfinx.fem.Constant | None = None,
+        n0: dolfinx.fem.Function | dolfinx.fem.Constant | None = None,
+        eta: dolfinx.fem.Constant = dolfinx.default_scalar_type(0.0),
+        isotropy: pulse.active_stress.ActiveStressModels = pulse.active_stress.ActiveStressModels.transversely,
+        ode_states: dict[str, float] | None = None,
+        ode_parameters: dict[str, float] | None = None,
     ):
-        self.missing_values = missing_values
-
         self.function_space = function_space
-        self._dLambda = dolfinx.fem.Function(self.function_space)
-        self.lmbda_prev = dolfinx.fem.Function(self.function_space)
+        self.missing_values = missing_values
+        self.f0 = f0
+        self.Ta_key = Ta_key
+        self.lmbda_key = lmbda_key
+        self.dLambda_key = dLambda_key
+        self.s0 = s0
+        self.n0 = n0
+        self.isotropy = isotropy
+        self.eta = dolfinx.fem.Constant(ufl.domain.extract_unique_domain(self.f0), eta)
+
+        self._dLambda = dolfinx.fem.Function(self.function_space, name="dLambda")
+        self.lmbda_prev = dolfinx.fem.Function(self.function_space, name="lmbda_prev")
         self.lmbda_prev.x.array[:] = 1.0
-        self.lmbda = dolfinx.fem.Function(self.function_space)
+        self.lmbda = dolfinx.fem.Function(self.function_space, name="lmbda")
 
         self.Ta_current = dolfinx.fem.Function(self.function_space, name="Ta")
 
         self.t = dolfinx.fem.Constant(self.mesh, 0.0)
         self._t_prev = dolfinx.fem.Constant(self.mesh, 0.0)
 
-        y_ = init_state_values()
-        p = init_parameter_values()
+        if ode_states is None:
+            ode_states = {}
+        y_ = init_state_values(**ode_states)
+        if ode_parameters is None:
+            ode_parameters = {}
+        p = init_parameter_values(**ode_parameters)
 
         self._zetas_index = state_index("Zetas")
         self._zetaw_index = state_index("Zetaw")
@@ -49,9 +74,15 @@ class LandModel(pulse.active_model.ActiveModel):
         y = numpy.zeros((len(y_), num_points))
         y.T[:] = y_
 
-        self.p = [dolfinx.fem.Constant(self.mesh, pi) for pi in p]
-        self.y = [dolfinx.fem.Function(self.function_space) for _ in range(len(y_))]
-        self.y_prev = [dolfinx.fem.Function(self.function_space) for _ in range(len(y_))]
+        self.p = []
+        for pname, pi in zip(parameter, p):
+            const = dolfinx.fem.Constant(self.mesh, pi)
+            const.name = pname
+            self.p.append(const)
+
+        self.y = [dolfinx.fem.Function(self.function_space, name=name) for name in state]
+        self.y_prev = [dolfinx.fem.Function(self.function_space, name=f"{name}_prev") for name in state]
+
         for i, yi in enumerate(self.y):
             yi.x.array[:] = y[i, :]
 
@@ -68,6 +99,9 @@ class LandModel(pulse.active_model.ActiveModel):
     @property
     def mesh(self):
         return self.function_space.mesh
+
+    def Fe(self, F: ufl.core.expr.Expr) -> ufl.core.expr.Expr:
+        return F
 
     def update(self, lmbda):
         self.p[parameter_index("lmbda")] = lmbda
@@ -99,24 +133,67 @@ class LandModel(pulse.active_model.ActiveModel):
         self._t_prev.value = self.t.value.copy()
 
     def Ta(self, lmbda):
-        self.p[parameter_index("lmbda")] = lmbda
-        self.p[parameter_index("dLambda")] = self.dLambda(lmbda)
+        self.p[parameter_index(self.lmbda_key)] = lmbda
+        self.p[parameter_index(self.dLambda_key)] = self.dLambda(lmbda)
 
-        Ta_index = monitor_index("Ta")
+        Ta_index = monitor_index(self.Ta_key)
         mv = monitor_values(
             self.t.value,
             self.y,
             self.p,
             self.missing_values,
         )
+        kPa2Pa = 1000.0
+        return mv[Ta_index] * kPa2Pa
 
-        return mv[Ta_index]
+    def strain_energy(self, C: ufl.core.expr.Expr) -> ufl.core.expr.Expr:
+        \"""Active strain energy density
 
-    def strain_energy(self, F: ufl.core.expr.Expr):
-        return 0.0
+        Parameters
+        ----------
+        C : ufl.core.expr.Expr
+            The deformation gradient
 
-    def Fe(self, F: ufl.core.expr.Expr):
-        return F
+        Returns
+        -------
+        ufl.core.expr.Expr
+            The active strain energy density
+
+        Raises
+        ------
+        NotImplementedError
+            If the active stress model is not implemented
+        \"""
+        lmbda = ufl.sqrt(ufl.inner(C * self.f0, self.f0))
+        if self.isotropy == pulse.active_stress.ActiveStressModels.transversely:
+            return pulse.active_stress.transversely_active_stress_strain_energy(
+                Ta=self.Ta(lmbda),
+                C=C,
+                f0=self.f0,
+                eta=self.eta,
+            )
+        else:
+            raise NotImplementedError
+
+    def S(self, C: ufl.core.expr.Expr) -> ufl.core.expr.Expr:
+        \"""Cauchy stress tensor for the active stress model.
+
+        Parameters
+        ----------
+        C : ufl.core.expr.Expr
+            The right Cauchy-Green deformation tensor
+
+        Returns
+        -------
+        ufl.core.expr.Expr
+            The Cauchy stress tensor
+        \"""
+        lmbda = ufl.sqrt(ufl.inner(C * self.f0, self.f0))
+        if self.isotropy == pulse.active_stress.ActiveStressModels.transversely:
+            return pulse.active_stress.transversely_active_stress(Ta=self.Ta(lmbda), f0=self.f0, eta=self.eta)
+        else:
+            raise NotImplementedError
+
 """,
 )
 

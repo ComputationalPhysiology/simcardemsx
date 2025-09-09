@@ -215,6 +215,7 @@ class DataCollector:
         import shutil
 
         shutil.rmtree(self.outdir / "disp.bp", ignore_errors=True)
+        shutil.rmtree(self.outdir / "mechanics.bp", ignore_errors=True)
         shutil.rmtree(self.outdir / "ep.bp", ignore_errors=True)
         self.vtx_disp = dolfinx.io.VTXWriter(
             self.comm,
@@ -222,6 +223,13 @@ class DataCollector:
             [self.problem.u],
             engine="BP5",
         )
+        self.vtx_mechanics = dolfinx.io.VTXWriter(
+            self.comm,
+            self.outdir / "mechanics.bp",
+            [self.mech_variables[out_mech_var] for out_mech_var in self.out_mech_var_names],
+            engine="BP5",
+        )
+
         self.vtx_ep = dolfinx.io.VTXWriter(
             self.comm,
             self.outdir / "ep.bp",
@@ -394,7 +402,7 @@ class DataCollector:
 
     def write_disp(self, j):
         self.vtx_disp.write(j)
-        self.vtx_ep.write(j)
+        self.vtx_mechanics.write(j)
 
     def write_ep(self, j):
         self.vtx_ep.write(j)
