@@ -25,6 +25,7 @@ axpy
 Axrf
 Axrs
 aypx
+basix
 Bcai
 Bcajsr
 bCaMK
@@ -190,6 +191,7 @@ iFp
 Ilsbeth
 inds
 infp
+interp
 iS
 Isac
 isacs
@@ -414,6 +416,7 @@ selectbox
 sharex
 silico
 simcardems
+simcardemsx
 Simcardio
 Simula
 simvascular
