@@ -86,6 +86,7 @@ dfcas
 dffp
 dhsp
 diel
+dirichletbc
 diriclet
 discretization
 discretized
@@ -122,7 +123,9 @@ fcafp
 fcap
 fcas
 fcass
+fdim
 fenics
+fenicsx
 ff
 ffast
 ffp
@@ -264,6 +267,7 @@ leftback
 leftbottom
 lightcoral
 linalg
+linesearch
 linestyle
 linf
 linspace
@@ -305,6 +309,7 @@ ndarray
 nestedkey
 neumann
 Neumann
+newtonls
 Nicolay
 Niederer
 nonconvergence
@@ -421,6 +426,7 @@ Simcardio
 Simula
 simvascular
 slabgeometry
+snes
 splittingsolver
 Stim
 Stockmeyer

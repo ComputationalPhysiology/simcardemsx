@@ -161,7 +161,7 @@ class LandModel(pulse.active_model.ActiveModel):
                 self.dt,
                 self._scheme,
             ),
-            self.function_space.element.interpolation_points(),
+            self.function_space.element.interpolation_points,
         )
         self._Zetas.interpolate(zetas_expr)
 
@@ -187,7 +187,7 @@ class LandModel(pulse.active_model.ActiveModel):
                 self.dt,
                 self._scheme,
             ),
-            self.function_space.element.interpolation_points(),
+            self.function_space.element.interpolation_points,
         )
         self._Zetaw.interpolate(zetaw_expr)
 
