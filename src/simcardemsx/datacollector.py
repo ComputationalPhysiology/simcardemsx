@@ -67,21 +67,21 @@ class Timers:
 
     def stop_total(self):
         self.total_timer.stop()
-        self.timings_total = self.total_timer.elapsed
+        self.timings_total = self.total_timer.elapsed().total_seconds()
 
     def start_ep(self):
         self.ep_timer = dolfinx.common.Timer("ep")
 
     def stop_ep(self):
         self.ep_timer.stop()
-        self.timings_ep_steps.append(self.ep_timer.elapsed()[0])
+        self.timings_ep_steps.append(self.ep_timer.elapsed().total_seconds())
 
     def start_single_loop(self):
         self.timing_single_loop = dolfinx.common.Timer("single_loop")
 
     def stop_single_loop(self):
         self.timing_single_loop.stop()
-        self.timings_solve_loop.append(self.timing_single_loop.elapsed()[0])
+        self.timings_solve_loop.append(self.timing_single_loop.elapsed().total_seconds())
 
     def start_var_transfer(self):
         self.timing_var_transfer = dolfinx.common.Timer("mv and lambda transfer time")
@@ -90,14 +90,14 @@ class Timers:
         self.timing_var_transfer.stop()
 
     def collect_var_transfer(self):
-        self.timings_var_transfer.append(self.timing_var_transfer.elapsed()[0])
+        self.timings_var_transfer.append(self.timing_var_transfer.elapsed().total_seconds())
 
     def start_mech(self):
         self.mech_timer = dolfinx.common.Timer("mech time")
 
     def stop_mech(self):
         self.mech_timer.stop()
-        self.timings_mech_steps.append(self.mech_timer.elapsed()[0])
+        self.timings_mech_steps.append(self.mech_timer.elapsed().total_seconds())
 
     def finalize(self, comm, outdir: Path):
         self.stop_total()
@@ -169,7 +169,7 @@ class Timers:
                     "Mech steps times": self.timings_mech_steps,
                     "No of mech iterations": self.no_of_newton_iterations,
                     "mv and lambda transfer time": self.timings_var_transfer,
-                    "Total time": self.total_timer.elapsed()[0],
+                    "Total time": self.total_timer.elapsed().total_seconds(),
                     "timings": timings,
                 },
                 indent=4,

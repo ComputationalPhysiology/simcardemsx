@@ -1,4 +1,3 @@
-# src/simcardemsx/controller.py
 import logging
 
 import numpy as np
@@ -11,50 +10,59 @@ class SimulationController:
         self,
         mechanics_problem,
         ep_solver,
-        transfer_ep_to_mech,
-        transfer_mech_to_ep,
+        ode_model,
         dt_mech: float,
         dt_ep: float,
     ):
         self.mechanics_problem = mechanics_problem
         self.ep_solver = ep_solver
-        self.transfer_ep2mech = transfer_ep_to_mech
-        self.transfer_mech2ep = transfer_mech_to_ep
+        self.ode_model = ode_model
 
         self.dt_mech = dt_mech
         self.dt_ep = dt_ep
 
-        # Calculate how many EP steps per Mechanics step
         self.ep_steps_per_mech = int(np.round(dt_mech / dt_ep))
         if not np.isclose(self.ep_steps_per_mech * dt_ep, dt_mech):
             raise ValueError("dt_mech must be an exact multiple of dt_ep")
 
         self.t = 0.0
+        self.ep_step_idx = 0
+        self.mech_step_idx = 0
 
-    def step(self):
-        """Advances the fully coupled system by one mechanics time step (dt_mech)."""
+    def step(self, ep_callback=None, mech_callback=None):
+        """Advances the fully coupled system by one mechanics time step."""
         logger.info(f"--- Solving Coupled Step at t={self.t} ---")
 
         # 1. Step EP solver forward by dt_mech using micro-steps
         for _ in range(self.ep_steps_per_mech):
-            self.ep_solver.step()  # Assuming beat solver has a step method
+            self.ep_solver.step((self.t, self.t + self.dt_ep))
             self.t += self.dt_ep
+            self.ep_step_idx += 1
+
+            if ep_callback:
+                ep_callback(self.t, self.ep_step_idx)
 
         # 2. Transfer state from EP to Mechanics
-        # e.g., transfer intracellular calcium or strong cross-bridges
-        self.transfer_ep2mech.interpolate(
-            self.ep_solver.state_function,  # Replace with actual EP state function
-            self.mechanics_problem.model.active.XS,  # Or whatever LandModel needs
+        self.ode_model.update_ep_missing_values(
+            self.t,
+            self.ep_solver.ode._values,
+            self.ep_solver.ode.parameters,
         )
+        self.ode_model.missing_mech.interpolate_ep_to_mechanics()
+        self.ode_model.missing_mech.mechanics_function_to_values()
 
         # 3. Solve Mechanics Problem
         self.mechanics_problem.model.active.t.value = self.t
-        self.mechanics_problem.solve()
+        nit = self.mechanics_problem.solve()
         self.mechanics_problem.post_solve()
+        self.mechanics_problem.model.active.update_prev()
+        self.mech_step_idx += 1
 
-        # 4. Transfer state from Mechanics back to EP (Mechano-Electric Feedback)
-        # e.g., transfer stretch (lmbda) or stretch rate
-        self.transfer_mech2ep.interpolate(
-            self.mechanics_problem.model.active.lmbda,
-            self.ep_solver.stretch_function,  # Replace with actual EP stretch parameter
-        )
+        # 4. Transfer state from Mechanics back to EP
+        if self.ode_model.missing_ep is not None:
+            self.ode_model.missing_ep.interpolate_mechanics_to_ep()
+            self.ode_model.missing_ep.ep_function_to_values()
+        self.ode_model.update_prev_missing_mech()
+
+        if mech_callback:
+            mech_callback(self.t, self.mech_step_idx, nit)
