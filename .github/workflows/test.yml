@@ -1,0 +1,58 @@
+name: Test package
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test-code:
+    name: Test on ${{ matrix.container }}
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.container }}
+    env:
+      DEB_PYTHON_INSTALL_LAYOUT: deb_system
+
+    strategy:
+      fail-fast: false
+      matrix:
+        container: [
+          "ghcr.io/fenics/dolfinx/dolfinx:stable",
+          "ghcr.io/fenics/dolfinx/dolfinx:nightly"
+        ]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          python3 -m pip install -r https://raw.githubusercontent.com/scientificcomputing/scifem/refs/heads/main/build-requirements.txt
+
+      - name: Install development versions of dependencies
+        if: ${{ matrix.container == 'ghcr.io/fenics/dolfinx/dolfinx:nightly' }}
+        run: |
+          python3 -m pip install git+https://github.com/scientificcomputing/io4dolfinx.git
+          python3 -m pip install git+https://github.com/scientificcomputing/scifem.git --no-build-isolation
+          python3 -m pip install git+https://github.com/ComputationalPhysiology/cardiac-geometriesx.git
+
+      - name: Install package
+        run: |
+          python3 -m pip install scifem --no-build-isolation
+          python3 -m pip install .[test]
+
+      - name: Run tests
+        run: python3 -m pytest
+
+      - name: Extract Coverage
+        run: |
+          python3 -m coverage report | sed 's/^/    /' >> $GITHUB_STEP_SUMMARY
+          python3 -m coverage json
+          export TOTAL=$(python3 -c "import json;print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
+          echo "total=$TOTAL" >> $GITHUB_ENV
+
+      - name: Upload HTML report.
+        if: ${{ matrix.container == 'ghcr.io/fenics/dolfinx/dolfinx:stable' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: html-report
+          path: htmlcov
