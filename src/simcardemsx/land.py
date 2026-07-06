@@ -1,8 +1,8 @@
 import logging
 from enum import Enum
 
+import basix
 import dolfinx
-import numpy as np
 import pulse
 import ufl
 
@@ -15,17 +15,35 @@ class Scheme(str, Enum):
     analytic = "analytic"
 
 
-def _Zeta(Zeta_prev, A, c, dLambda, dt, scheme):
-    dZetas_dt = A * dLambda - Zeta_prev * c
-    dZetas_dt_linearized = -c
-    if abs(c) > 1e-8:
-        ans = Zeta_prev + dZetas_dt * (np.exp(-c * dt) - 1.0) / dZetas_dt_linearized
-    else:
-        ans = Zeta_prev + dZetas_dt * dt
+# def _Zeta(Zeta_prev, A, c, dLambda, dt, scheme):
+#     dZetas_dt = A * dLambda - Zeta_prev * c
+#     dZetas_dt_linearized = -c
+#     if abs(c) > 1e-8:
+#         ans = Zeta_prev + dZetas_dt * (np.exp(-c * dt) - 1.0) / dZetas_dt_linearized
+#     else:
+#         ans = Zeta_prev + dZetas_dt * dt
 
-    if hasattr(ans, "ufl_shape"):
-        return ufl.max_value(ans, -1.0)
-    return max(ans, -1.0)
+#     if hasattr(ans, "ufl_shape"):
+#         return ufl.max_value(ans, -1.0)
+#     return max(ans, -1.0)
+
+
+def _Zeta(Zeta_prev, A, c, lmbda, lmbda_prev, dt):
+    """
+    Pure UFL Backward Euler integration of the Land Zeta ODE.
+    """
+    if dt == 0.0:
+        return Zeta_prev
+
+    # Pure UFL algebraic formulation of Backward Euler
+    numerator = Zeta_prev + A * (lmbda - lmbda_prev)
+
+    denominator = 1.0 + c * dt
+
+    ans = numerator / denominator
+
+    # Exactly bound to >= -1.0 to prevent unphysical phase-lag
+    return ufl.max_value(ans, -1.0)
 
 
 _parameters = {
@@ -61,10 +79,18 @@ class LandModel(pulse.active_model.ActiveModel):
         logger.debug("Initialize Land Model")
 
         self._eta = eta
+        self.f0 = f0
         self.function_space = dolfinx.fem.functionspace(mesh, ("DG", 1))
         self.u_space = dolfinx.fem.functionspace(mesh, ("P", 2, (3,)))
         self.u = dolfinx.fem.Function(self.u_space)
         self.u_prev = dolfinx.fem.Function(self.u_space)
+
+        qe = basix.ufl.quadrature_element(mesh.topology.cell_name(), value_shape=(), degree=2)
+        self.V_quad = dolfinx.fem.functionspace(mesh, qe)
+
+        # 2. Initialize history variables exactly at the integration points
+        self.Zetas_prev = dolfinx.fem.Function(self.V_quad)
+        self.Zetaw_prev = dolfinx.fem.Function(self.V_quad)
 
         self.XS = XS
         self.XW = XW
@@ -75,14 +101,14 @@ class LandModel(pulse.active_model.ActiveModel):
         self._scheme = scheme
 
         self._dLambda = dolfinx.fem.Function(self.function_space)
-        self.lmbda_prev = dolfinx.fem.Function(self.function_space)
-        self.lmbda_prev.x.array[:] = 1.0
+        # self.lmbda_prev = dolfinx.fem.Function(self.function_space)
+        # self.lmbda_prev.x.array[:] = 1.0
         self.lmbda = dolfinx.fem.Function(self.function_space)
 
         self._Zetas = dolfinx.fem.Function(self.function_space)
-        self.Zetas_prev = dolfinx.fem.Function(self.function_space)
+        # self.Zetas_prev = dolfinx.fem.Function(self.function_space)
         self._Zetaw = dolfinx.fem.Function(self.function_space)
-        self.Zetaw_prev = dolfinx.fem.Function(self.function_space)
+        # self.Zetaw_prev = dolfinx.fem.Function(self.function_space)
         self.Ta_current = dolfinx.fem.Function(self.function_space, name="Ta")
 
         self._dLambda_tol = dLambda_tol
@@ -91,11 +117,19 @@ class LandModel(pulse.active_model.ActiveModel):
 
     def dLambda(self, lmbda):
         logger.debug("Evaluate dLambda")
-
+        # return self._dLambda
         if self.dt == 0:
             return self._dLambda
         else:
             return (lmbda - self.lmbda_prev) / self.dt
+
+    @property
+    def lmbda_prev(self):
+        F = ufl.grad(self.u_prev) + ufl.Identity(3)
+        C = F.T * F
+        f0 = self.f0
+        f2 = ufl.inner(C * f0, f0)
+        return ufl.sqrt(f2)
 
     @property
     def Aw(self):
@@ -144,20 +178,20 @@ class LandModel(pulse.active_model.ActiveModel):
             / (rs * scale_popu_rs)
         )
 
-    def update_Zetas(self, lmbda):
-        logger.debug("update Zetas")
-        zetas_expr = dolfinx.fem.Expression(
-            _Zeta(
-                self.Zetas_prev,
-                self.As,
-                self.cs,
-                self.dLambda(lmbda),
-                self.dt,
-                self._scheme,
-            ),
-            self.function_space.element.interpolation_points,
-        )
-        self._Zetas.interpolate(zetas_expr)
+    # def update_Zetas(self, lmbda):
+    #     logger.debug("update Zetas")
+    #     zetas_expr = dolfinx.fem.Expression(
+    #         _Zeta(
+    #             self.Zetas_prev,
+    #             self.As,
+    #             self.cs,
+    #             self.dLambda(lmbda),
+    #             self.dt,
+    #             self._scheme,
+    #         ),
+    #         self.function_space.element.interpolation_points,
+    #     )
+    #     self._Zetas.interpolate(zetas_expr)
 
     def Zetas(self, lmbda):
         # return self._Zetas
@@ -165,34 +199,36 @@ class LandModel(pulse.active_model.ActiveModel):
             self.Zetas_prev,
             self.As,
             self.cs,
-            self.dLambda(lmbda),
+            lmbda,
+            self.lmbda_prev,
             self.dt,
-            self._scheme,
+            # self._scheme,
         )
 
-    def update_Zetaw(self, lmbda):
-        logger.debug("update Zetaw")
-        zetaw_expr = dolfinx.fem.Expression(
-            _Zeta(
-                self.Zetaw_prev,
-                self.Aw,
-                self.cw,
-                self.dLambda(lmbda),
-                self.dt,
-                self._scheme,
-            ),
-            self.function_space.element.interpolation_points,
-        )
-        self._Zetaw.interpolate(zetaw_expr)
+    # def update_Zetaw(self, lmbda):
+    #     logger.debug("update Zetaw")
+    #     zetaw_expr = dolfinx.fem.Expression(
+    #         _Zeta(
+    #             self.Zetaw_prev,
+    #             self.Aw,
+    #             self.cw,
+    #             self.dLambda(lmbda),
+    #             self.dt,
+    #             self._scheme,
+    #         ),
+    #         self.function_space.element.interpolation_points,
+    #     )
+    #     self._Zetaw.interpolate(zetaw_expr)
 
     def Zetaw(self, lmbda):
         return _Zeta(
             self.Zetaw_prev,
             self.Aw,
             self.cw,
-            self.dLambda(lmbda),
+            lmbda,
+            self.lmbda_prev,
             self.dt,
-            self._scheme,
+            # self._scheme,
         )
 
     @property
@@ -204,14 +240,72 @@ class LandModel(pulse.active_model.ActiveModel):
         self.update_prev()
 
     def update_current(self, lmbda):
-        self.update_Zetas(lmbda=lmbda)
-        self.update_Zetaw(lmbda=lmbda)
+        zetaw_expr = dolfinx.fem.Expression(
+            _Zeta(
+                self.Zetaw_prev,
+                self.Aw,
+                self.cw,
+                lmbda,
+                self.lmbda_prev,
+                self.dt,
+                # self._scheme,
+            ),
+            self.V_quad.element.interpolation_points,
+        )
+        self.Zetaw_prev.interpolate(zetaw_expr)
+        zetas_expr = dolfinx.fem.Expression(
+            _Zeta(
+                self.Zetas_prev,
+                self.As,
+                self.cs,
+                lmbda,
+                self.lmbda_prev,
+                self.dt,
+                # self._scheme,
+            ),
+            self.V_quad.element.interpolation_points,
+        )
+        self.Zetas_prev.interpolate(zetas_expr)
+
+        #     self._Zetaw.interpolate(zetaw_expr)
+        # self.update_Zetas(lmbda=lmbda)
+        # self.update_Zetaw(lmbda=lmbda)
+
+        if self.dt > 0:
+            self._dLambda.interpolate(
+                dolfinx.fem.Expression(
+                    (lmbda - self.lmbda_prev) / self.dt,
+                    self.function_space.element.interpolation_points,
+                ),
+            )
+
+    # self.lmbda.interpolate(
+    #     dolfinx.fem.Expression(
+    #         lmbda,
+    #         self.function_space.element.interpolation_points,
+    #     ),
+    # )
+
+    # def update_dLambda(self, lmbda):
+    #     if self.dt > 0:
+    #         self._dLambda.interpolate(
+    #             dolfinx.fem.Expression(
+    #                 (lmbda - self.lmbda_prev) / self.dt,
+    #                 self.function_space.element.interpolation_points,
+    #             ),
+    #         )
+    #     else:
+    #         self._dLambda.x.array[:] = 0.0
 
     def update_prev(self):
         logger.debug("update previous")
-        self.Zetas_prev.x.array[:] = self._Zetas.x.array
-        self.Zetaw_prev.x.array[:] = self._Zetaw.x.array
-        self.lmbda_prev.x.array[:] = self.lmbda.x.array
+
+        # if self.dt > 0:
+        #     self._dLambda.x.array[:] = (self.lmbda.x.array - self.lmbda_prev.x.array) / self.dt
+
+        # self.Zetas_prev.x.array[:] = self._Zetas.x.array
+        # self.Zetaw_prev.x.array[:] = self._Zetaw.x.array
+        # self.lmbda_prev.x.array[:] = self.lmbda.x.array
 
         self._t_prev.value = self.t.value.copy()
 

@@ -63,7 +63,7 @@ def default_config():
             ],
         },
         "sim": {
-            "N": 1,
+            "N": 20,
             "dt": 0.05,
             "mech_mesh": "meshes/mesh_mech_0.5dx_0.5Lx_1.0Ly_2.0Lz",
             "markerfile": "meshes/mesh_mech_0.5dx_0.5Lx_1.0Ly_2.0Lz_surface_ffun",
@@ -182,7 +182,7 @@ def main():
             lx=2.0,
             ly=1.0,
             lz=0.5,
-            dx=0.5,
+            dx=0.1,
             create_fibers=True,
             fiber_angle_endo=0,
             fiber_angle_epi=0,
@@ -287,7 +287,7 @@ def main():
     # ---------------------------------------------------------
     material_params = pulse.HolzapfelOgden.transversely_isotropic_parameters()
     material = pulse.HolzapfelOgden(f0=mech_geo.f0, s0=mech_geo.s0, **material_params)
-    comp_model = pulse.compressibility.Incompressible()
+    comp_model = pulse.compressibility.Compressible()
 
     # Pass the EP variables directly via missing_mech u_mechanics functions
     active_model = LandModel(
@@ -339,7 +339,15 @@ def main():
         model=model,
         geometry=mech_geo,
         bcs=bcs,
-        parameters={"base_bc": pulse.problem.BaseBC.free},
+        parameters={
+            "base_bc": pulse.problem.BaseBC.free,
+            "petsc_options": {
+                "snes_type": "newtonls",
+                "ksp_type": "preonly",
+                "pc_type": "lu",
+                "pc_factor_mat_solver_type": "mumps",
+            },
+        },
     )
     problem.solve()
 
