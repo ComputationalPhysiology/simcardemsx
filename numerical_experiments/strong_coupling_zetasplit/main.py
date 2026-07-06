@@ -1,4 +1,3 @@
-import importlib.util
 import logging
 from pathlib import Path
 from typing import NamedTuple
@@ -17,6 +16,7 @@ from simcardemsx.datacollector import DataCollector
 from simcardemsx.land import LandModel
 from simcardemsx.mechanicsproblem import MechanicsProblem
 from simcardemsx.ode_model import RuntimeODEModel, generate_ode_code
+from simcardemsx.utils import load_module_from_path
 
 logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
@@ -152,16 +152,6 @@ def create_stim_tags(mesh, stim_marker=1, stimx=1.5, stimy=1.5, stimz=1.5):
     )
     stim_tags.name = "stimulus"
     return stim_tags
-
-
-def load_module_from_path(module_name: str, file_path: Path):
-    """Cleanly loads a Python file as a module without sys.path hacks."""
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    assert spec is not None, f"Could not load module {module_name} from {file_path}"
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None, f"Could not load module {module_name} from {file_path}"
-    spec.loader.exec_module(module)
-    return module
 
 
 def main():

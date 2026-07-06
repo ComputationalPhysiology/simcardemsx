@@ -74,6 +74,5 @@ class MechanicsProblem(pulse.StaticProblem):
                 self.model.active.function_space.element.interpolation_points,
             ),
         )
-        # breakpoint()
 
         self.model.active.update(lmbda=lmbda)

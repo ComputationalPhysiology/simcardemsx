@@ -62,7 +62,7 @@ class LandModel(pulse.active_model.ActiveModel):
 
         self._eta = eta
         self.function_space = dolfinx.fem.functionspace(mesh, ("DG", 1))
-        self.u_space = dolfinx.fem.functionspace(mesh, ("CG", 2, (3,)))
+        self.u_space = dolfinx.fem.functionspace(mesh, ("P", 2, (3,)))
         self.u = dolfinx.fem.Function(self.u_space)
         self.u_prev = dolfinx.fem.Function(self.u_space)
 

@@ -1,6 +1,5 @@
 # tests/test_isolated_ep.py
-import importlib.util
-from pathlib import Path
+
 
 from mpi4py import MPI
 
@@ -9,14 +8,7 @@ import dolfinx
 import numpy as np
 
 from simcardemsx.ode_model import RuntimeODEModel, generate_ode_code
-
-
-# Notice how we use importlib instead of sys.path.append!
-def load_module_from_path(module_name: str, file_path: Path):
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from simcardemsx.utils import load_module_from_path
 
 
 def test_mechano_electric_feedback(tmp_path):
@@ -71,7 +63,11 @@ def test_mechano_electric_feedback(tmp_path):
 
     # Capture the returned updated states!
     state_baseline = model.fgr(
-        states=state_baseline, t=0.0, parameters=params, missing_variables=baseline_lambda, dt=1.0,
+        states=state_baseline,
+        t=0.0,
+        parameters=params,
+        missing_variables=baseline_lambda,
+        dt=1.0,
     )
 
     # Step B: Stretched (lambda = 1.2)
@@ -79,7 +75,11 @@ def test_mechano_electric_feedback(tmp_path):
 
     # Capture the returned updated states!
     state_stretched = model.fgr(
-        states=state_stretched, t=0.0, parameters=params, missing_variables=stretched_lambda, dt=1.0,
+        states=state_stretched,
+        t=0.0,
+        parameters=params,
+        missing_variables=stretched_lambda,
+        dt=1.0,
     )
 
     # --- ASSERTIONS ---
