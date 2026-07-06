@@ -1,5 +1,4 @@
 import logging
-import math
 from enum import Enum
 
 import dolfinx
@@ -10,39 +9,23 @@ import ufl
 logger = logging.getLogger(__name__)
 
 
-def s_max(a, b, eps=1e-3):
-    """Smooth maximum for UFL and Python scalars"""
-    if hasattr(a, "ufl_shape") or hasattr(b, "ufl_shape"):
-        return 0.5 * (a + b + ufl.sqrt((a - b) ** 2 + eps))
-    return 0.5 * (a + b + math.sqrt((a - b) ** 2 + eps))
-
-
-def s_min(a, b, eps=1e-3):
-    """Smooth minimum for UFL and Python scalars"""
-    if hasattr(a, "ufl_shape") or hasattr(b, "ufl_shape"):
-        return 0.5 * (a + b - ufl.sqrt((a - b) ** 2 + eps))
-    return 0.5 * (a + b - math.sqrt((a - b) ** 2 + eps))
-
-
 class Scheme(str, Enum):
     fd = "fd"
     bd = "bd"
     analytic = "analytic"
 
 
-def _Zeta(Zeta_prev, A, c, dLambda, dt, scheme: Scheme):
-    # if scheme == Scheme.analytic:
+def _Zeta(Zeta_prev, A, c, dLambda, dt, scheme):
     dZetas_dt = A * dLambda - Zeta_prev * c
     dZetas_dt_linearized = -c
     if abs(c) > 1e-8:
         ans = Zeta_prev + dZetas_dt * (np.exp(-c * dt) - 1.0) / dZetas_dt_linearized
     else:
-        # Forward euler
         ans = Zeta_prev + dZetas_dt * dt
 
-    # Constrain Zetas to be >= -1.0 to prevent massive phase-lag oscillations
-    # during the rapid relaxation phase of the cardiac cycle.
-    return s_max(ans, -1.0, eps=1e-3)
+    if hasattr(ans, "ufl_shape"):
+        return ufl.max_value(ans, -1.0)
+    return max(ans, -1.0)
 
 
 _parameters = {
@@ -94,22 +77,13 @@ class LandModel(pulse.active_model.ActiveModel):
         self._dLambda = dolfinx.fem.Function(self.function_space)
         self.lmbda_prev = dolfinx.fem.Function(self.function_space)
         self.lmbda_prev.x.array[:] = 1.0
-        # if lmbda is not None:
-        #     self.lmbda_prev.assign(lmbda)
         self.lmbda = dolfinx.fem.Function(self.function_space)
 
         self._Zetas = dolfinx.fem.Function(self.function_space)
         self.Zetas_prev = dolfinx.fem.Function(self.function_space)
-        # if Zetas is not None:
-        #     self.Zetas_prev.assign(Zetas)
-
         self._Zetaw = dolfinx.fem.Function(self.function_space)
         self.Zetaw_prev = dolfinx.fem.Function(self.function_space)
-        # if Zetaw is not None:
-        #     self.Zetaw_prev.assign(Zetaw)
-
         self.Ta_current = dolfinx.fem.Function(self.function_space, name="Ta")
-        # self._projector = utils.Projector(self.function_space)
 
         self._dLambda_tol = dLambda_tol
         self.t = dolfinx.fem.Constant(mesh, 0.0)
@@ -238,14 +212,11 @@ class LandModel(pulse.active_model.ActiveModel):
         self.Zetas_prev.x.array[:] = self._Zetas.x.array
         self.Zetaw_prev.x.array[:] = self._Zetaw.x.array
         self.lmbda_prev.x.array[:] = self.lmbda.x.array
-        # self.u_prev_prev.x.array[:] = self.u_prev.x.array
 
         self._t_prev.value = self.t.value.copy()
 
     def Ta(self, lmbda):
-        import logging
-
-        logging.getLogger(__name__).debug("Evaluate Ta (Smooth Implicit)")
+        logger.debug("Evaluate Ta (Exact Implicit)")
 
         Tref = self._parameters["Tref"]
         rs = self._parameters["rs"]
@@ -253,47 +224,25 @@ class LandModel(pulse.active_model.ActiveModel):
         scale_popu_rs = 1.0
         Beta0 = self._parameters["Beta0"]
 
-        # 1. Smoothly evaluate length dependence
-        lmbda_capped = s_min(1.2, lmbda, eps=1e-3)
-        h_lambda_prima = 1.0 + Beta0 * (lmbda_capped + s_min(lmbda_capped, 0.87, eps=1e-3) - 1.87)
-        h_lambda = s_max(0.0, h_lambda_prima, eps=1e-3)
+        _min = ufl.min_value
+        _max = ufl.max_value
+        if isinstance(lmbda, (int, float)):
+            _min = min
+            _max = max
+
+        # 1. Exact length dependence
+        lmbda_capped = _min(1.2, lmbda)
+        h_lambda_prima = 1.0 + Beta0 * (lmbda_capped + _min(lmbda_capped, 0.87) - 1.87)
+        h_lambda = _max(0.0, h_lambda_prima)
 
         # 2. Evaluate dynamic active state
         Zetas = self.Zetas(lmbda)
         Zetaw = self.Zetaw(lmbda)
-
-        # 3. Smoothly bound the active fraction to >= 0.0
+        # 3. Exactly bound active fraction to >= 0.0 to prevent negative tension
         active_fraction = self.XS * (Zetas + 1.0) + self.XW * Zetaw
-        active_fraction = s_max(0.0, active_fraction, eps=1e-3)
+        active_fraction = ufl.max_value(0.0, active_fraction)
 
         return 1000 * h_lambda * (Tref * scale_popu_Tref / (rs * scale_popu_rs)) * active_fraction
-
-    # def Ta(self, lmbda):
-    #     logger.debug("Evaluate Ta")
-    #     Tref = self._parameters["Tref"]
-    #     rs = self._parameters["rs"]
-    #     scale_popu_Tref = 1.0  # self._parameters["scale_popu_Tref"]
-    #     scale_popu_rs = 1.0  # self._parameters["scale_popu_rs"]
-    #     Beta0 = self._parameters["Beta0"]
-
-    #     _min = ufl.min_value
-    #     _max = ufl.max_value
-    #     if isinstance(lmbda, (int, float)):
-    #         _min = min
-    #         _max = max
-    #     lmbda = _min(1.2, lmbda)
-    #     h_lambda_prima = 1.0 + Beta0 * (lmbda + _min(lmbda, 0.87) - 1.87)
-    #     h_lambda = _max(0, h_lambda_prima)
-
-    #     Zetas = self.Zetas(lmbda)
-    #     Zetaw = self.Zetaw(lmbda)
-
-    #     # Muscle fibers can only contract (pull), they cannot push.
-    #     # If the relaxation velocity is high, Zetas can become < -1.0
-    #     active_fraction = self.XS * (Zetas + 1.0) + self.XW * Zetaw
-    #     active_fraction = ufl.max_value(0.0, active_fraction)
-
-    #     return 1000 * h_lambda * (Tref * scale_popu_Tref / (rs * scale_popu_rs)) * active_fraction
 
     def strain_energy(self, F: ufl.core.expr.Expr):
         return 0.0

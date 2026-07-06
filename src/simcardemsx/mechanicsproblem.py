@@ -68,12 +68,12 @@ class MechanicsProblem(pulse.StaticProblem):
                     self.model.active.function_space.element.interpolation_points,
                 ),
             )
-
         self.model.active.Ta_current.interpolate(
             dolfinx.fem.Expression(
                 self.model.active.Ta(lmbda),
                 self.model.active.function_space.element.interpolation_points,
             ),
         )
+        # breakpoint()
 
         self.model.active.update(lmbda=lmbda)

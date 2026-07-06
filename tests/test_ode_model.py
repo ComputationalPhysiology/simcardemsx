@@ -42,7 +42,9 @@ def test_runtime_ode_model_with_mock_dict():
     assert model.missing_mech.num_values == 2
 
     # 3. Test value passing logic
-    dummy_values = np.zeros((1, V_ep.dofmap.index_map.size_local))
+    local_size = V_ep.dofmap.index_map.size_local
+    ghost_size = V_ep.dofmap.index_map.num_ghosts
+    dummy_values = np.zeros((1, local_size + ghost_size))
     model.update_ep_missing_values(t=0.0, values=dummy_values, parameters=None)
 
     # Assert the mock function was called and values applied to the interpolation function
