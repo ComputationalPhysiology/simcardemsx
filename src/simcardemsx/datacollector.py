@@ -11,7 +11,6 @@ import numpy as np
 import toml
 import ufl
 
-# import adios4dolfinx
 from .mechanicsproblem import MechanicsProblem
 
 

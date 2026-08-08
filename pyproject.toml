@@ -28,7 +28,7 @@ demo = [
     "fenicsx-ldrb",
     "circulation",
     "gotranx",
-    "adios4dolfinx",
+    "io4dolfinx",
     "scipy",
 ]
 docs = [
