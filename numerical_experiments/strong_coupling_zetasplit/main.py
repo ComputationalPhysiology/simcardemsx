@@ -6,17 +6,17 @@ from mpi4py import MPI
 
 import beat
 import dolfinx
-import fenicsx_pulse
 import numpy as np
+import pulse
 import ufl
 
 import cardiac_geometries
-import simcardemsx
-import simcardemsx.ode_model
-
-# from simcardemsx.land import LandModel
+from simcardemsx.controller import SimulationController
 from simcardemsx.datacollector import DataCollector
+from simcardemsx.land import LandModel
 from simcardemsx.mechanicsproblem import MechanicsProblem
+from simcardemsx.ode_model import RuntimeODEModel, generate_ode_code
+from simcardemsx.utils import load_module_from_path
 
 logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
@@ -151,10 +151,6 @@ def create_stim_tags(mesh, stim_marker=1, stimx=1.5, stimy=1.5, stimz=1.5):
         np.full(len(cells), stim_marker, dtype=np.int32),
     )
     stim_tags.name = "stimulus"
-
-    # with dolfinx.io.XDMFFile(mesh.comm, "tags.xdmf", "w") as xdmf:
-    #     xdmf.write_mesh(mesh)
-    #     xdmf.write_meshtags(stim_tags, mesh.geometry)
     return stim_tags
 
 
@@ -164,7 +160,21 @@ def main():
     dolfinx.log.set_log_level(dolfinx.log.LogLevel.DEBUG)
 
     comm = MPI.COMM_WORLD
-    # mech_geo = create_mesh(comm)
+    config = default_config()
+
+    # ---------------------------------------------------------
+    # 1. Pre-processing: Generate ODE Code
+    # ---------------------------------------------------------
+    odefile = Path(config["sim"]["modelfile"])
+    out_dir = Path("generated_odes")
+
+    logger.info(f"Generating ODE modules from {odefile}")
+    generate_ode_code(odefile, out_dir)
+    ep_module = load_module_from_path("ep_model", out_dir / "ep_model.py")
+
+    # ---------------------------------------------------------
+    # 2. Setup Meshes & Geometries
+    # ---------------------------------------------------------
     geodir = Path("meshes")
     if not geodir.is_dir():
         cardiac_geometries.mesh.slab(
@@ -181,30 +191,14 @@ def main():
             use_dolfinx=True,
         )
 
-    geo = cardiac_geometries.geometry.Geometry.from_folder(
-        comm=MPI.COMM_WORLD,
-        folder=geodir,
-    )
-    geo.quadrature_degree = QUAD_DEGREE
+    geo = cardiac_geometries.geometry.Geometry.from_file(comm=comm, path=geodir / "geometry.bp")
 
     stim_marker = 1
     stim_tags = create_stim_tags(geo.mesh, stim_marker=stim_marker)
-    geo.cfun = stim_tags  # Use the facet function as the cell function
+    geo.cfun = stim_tags
     mech_geo = geo
-    # mech_geo = Geometry(
-    #     mesh=geo.mesh,
-    #     facet_tags=geo.ffun,
-    #     markers=geo.markers,
-    #     f0=geo.f0,
-    #     s0=geo.s0,
-    #     n0=geo.n0,
-    #     stim_tags=stim_tags,
-    #     stim_marker=stim_marker,
-    # )
-
-    # ep_geo = refine(refine(refine(mech_geo)))
-    # ep_geo = refine(refine(mech_geo))
-    ep_geo = mech_geo
+    geo.quadrature_degree = QUAD_DEGREE
+    ep_geo = geo
     mesh = mech_geo.mesh
     ep_mesh = ep_geo.mesh
 
@@ -212,27 +206,25 @@ def main():
     family = ode_space.split("_")[0]
     degree = int(ode_space.split("_")[1])
 
-    # Set the activation
     mech_ode_space = dolfinx.fem.functionspace(mesh, (family, degree))
-
     ep_ode_space = dolfinx.fem.functionspace(ep_mesh, (family, degree))
-    v_ode = dolfinx.fem.Function(ep_ode_space)
 
-    config = default_config()
-
-    # FIXME: Make this work for different meshes later
-
-    odefile = Path(config["sim"]["modelfile"])
-    ode_model = simcardemsx.ode_model.ODEModel(
-        odefile=odefile,
+    # ---------------------------------------------------------
+    # 3. Initialize Runtime ODE Model
+    # ---------------------------------------------------------
+    ode_model = RuntimeODEModel(
+        ep_module_dict=ep_module.__dict__,
         mech_ode_space=mech_ode_space,
         ep_ode_space=ep_ode_space,
     )
 
+    # ---------------------------------------------------------
+    # 4. Setup EP Solver (fenicsx-beat)
+    # ---------------------------------------------------------
     mesh_unit = "mm"
-
     chi = config["ep"]["chi"] * beat.units.ureg("mm**-1")
     C_m = config["ep"]["C_m"] * beat.units.ureg("uF/mm**2")
+
     M = beat.conductivities.define_conductivity_tensor(
         chi=chi,
         f0=ep_geo.f0,
@@ -263,69 +255,75 @@ def main():
         dx=ep_geo.dx,
     )
 
-    num_points_ep = v_ode.x.array.size
+    v_ode = dolfinx.fem.Function(ep_ode_space)
+    num_points_ep = (
+        ep_ode_space.dofmap.index_map.size_local + ep_ode_space.dofmap.index_map.num_ghosts
+    )
 
     y_ep_ = ode_model.y()
     p_ep_ = ode_model.p(i_Stim_Amplitude=0.0)
+
     y_ep = np.zeros((len(y_ep_), num_points_ep))
-    y_ep.T[:] = y_ep_  # Set to y_ep with initial values defined in ep_model
+    y_ep.T[:] = y_ep_
     p_ep = np.zeros((len(p_ep_), num_points_ep))
-    p_ep.T[:] = p_ep_  # Initialise p_ep with initial values defined in ep_model
+    p_ep.T[:] = p_ep_
 
     ode = beat.odesolver.DolfinODESolver(
-        v_ode=dolfinx.fem.Function(ep_ode_space),
+        v_ode=v_ode,
         v_pde=pde.state,
         fun=ode_model.fgr,
         init_states=y_ep,
         parameters=p_ep,
         num_states=len(y_ep),
-        v_index=ode_model.module["state_index"]("v"),
+        v_index=ode_model.ep_module_dict["state_index"]("v"),
         missing_variables=ode_model.missing_ep.values_ep,
         num_missing_variables=ode_model.missing_ep.num_values,
     )
 
     ep_solver = beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=1)
 
-    # material_params = fenicsx_pulse.HolzapfelOgden.orthotropic_parameters()
-    material_params = fenicsx_pulse.HolzapfelOgden.transversely_isotropic_parameters()
+    # ---------------------------------------------------------
+    # 5. Setup Mechanics Solver (fenicsx-pulse)
+    # ---------------------------------------------------------
+    material_params = pulse.HolzapfelOgden.transversely_isotropic_parameters()
+    material = pulse.HolzapfelOgden(f0=mech_geo.f0, s0=mech_geo.s0, **material_params)
+    comp_model = pulse.compressibility.Incompressible()
 
-    material = fenicsx_pulse.HolzapfelOgden(f0=mech_geo.f0, s0=mech_geo.s0, **material_params)
-    comp_model = fenicsx_pulse.compressibility.Incompressible()
-
-    from mechanics_model import LandModel
-
+    # Pass the EP variables directly via missing_mech u_mechanics functions
     active_model = LandModel(
-        function_space=mech_ode_space,
-        missing_values=ode_model.missing_mech.u_mechanics,
+        f0=mech_geo.f0,
+        s0=mech_geo.s0,
+        n0=mech_geo.n0,
+        XS=ode_model.missing_mech.u_mechanics[0],
+        XW=ode_model.missing_mech.u_mechanics[1],
+        mesh=mech_geo.mesh,
     )
 
-    model = fenicsx_pulse.CardiacModel(
+    model = pulse.CardiacModel(
         material=material,
         active=active_model,
         compressibility=comp_model,
     )
 
-    def dirichlet_bc(
-        V: dolfinx.fem.FunctionSpace,
-    ) -> list[dolfinx.fem.bcs.DirichletBC]:
+    def dirichlet_bc(V: dolfinx.fem.FunctionSpace) -> list[dolfinx.fem.bcs.DirichletBC]:
         V0, _ = V.sub(0).collapse()
         zero = dolfinx.fem.Function(V0)
         zero.x.array[:] = 0.0
 
         x0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(0), V0),
-            mech_geo.facet_tags.dim,
-            mech_geo.facet_tags.find(mech_geo.markers["X0"][0]),
+            mech_geo.ffun.dim,
+            mech_geo.ffun.find(mech_geo.markers["X0"][0]),
         )
         y0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(1), V0),
-            mech_geo.facet_tags.dim,
-            mech_geo.facet_tags.find(mech_geo.markers["Y0"][0]),
+            mech_geo.ffun.dim,
+            mech_geo.ffun.find(mech_geo.markers["Y0"][0]),
         )
         z0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(2), V0),
-            mech_geo.facet_tags.dim,
-            mech_geo.facet_tags.find(mech_geo.markers["Z0"][0]),
+            mech_geo.ffun.dim,
+            mech_geo.ffun.find(mech_geo.markers["Z0"][0]),
         )
 
         return [
@@ -334,25 +332,41 @@ def main():
             dolfinx.fem.dirichletbc(zero, z0_dofs, V.sub(2)),
         ]
 
-    bcs = fenicsx_pulse.BoundaryConditions(
-        dirichlet=(dirichlet_bc,),
-    )
+    bcs = pulse.BoundaryConditions(dirichlet=(dirichlet_bc,))
 
-    problem = MechanicsProblem(model=model, geometry=mech_geo, bcs=bcs)
+    # Important: BaseBC must be free since we manually constrain X, Y, Z boundaries
+    problem = MechanicsProblem(
+        model=model,
+        geometry=mech_geo,
+        bcs=bcs,
+        parameters={"base_bc": pulse.problem.BaseBC.free},
+    )
     problem.solve()
+
+    # ---------------------------------------------------------
+    # 6. Initialize Coupling Controller & DataCollector
+    # ---------------------------------------------------------
+    dt_ep = config["sim"]["dt"]
+    N_steps = config["sim"]["N"]
+    dt_mech = dt_ep * N_steps
+
+    controller = SimulationController(
+        mechanics_problem=problem,
+        ep_solver=ep_solver,
+        ode_model=ode_model,
+        dt_mech=dt_mech,
+        dt_ep=dt_ep,
+    )
 
     mech_variables = {
         "Ta": active_model.Ta_current,
-        "Zetas": active_model.y[0],
-        "Zetaw": active_model.y[1],
+        "Zetas": active_model._Zetas,
+        "Zetaw": active_model._Zetaw,
         "lambda": active_model.lmbda,
-        "XS": active_model.missing_values[0],
-        "XW": active_model.missing_values[1],
+        "XS": ode_model.missing_mech.u_mechanics[0],
+        "XW": ode_model.missing_mech.u_mechanics[1],
         "dLambda": active_model._dLambda,
     }
-
-    inds = []  # Array with time-steps for which we solve mechanics
-    j = 0
 
     collector = DataCollector(
         problem=problem,
@@ -361,75 +375,40 @@ def main():
         mech_variables=mech_variables,
     )
 
-    # t = np.arange(0, config["sim"]["sim_dur"], config["sim"]["dt"])
-    for i, ti in enumerate(collector.t):
+    # ---------------------------------------------------------
+    # 7. Define Callbacks & Run Simulation
+    # ---------------------------------------------------------
+    inds = []  # To track mechanics steps for the collector finalize
+
+    def on_ep_step(current_t, ep_step_idx):
+        # Update EP functions for saving
+        for out_ep_var in collector.out_ep_names:
+            state_idx = ode_model.ep_module_dict["state_index"](out_ep_var)
+            collector.out_ep_funcs[out_ep_var].x.array[:] = ode._values[state_idx]
+
+        if ep_step_idx % config["sim"]["save_frequency_ep"] == 0:
+            collector.write_ep(current_t)
+            collector.write_node_data_ep(ep_step_idx)
+
+    def on_mech_step(current_t, mech_step_idx, newton_iters):
+        inds.append(mech_step_idx * N_steps)
+        collector.timers.no_of_newton_iterations.append(newton_iters)
+
+        if mech_step_idx % config["sim"]["save_frequency_mech"] == 0:
+            collector.write_node_data_mech(mech_step_idx)
+            collector.write_disp(current_t)
+
+    # Calculate total mechanics steps needed
+    total_duration = config["sim"]["sim_dur"]
+    total_mech_steps = int(np.ceil(total_duration / dt_mech))
+
+    # --- THE MAIN LOOP ---
+    for _ in range(total_mech_steps):
         collector.timers.start_single_loop()
 
-        print(f"Solving time {ti:.2f} ms")
-        # t_bcs.assign(ti)  # Use ti+ dt here instead?
+        # The controller does all the interpolation, sub-stepping, and solving!
+        controller.step(ep_callback=on_ep_step, mech_callback=on_mech_step)
 
-        collector.timers.start_ep()
-        ep_solver.step((ti, ti + config["sim"]["dt"]))
-        collector.timers.stop_ep()
-
-        # Assign values to ep function
-        for out_ep_var in collector.out_ep_names:
-            collector.out_ep_funcs[out_ep_var].x.array[:] = ode._values[
-                ode_model.module["state_index"](out_ep_var)
-            ]
-
-        if i % config["sim"]["save_frequency_ep"] == 0:
-            collector.write_ep(ti)
-            collector.write_node_data_ep(i)
-
-        if i % config["sim"]["N"] != 0:
-            collector.timers.stop_single_loop()
-            continue
-
-        collector.timers.start_var_transfer()
-
-        # Assign the extracted values as missing_mech for the mech step (ep function space)
-        ode_model.update_ep_missing_values(
-            ti + config["sim"]["dt"],
-            ode._values,
-            ode.parameters,
-        )
-        # Interpolate missing variables from ep to mech function space
-        ode_model.missing_mech.interpolate_ep_to_mechanics()
-        ode_model.missing_mech.mechanics_function_to_values()
-        inds.append(i)
-
-        collector.timers.stop_var_transfer()
-
-        print("Solve mechanics")
-        collector.timers.start_mech()
-
-        active_model.t.value = ti + config["sim"]["N"] * config["sim"]["dt"]  # Addition!
-        nit = problem.solve()  # ti, config["sim"]["N"] * config["sim"]["dt"])
-        problem.post_solve()
-        collector.timers.no_of_newton_iterations.append(nit)
-        print(f"No of iterations: {nit}")
-        active_model.update_prev()
-        collector.timers.stop_mech()
-
-        collector.timers.start_var_transfer()
-        # Do we need to handle more cases here?
-        # if config["sim"]["split_scheme"] == "cai":
-        #     missing_ep.u_mechanics_int[0].interpolate(active_model._J_TRPN)
-        if ode_model.missing_ep is not None:
-            ode_model.missing_ep.interpolate_mechanics_to_ep()
-            ode_model.missing_ep.ep_function_to_values()
-        collector.timers.stop_var_transfer()
-
-        if j % config["sim"]["save_frequency_mech"] == 0:
-            collector.write_node_data_mech(j)
-            collector.write_disp(ti)
-
-        # Use previous cai in mech to be consistent with zeta split
-        ode_model.update_prev_missing_mech()
-        collector.timers.collect_var_transfer()
-
-        j += 1
         collector.timers.stop_single_loop()
 
     collector.finalize(inds)

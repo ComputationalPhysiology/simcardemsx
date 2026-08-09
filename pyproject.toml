@@ -9,7 +9,7 @@ authors = [{name = "Henrik Finsberg", email = "henriknf@simula.no"}]
 license = {file = "LICENSE"}
 readme = "README.md"
 requires-python = ">=3.10.0"
-dependencies = ["fenics-dolfinx", "fenicsx-pulse", "fenicsx-beat"]
+dependencies = ["fenics-dolfinx", "fenicsx-pulse", "fenicsx-beat", "gotranx", "toml", "pydantic", "pydantic_pint"]
 
 [project.optional-dependencies]
 test = [
@@ -28,7 +28,7 @@ demo = [
     "fenicsx-ldrb",
     "circulation",
     "gotranx",
-    "adios4dolfinx",
+    "io4dolfinx",
     "scipy",
 ]
 docs = [
@@ -38,23 +38,23 @@ docs = [
    "pyvista[all]>=0.43.0",
    "trame-vuetify",
    "ipywidgets",
-   "fenicsx_pulse[demo]",
+   "simcardemsx[demo]",
 ]
 benchmark = [
     "pytest-codspeed",
-    "fenicsx_pulse[test]",
+    "simcardemsx[test]",
 ]
 
 all = [
-    "fenicsx_pulse[test]",
-    "fenicsx_pulse[docs]",
-    "fenicsx_pulse[dev]",
-    "fenicsx_pulse[demo]",
+    "simcardemsx[test]",
+    "simcardemsx[docs]",
+    "simcardemsx[dev]",
+    "simcardemsx[demo]",
 ]
 
 [tool.pytest.ini_options]
 addopts = [
-   "--cov=fenicsx_pulse",
+   "--cov=simcardemsx",
    "--cov-report=html",
    "--cov-report=xml",
    "--cov-report=term-missing",

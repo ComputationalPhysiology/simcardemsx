@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict
 
 import dolfinx
 import gotranx
@@ -9,53 +10,52 @@ from .interpolation import MissingValue
 from .ode2mechanics import ode2mechanics
 
 
-def setup_ep_ode_model(odefile):
-    ep_module_file = Path("ep_model.py")
-    mechanics_module_file = Path("mechanics_model.py")
-    if not (ep_module_file.is_file() and mechanics_module_file.is_file()):
-        ode = gotranx.load_ode(odefile)
+def generate_ode_code(odefile: Path, output_dir: Path) -> None:
+    """
+    Pre-processing step: Generates EP and Mechanics Python modules
+    from a gotranx ODE file and writes them to the specified directory.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ep_module_file = output_dir / "ep_model.py"
+    mechanics_module_file = output_dir / "mechanics_model.py"
 
-        mechanics_comp = ode.get_component("mechanics")
-        mechanics_ode = mechanics_comp.to_ode()
-        ep_ode = ode - mechanics_comp
+    ode = gotranx.load_ode(odefile)
+    mechanics_comp = ode.get_component("mechanics")
+    mechanics_ode = mechanics_comp.to_ode()
+    ep_ode = ode - mechanics_comp
 
-        code_mech = ode2mechanics(mechanics_ode, missing_values=ep_ode.missing_variables)
-        Path(mechanics_module_file).write_text(code_mech)
+    # Generate Mechanics ODE
+    code_mech = ode2mechanics(mechanics_ode, missing_values=ep_ode.missing_variables)
+    mechanics_module_file.write_text(code_mech)
 
-        # Generate code for the electrophysiology model
-        code_ep = gotranx.cli.gotran2py.get_code(
-            ep_ode,
-            scheme=[gotranx.schemes.Scheme.generalized_rush_larsen],
-            missing_values=mechanics_ode.missing_variables,
-        )
-
-        Path(ep_module_file).write_text(code_ep)
-        # Currently 3D mech needs to be written manually
-
-    return __import__(str(ep_module_file.stem)).__dict__
+    # Generate EP ODE
+    code_ep = gotranx.cli.gotran2py.get_code(
+        ep_ode,
+        scheme=[gotranx.schemes.Scheme.generalized_rush_larsen],
+        missing_values=mechanics_ode.missing_variables,
+    )
+    ep_module_file.write_text(code_ep)
 
 
 @dataclass
-class ODEModel:
-    odefile: Path
+class RuntimeODEModel:
+    """
+    Runtime class that handles data structures and FEniCSx function spaces
+    for the ODE components, entirely decoupled from code generation.
+    """
+
+    ep_module_dict: Dict[str, Any]
     mech_ode_space: dolfinx.fem.FunctionSpace
     ep_ode_space: dolfinx.fem.FunctionSpace
 
     def __post_init__(self):
-        self.module = setup_ep_ode_model(self.odefile)
         self._setup_missing_values()
-        # fgr_ep = ep_model["forward_generalized_rush_larsen"]
-
-        # mv_ep = ep_model["missing_values"]
-
-        # Get initial values from the EP model
-        # y_ep_ = self.module["init_state_values"]()
-        # p_ep_ = self.module["init_parameter_values"](i_Stim_Amplitude=0.0)
 
     def _setup_missing_values(self):
-        ep_missing_values_ = np.zeros(len(self.module["missing"]))
-        # FIXME: This should be depend on the split
+        ep_missing_values_ = np.zeros(len(self.ep_module_dict["missing"]))
+        # FIXME: This should depend on the specific split, hardcoded for now
         mechanics_missing_values_ = np.zeros(2)
+
         self.missing_mech = MissingValue(
             element=self.mech_ode_space.ufl_element(),
             interpolation_element=self.ep_ode_space.ufl_element(),
@@ -71,18 +71,14 @@ class ODEModel:
             ep_mesh=self.ep_ode_space.mesh,
             num_values=len(ep_missing_values_),
         )
-        # breakpoint()
 
         self.missing_ep.values_mechanics.T[:] = ep_missing_values_
         self.missing_ep.values_ep.T[:] = ep_missing_values_
-        # ode_missing_variables = missing_ep.values_ep
-        # missing_ep_args = (missing_ep.values_ep,)
 
         self.missing_mech.values_ep.T[:] = mechanics_missing_values_
         self.missing_mech.values_mechanics.T[:] = mechanics_missing_values_
-        self.missing_mech.mechanics_values_to_function()  # Assign initial values to mech functions
+        self.missing_mech.mechanics_values_to_function()
 
-        # Use previous cai in mech to be consistent across splitting schemes
         self.prev_missing_mech = MissingValue(
             element=self.mech_ode_space.ufl_element(),
             interpolation_element=self.ep_ode_space.ufl_element(),
@@ -97,7 +93,7 @@ class ODEModel:
             self.prev_missing_mech.u_mechanics[i].x.array[:] = self.missing_mech.values_mechanics[i]
 
     def update_ep_missing_values(self, t, values, parameters):
-        # Extract missing values for the mechanics step from the ep model (ep function space)
+        # Calls the function from the injected dictionary
         missing_ep_values = self.mv(t, values, parameters, self.missing_ep.values_ep)
 
         for k in range(self.missing_mech.num_values):
@@ -105,16 +101,16 @@ class ODEModel:
 
     @property
     def fgr(self):
-        return self.module["generalized_rush_larsen"]
+        return self.ep_module_dict["generalized_rush_larsen"]
 
     @property
     def mv(self):
-        return self.module["missing_values"]
+        return self.ep_module_dict["missing_values"]
 
     @property
     def y(self):
-        return self.module["init_state_values"]
+        return self.ep_module_dict["init_state_values"]
 
     @property
     def p(self):
-        return self.module["init_parameter_values"]
+        return self.ep_module_dict["init_parameter_values"]
