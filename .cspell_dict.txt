@@ -19,6 +19,7 @@ arange
 Arevalo
 argmin
 assp
+atleast
 atol
 axlast
 axpy
@@ -63,6 +64,7 @@ cellmodel
 cellmodels
 celltype
 Clbk
+cmax
 cmdnmax
 CMISS
 codecov
@@ -83,6 +85,7 @@ dcajsr
 dcansr
 dcass
 decaytime
+defence
 delta
 delta_epi
 deviatoric
@@ -290,6 +293,7 @@ Markerwise
 Martyn
 mathjax
 matplotlib
+maxiter
 maxlmbda
 Mcontrol
 mechanicsproblem
@@ -369,6 +373,7 @@ pytest
 qca
 qna
 Quarteroni
+quasistatic
 R
 rad
 Rdmm
