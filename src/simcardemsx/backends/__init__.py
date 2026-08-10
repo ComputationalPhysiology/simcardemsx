@@ -9,18 +9,21 @@ and why the differences matter.
 Backend                       Coupling                            Split
 ============================  ==================================  ============
 :class:`ZetaSplitUFL`         monolithic in Newton                zeta's
+:class:`CrossbridgeSegregated`  stabilized-segregated (R&Q)       Ca_i
 ============================  ==================================  ============
 
-Segregated and external-operator crossbridge backends are planned; they share
-this interface.
+An external-operator crossbridge backend, coupling monolithically without
+symbolic differentiation, is planned; it shares this interface.
 """
 
 from .base import ActivationBackend, Transfer
+from .segregated import CrossbridgeSegregated
 from .zeta_split import Scheme, ZetaSplitUFL
 
 __all__ = [
     "ActivationBackend",
     "Transfer",
     "ZetaSplitUFL",
+    "CrossbridgeSegregated",
     "Scheme",
 ]

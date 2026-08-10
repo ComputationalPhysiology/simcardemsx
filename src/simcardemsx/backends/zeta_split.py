@@ -170,6 +170,10 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
     def ep_inputs(self) -> dict[str, dolfinx.fem.Function]:
         return {"XS": self.XS, "XW": self.XW}
 
+    @property
+    def ep_outputs(self) -> dict[str, dolfinx.fem.Function]:
+        return {"Zetas": self._Zetas, "Zetaw": self._Zetaw}
+
     def register(self, u: dolfinx.fem.Function) -> None:
         """Receive the displacement from ``pulse.StaticProblem``."""
         self.u = u

@@ -122,6 +122,16 @@ class ActivationBackend(Protocol):
         """
         ...
 
+    @property
+    def ep_outputs(self) -> Mapping[str, dolfinx.fem.Function]:
+        """Functions holding the :meth:`gives_to_ep` variables, for the coupler
+        to transfer back to the EP mesh.
+
+        The mirror of :attr:`ep_inputs`. Kept symmetric because the return path
+        is as load-bearing as the forward one and is easier to forget.
+        """
+        ...
+
     def step(self, t: float, dt: float | None = None) -> None:
         """Advance activation to time ``t``, before the mechanics solve."""
         ...
