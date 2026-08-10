@@ -4,8 +4,7 @@ import dolfinx
 import numpy as np
 import pulse
 
-from simcardemsx.land import LandModel
-from simcardemsx.mechanicsproblem import MechanicsProblem
+from simcardemsx.backends import ZetaSplitUFL
 
 
 def test_land_relaxation_stability():
@@ -26,7 +25,7 @@ def test_land_relaxation_stability():
 
     # 1. Simulate fully contracted state
     XS.x.array[:] = 0.5
-    active_model = LandModel(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
+    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
 
     # 2. Force a massive negative stretch rate (rapid relaxation)
     active_model.lmbda_prev.x.array[:] = 1.2  # Was stretched
@@ -65,7 +64,7 @@ def test_coupled_long_term_stability():
     XS = dolfinx.fem.Function(V_dg)
     XW = dolfinx.fem.Function(V_dg)
 
-    active_model = LandModel(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
+    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
     mat_params = pulse.HolzapfelOgden.transversely_isotropic_parameters()
     cardiac_model = pulse.CardiacModel(
         material=pulse.HolzapfelOgden(f0=f0, s0=s0, **mat_params),
@@ -104,7 +103,7 @@ def test_coupled_long_term_stability():
             dolfinx.fem.dirichletbc(zero, z0_dofs, V.sub(2)),
         ]
 
-    problem = MechanicsProblem(
+    problem = pulse.StaticProblem(
         model=cardiac_model,
         geometry=geo,
         bcs=pulse.BoundaryConditions(dirichlet=[dirichlet_bc]),
@@ -124,7 +123,7 @@ def test_coupled_long_term_stability():
 
         active_model.t.value = t
         problem.solve()
-        problem.post_solve()
+        active_model.post_solve()
         active_model.update_prev()
 
         # Track the stretch to check for oscillations

@@ -4,8 +4,7 @@ import dolfinx
 import numpy as np
 import pulse
 
-from simcardemsx.land import LandModel
-from simcardemsx.mechanicsproblem import MechanicsProblem
+from simcardemsx.backends import ZetaSplitUFL
 
 
 def test_mechanics_static_activation():
@@ -24,7 +23,7 @@ def test_mechanics_static_activation():
     XS.x.array[:] = 0.0
     XW.x.array[:] = 0.0
 
-    active_model = LandModel(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
+    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
     active_model.t.value = 0.0
 
     material_parameters = pulse.HolzapfelOgden.transversely_isotropic_parameters()
@@ -70,7 +69,7 @@ def test_mechanics_static_activation():
 
     bcs = pulse.BoundaryConditions(dirichlet=[dirichlet_bc])
 
-    problem = MechanicsProblem(
+    problem = pulse.StaticProblem(
         model=cardiac_model,
         geometry=geo,
         bcs=bcs,
@@ -86,7 +85,7 @@ def test_mechanics_static_activation():
     )
 
     problem.solve()
-    problem.post_solve()
+    active_model.post_solve()
 
     disp_rest = np.linalg.norm(problem.u.x.array)
     ta_rest = np.max(active_model.Ta_current.x.array)
@@ -103,7 +102,7 @@ def test_mechanics_static_activation():
     XW.x.array[:] = 0.02
 
     problem.solve()
-    problem.post_solve()
+    active_model.post_solve()
 
     disp_active = np.linalg.norm(problem.u.x.array)
     ta_active = np.max(active_model.Ta_current.x.array)
@@ -133,7 +132,7 @@ def test_mechanics_dynamic_contraction():
     XS.x.array[:] = 0.0
     XW.x.array[:] = 0.0
 
-    active_model = LandModel(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
+    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
     active_model.t.value = 0.0
 
     material_parameters = pulse.HolzapfelOgden.transversely_isotropic_parameters()
@@ -157,7 +156,7 @@ def test_mechanics_dynamic_contraction():
 
         return [dolfinx.fem.dirichletbc(zero, dofs)]
 
-    problem = MechanicsProblem(
+    problem = pulse.StaticProblem(
         model=cardiac_model,
         geometry=geo,
         bcs=pulse.BoundaryConditions(dirichlet=[dirichlet_bc]),
@@ -166,7 +165,7 @@ def test_mechanics_dynamic_contraction():
 
     # Step 1: Resting state initialization
     problem.solve()
-    problem.post_solve()
+    active_model.post_solve()
 
     # Step 2: Dynamic simulation (Ramp up activation)
     dt = 0.5
@@ -180,7 +179,7 @@ def test_mechanics_dynamic_contraction():
         XW.x.array[:] = 0.005 * step
 
         problem.solve()
-        problem.post_solve()
+        active_model.post_solve()
         active_model.update_prev()
 
         ta_history.append(np.max(active_model.Ta_current.x.array))

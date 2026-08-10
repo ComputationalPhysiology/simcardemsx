@@ -31,6 +31,7 @@ Bcajsr
 bCaMK
 Bcass
 bcast
+behaviour
 Beta0
 Beta1
 bnd_rigid
@@ -70,6 +71,7 @@ computationalphysiology
 conda
 conds
 Cristobal
+crossbridge
 csqnmax
 d
 datacollector
@@ -82,6 +84,7 @@ dcass
 decaytime
 delta
 delta_epi
+deviatoric
 dfcaf
 dfcafp
 dfcas
@@ -270,6 +273,7 @@ leftback
 leftbottom
 lightcoral
 linalg
+linearizes
 linesearch
 linestyle
 linf
@@ -292,16 +296,19 @@ meshfunction
 meshfunctions
 MgADP
 MgATP
+micromolar
 minlmbda
 mL
 mode
 modelparams
 modifyitems
 monodomain
+monolithically
 mpio
 mult
 multigrid
 multiselect
+Myklebust
 myocytes
 nai
 nao
@@ -358,12 +365,15 @@ pyplot
 pytest
 qca
 qna
+Quarteroni
 R
 rad
 Rdmm
+Regazzoni
 relp
 Remedios
 repolarisation
+resid
 rightback
 rightbottom
 rint
@@ -464,6 +474,7 @@ transmembrane
 Transmembrane
 transversally
 Tref
+troponin
 TRPN
 Trpn50
 trpnmax
@@ -473,6 +484,7 @@ twinx
 txrf
 txrs
 uflacs
+unactivated
 undiseased
 updegrove
 usecols

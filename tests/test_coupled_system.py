@@ -5,9 +5,8 @@ import dolfinx
 import numpy as np
 import pulse
 
+from simcardemsx.backends import ZetaSplitUFL
 from simcardemsx.controller import SimulationController
-from simcardemsx.land import LandModel
-from simcardemsx.mechanicsproblem import MechanicsProblem
 
 # Assuming you have a way to initialize a basic EP solver from fenicsx-beat
 # from beat import MonodomainModel, ...
@@ -31,7 +30,7 @@ def test_coupled_smoke_test():
     XS_mech = dolfinx.fem.Function(V_mech_dg)
     XW_mech = dolfinx.fem.Function(V_mech_dg)
 
-    active_model = LandModel(f0=f0, s0=s0, n0=n0, XS=XS_mech, XW=XW_mech, mesh=mesh_mech)
+    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, XS=XS_mech, XW=XW_mech, mesh=mesh_mech)
     material_params = pulse.HolzapfelOgden.transversely_isotropic_parameters()
     material = pulse.HolzapfelOgden(f0=f0, s0=s0, **material_params)
 
@@ -81,7 +80,7 @@ def test_coupled_smoke_test():
         ]
 
     bcs = pulse.BoundaryConditions(dirichlet=[dirichlet_bc])
-    mech_problem = MechanicsProblem(
+    mech_problem = pulse.StaticProblem(
         model=cardiac_model,
         geometry=geo,
         bcs=bcs,
