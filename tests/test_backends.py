@@ -79,9 +79,14 @@ def test_matches_the_removed_mechanics_problem(mesh, dirs):
         f2 = ufl.inner(C * f0, f0)
         lmbda = ufl.sqrt(f2)
         Sa = self.model.active.Ta(lmbda) * ufl.outer(f0, f0)
+
+    Requires `invariant` explicitly, because that is the convention the deleted
+    code used. The default is now `stretch`, which differs by a factor of the
+    fibre stretch -- a deliberate correction, not a porting error, and the next
+    test pins the factor.
     """
     f0, _, _ = dirs
-    backend = _backend(mesh, dirs)
+    backend = _backend(mesh, dirs, formulation=pulse.ActiveStressFormulation.invariant)
     backend.step(t=1.0)
 
     u = _displacement(mesh)
@@ -100,11 +105,17 @@ def test_matches_the_removed_mechanics_problem(mesh, dirs):
     assert _integrate(ufl.inner(Sa_reference, Sa_reference), mesh) > 1.0
 
 
-def test_invariant_is_the_default(mesh, dirs):
-    """The historical convention stays the default, so existing zeta-split
-    results remain reproducible without passing anything."""
+def test_stretch_is_the_default(mesh, dirs):
+    """The R&Q normalization is the default.
+
+    Under it `Ta` is the tension per unit deformed fibre cross-section, which
+    is what the Land model's calibration means by it and what the crossbridge
+    backends' active stiffness is defined against -- so all backends agree on
+    what the number means. The historical `invariant` form remains available
+    only for reproducing results generated before this changed.
+    """
     backend = _backend(mesh, dirs)
-    assert backend.formulation == pulse.ActiveStressFormulation.invariant
+    assert backend.formulation == pulse.ActiveStressFormulation.stretch
 
 
 def test_stretch_formulation_differs_by_the_stretch(mesh, dirs):
@@ -118,8 +129,8 @@ def test_stretch_formulation_differs_by_the_stretch(mesh, dirs):
     F = ufl.Identity(3) + ufl.grad(u)
     C = F.T * F
 
-    invariant = _backend(mesh, dirs)
-    stretch = _backend(mesh, dirs, formulation=pulse.ActiveStressFormulation.stretch)
+    invariant = _backend(mesh, dirs, formulation=pulse.ActiveStressFormulation.invariant)
+    stretch = _backend(mesh, dirs)
     for b in (invariant, stretch):
         b.step(t=1.0)
 
@@ -132,7 +143,7 @@ def test_first_piola_is_normalized_under_stretch_formulation(mesh, dirs):
     """Under the stretch convention |P f0| is exactly Ta, independent of
     stretch -- the property the R&Q stabilization is derived against."""
     f0, _, _ = dirs
-    backend = _backend(mesh, dirs, formulation=pulse.ActiveStressFormulation.stretch)
+    backend = _backend(mesh, dirs)
     backend.step(t=1.0)
 
     for stretch in (0.95, 1.1, 1.25):
