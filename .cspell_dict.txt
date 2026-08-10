@@ -40,6 +40,7 @@ BSLmax
 BSRmax
 bt
 cai
+caisplit
 cajsr
 calib
 CaMKo
@@ -53,6 +54,7 @@ cardiomyocytes
 cass
 cat50_ref
 CaTrpn
+catrpnsplit
 cbcbeat
 Cd
 Cécile
@@ -319,6 +321,7 @@ ntm
 ntrpn
 numpyfy
 odefile
+odefiles
 onlylastbeat
 opencarp
 opencmiss
@@ -512,6 +515,7 @@ ymin
 Yoram
 zca
 Zetas
+zetasplit
 Zetaw
 zk
 zmax

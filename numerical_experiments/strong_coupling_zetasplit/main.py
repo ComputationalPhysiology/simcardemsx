@@ -15,8 +15,7 @@ from simcardemsx.controller import SimulationController
 from simcardemsx.datacollector import DataCollector
 from simcardemsx.land import LandModel
 from simcardemsx.mechanicsproblem import MechanicsProblem
-from simcardemsx.ode_model import RuntimeODEModel, generate_ode_code
-from simcardemsx.utils import load_module_from_path
+from simcardemsx.ode_model import RuntimeODEModel, load_ode_modules
 
 logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
@@ -169,8 +168,8 @@ def main():
     out_dir = Path("generated_odes")
 
     logger.info(f"Generating ODE modules from {odefile}")
-    generate_ode_code(odefile, out_dir)
-    ep_module = load_module_from_path("ep_model", out_dir / "ep_model.py")
+    modules = load_ode_modules(odefile, out_dir)
+    ep_module = modules.ep
 
     # ---------------------------------------------------------
     # 2. Setup Meshes & Geometries
@@ -214,6 +213,7 @@ def main():
     # ---------------------------------------------------------
     ode_model = RuntimeODEModel(
         ep_module_dict=ep_module.__dict__,
+        mech_module_dict=modules.mechanics.__dict__,
         mech_ode_space=mech_ode_space,
         ep_ode_space=ep_ode_space,
     )

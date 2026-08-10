@@ -7,8 +7,7 @@ import basix.ufl
 import dolfinx
 import numpy as np
 
-from simcardemsx.ode_model import RuntimeODEModel, generate_ode_code
-from simcardemsx.utils import load_module_from_path
+from simcardemsx.ode_model import RuntimeODEModel, load_ode_modules
 
 
 def test_mechano_electric_feedback(tmp_path):
@@ -33,8 +32,8 @@ def test_mechano_electric_feedback(tmp_path):
     ode_file.write_text(ode_content)
 
     # 2. Generate and load the code dynamically
-    generate_ode_code(ode_file, tmp_path)
-    ep_module = load_module_from_path("ep_model", tmp_path / "ep_model.py")
+    modules = load_ode_modules(ode_file, tmp_path)
+    ep_module = modules.ep
 
     # 3. Setup FEniCSx spaces
     comm = MPI.COMM_WORLD
@@ -43,7 +42,12 @@ def test_mechano_electric_feedback(tmp_path):
     V = dolfinx.fem.functionspace(mesh, element)
 
     # 4. Initialize RuntimeODEModel
-    model = RuntimeODEModel(ep_module_dict=ep_module.__dict__, mech_ode_space=V, ep_ode_space=V)
+    model = RuntimeODEModel(
+        ep_module_dict=ep_module.__dict__,
+        mech_module_dict=modules.mechanics.__dict__,
+        mech_ode_space=V,
+        ep_ode_space=V,
+    )
 
     # 5. Extract initial states and parameters
     num_dofs = V.dofmap.index_map.size_local

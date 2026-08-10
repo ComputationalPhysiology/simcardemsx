@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from types import ModuleType
+from typing import Any, Dict, NamedTuple
 
 import dolfinx
 import gotranx
@@ -8,12 +9,36 @@ import numpy as np
 
 from .interpolation import MissingValue
 from .ode2mechanics import ode2mechanics
+from .utils import load_module_from_path
 
 
-def generate_ode_code(odefile: Path, output_dir: Path) -> None:
+class ODEModulePaths(NamedTuple):
+    """Paths of the two modules written by :func:`generate_ode_code`."""
+
+    ep: Path
+    mechanics: Path
+
+
+class ODEModules(NamedTuple):
+    """The two generated modules, loaded.
+
+    Both are needed to set up the coupling: each declares, in its own
+    ``missing`` dict, the variables it needs *from the other side*.
+    """
+
+    ep: ModuleType
+    mechanics: ModuleType
+
+
+def generate_ode_code(odefile: Path, output_dir: Path) -> ODEModulePaths:
     """
     Pre-processing step: Generates EP and Mechanics Python modules
     from a gotranx ODE file and writes them to the specified directory.
+
+    Returns the paths of both written modules. Prefer :func:`load_ode_modules`,
+    which also loads them -- the mechanics module is not optional, since it is
+    the only place that records how many variables the mechanics side needs
+    from EP.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     ep_module_file = output_dir / "ep_model.py"
@@ -36,6 +61,22 @@ def generate_ode_code(odefile: Path, output_dir: Path) -> None:
     )
     ep_module_file.write_text(code_ep)
 
+    return ODEModulePaths(ep=ep_module_file, mechanics=mechanics_module_file)
+
+
+def load_ode_modules(odefile: Path, output_dir: Path) -> ODEModules:
+    """Generate both ODE modules from ``odefile`` and load them.
+
+    Use this rather than calling :func:`generate_ode_code` and loading only
+    ``ep_model``: the split is described jointly by the two modules, and
+    :class:`RuntimeODEModel` needs both to size its transfer buffers.
+    """
+    paths = generate_ode_code(odefile, output_dir)
+    return ODEModules(
+        ep=load_module_from_path("ep_model", paths.ep),
+        mechanics=load_module_from_path("mechanics_model", paths.mechanics),
+    )
+
 
 @dataclass
 class RuntimeODEModel:
@@ -45,6 +86,7 @@ class RuntimeODEModel:
     """
 
     ep_module_dict: Dict[str, Any]
+    mech_module_dict: Dict[str, Any]
     mech_ode_space: dolfinx.fem.FunctionSpace
     ep_ode_space: dolfinx.fem.FunctionSpace
 
@@ -52,9 +94,21 @@ class RuntimeODEModel:
         self._setup_missing_values()
 
     def _setup_missing_values(self):
-        ep_missing_values_ = np.zeros(len(self.ep_module_dict["missing"]))
-        # FIXME: This should depend on the specific split, hardcoded for now
-        mechanics_missing_values_ = np.zeros(2)
+        # Each generated module's `missing` dict names the variables that side
+        # needs *from the other*, so the two counts come from opposite modules
+        # and are generally different. For the ODE files in
+        # numerical_experiments/odefiles they are:
+        #
+        #     split          ep.missing        mechanics.missing
+        #     caisplit       J_TRPN            cai
+        #     catrpnsplit    (none)            CaTrpn
+        #     zetasplit      Zetas, Zetaw      XS, XW
+        #
+        # A side that needs nothing gets no `missing` entry at all from gotranx
+        # -- hence .get(), not [] -- which is why CaTrpn appears twice above
+        # with an empty left column.
+        ep_missing_values_ = np.zeros(len(self.ep_module_dict.get("missing", ())))
+        mechanics_missing_values_ = np.zeros(len(self.mech_module_dict.get("missing", ())))
 
         self.missing_mech = MissingValue(
             element=self.mech_ode_space.ufl_element(),
