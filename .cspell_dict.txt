@@ -19,6 +19,7 @@ arange
 Arevalo
 argmin
 assp
+atleast
 atol
 axlast
 axpy
@@ -63,6 +64,7 @@ cellmodel
 cellmodels
 celltype
 Clbk
+cmax
 cmdnmax
 CMISS
 codecov
@@ -72,6 +74,7 @@ conda
 conds
 Cristobal
 crossbridge
+crossbridges
 csqnmax
 d
 datacollector
@@ -82,6 +85,7 @@ dcajsr
 dcansr
 dcass
 decaytime
+defence
 delta
 delta_epi
 deviatoric
@@ -271,6 +275,7 @@ lambda_max
 lastbeat
 leftback
 leftbottom
+Lewalle
 lightcoral
 linalg
 linearizes
@@ -288,6 +293,7 @@ Markerwise
 Martyn
 mathjax
 matplotlib
+maxiter
 maxlmbda
 Mcontrol
 mechanicsproblem
@@ -297,6 +303,7 @@ meshfunctions
 MgADP
 MgATP
 micromolar
+millimolar
 minlmbda
 mL
 mode
@@ -366,6 +373,7 @@ pytest
 qca
 qna
 Quarteroni
+quasistatic
 R
 rad
 Rdmm
@@ -382,6 +390,7 @@ rtol
 rw
 ryanodine
 ryanodione
+sarcomere
 sarcomeres
 savefig
 savetxt
@@ -468,6 +477,7 @@ TmB
 tolist
 Tomek
 Topnes
+torord
 Tot_A
 tqdm
 transmembrane
@@ -485,7 +495,9 @@ txrf
 txrs
 uflacs
 unactivated
+undeformed
 undiseased
+unstabilized
 updegrove
 usecols
 v

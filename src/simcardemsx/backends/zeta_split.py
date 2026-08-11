@@ -79,14 +79,25 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         internally if not supplied; either way the coupler writes into them
         via :attr:`ep_inputs`.
     formulation:
-        Which active-stress convention to use. ``stretch`` is the Regazzoni &
-        Quarteroni normalization, ``P_a = Ta * F f0 (x) f0 / |F f0|``;
+        Which active-stress convention to use. The default ``stretch`` is the
+        Regazzoni & Quarteroni normalization,
+
+            P_a = Ta * F f0 (x) f0 / |F f0|,
+
+        under which ``Ta`` is the tension per unit *deformed* fibre
+        cross-section: ``|P_a f0| = Ta`` exactly, whatever the stretch. That is
+        what ``Ta`` means in the Land model's own calibration, and it is the
+        convention the active stiffness of the crossbridge backends is defined
+        against, so all backends agree on what the number means.
+
         ``invariant`` is the historical simcardems form, ``P_a = Ta * F f0 (x)
-        f0``. **These differ by a factor of the fibre stretch**, so switching is
-        a modelling change and not a refactor. ``invariant`` is kept as the
-        default here so that existing zeta-split results remain reproducible;
-        pass ``stretch`` to compare against the crossbridge backends on equal
-        terms.
+        f0``, which is larger by a factor of the fibre stretch and therefore
+        makes the delivered tension depend on how far the fibre has shortened.
+        It is retained only to reproduce results generated before this was
+        changed; new work should not use it.
+
+        **The two differ by a factor of lambda**, so this is a modelling
+        choice, not a refactor.
     """
 
     def __init__(
@@ -101,7 +112,7 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         eta=0.0,
         scheme: Scheme = Scheme.analytic,
         dLambda_tol: float = 1e-12,
-        formulation: pulse.ActiveStressFormulation = pulse.ActiveStressFormulation.invariant,
+        formulation: pulse.ActiveStressFormulation = pulse.ActiveStressFormulation.stretch,
         **kwargs,
     ):
         logger.debug("Initialize ZetaSplitUFL")
@@ -158,6 +169,10 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
     @property
     def ep_inputs(self) -> dict[str, dolfinx.fem.Function]:
         return {"XS": self.XS, "XW": self.XW}
+
+    @property
+    def ep_outputs(self) -> dict[str, dolfinx.fem.Function]:
+        return {"Zetas": self._Zetas, "Zetaw": self._Zetaw}
 
     def register(self, u: dolfinx.fem.Function) -> None:
         """Receive the displacement from ``pulse.StaticProblem``."""
