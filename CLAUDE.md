@@ -49,7 +49,7 @@ A single gotranx `.ode` file describes the full cellular model, with one compone
 
 - The EP remainder (`ode - mechanics_component`) is compiled with gotranx's stock `PythonCodeGenerator` (generalized Rush-Larsen scheme) into `ep_model.py` — plain numpy code, consumed by `beat.odesolver.DolfinODESolver`.
 - The `"mechanics"` component is compiled by the custom `SimcardemsCodeGenerator`/`SimcardemsPrinter` in `ode2mechanics.py` into `mechanics_model.py`. This generator emits **UFL expressions instead of numpy/math** (`ufl.conditional`, `ufl.lt`, `ufl.And`, …, via `rel_op_2_ufl` and the overridden `_print_*` methods) and wraps the generated rush-larsen update inside a hardcoded `LAND_MODEL` string that subclasses `pulse.active_model.ActiveModel`. The result is a dolfinx-native active model whose state update runs symbolically on the mesh. `template.py` overrides gotranx's default method-signature template (`method()`) used by both generators.
-- `backends/` holds the **activation backends**, which is the main organising idea of the package. Each owns how active tension is produced *and* how it is coupled to mechanics, and each is a `pulse.ActiveModel` handed straight to `pulse.CardiacModel`. `backends/base.py` defines the `ActivationBackend` protocol and the `Transfer` record describing a variable crossing between EP and mechanics (name + unit + state/monitor, since a bare name carries neither direction nor unit). `backends/zeta_split.py` holds `ZetaSplitUFL`, the ported Land model.
+- `backends/` holds the **activation backends**, which is the main organising idea of the package. Each owns how active tension is produced *and* how it is coupled to mechanics, and each is a `pulse.ActiveModel` handed straight to `pulse.CardiacModel`. `backends/base.py` defines the `ActivationBackend` protocol and the `Transfer` record describing a variable crossing between EP and mechanics (name + unit, since a bare name carries neither direction nor unit). `backends/zeta_split.py` holds `ZetaSplitUFL`, the ported Land model. It **owns** its `XS`/`XW` rather than accepting them, as `CrossbridgeSegregated` owns its `cai` — one ownership rule for both. Both take an `element` for the activation space, defaulting to `("DG", 1)`; changing it changes results, so don't vary it while establishing that a coupling reproduces a reference.
 - **`S` is the primary contract, not `strain_energy`.** `pulse.StaticProblem._material_form` assembles `model.S(C)` and never touches `strain_energy`, and most backends have no closed-form potential to differentiate — for the zeta split `Ta` depends on the stretch through `zeta_s(lambda_dot)`. `ZetaSplitUFL.strain_energy` raises rather than returning something plausible.
 - `ZetaSplitUFL.Ta(lmbda)` is a **method** returning a UFL expression; the output `Function` is `active_tension`. Do not merge those names — a `Function` called with a float does not raise, it hangs in point evaluation.
 - The zeta-split backend is monolithic-in-Newton by construction: `Ta` is a UFL expression of the current displacement, so Newton re-linearizes it every iteration. That is what makes it stable, and it is exactly what a NumPy contraction model cannot do.
@@ -62,9 +62,15 @@ A single gotranx `.ode` file describes the full cellular model, with one compone
 - `zero_d.py` replaces the FEM mechanics with R&Q's 0D tissue model, so the same contraction models can be driven through all three coupling schemes (monolithic / segregated / stabilized) with no mesh. The monolithic run is a genuine reference solution — it root-finds the strain at which the ODE is advanced so the balance holds — and `tests/test_zero_d_coupling.py` uses it to assert the claim the whole design rests on: the naive scheme's error *grows* under refinement while the stabilized one converges at first order. **It works in seconds and pascals**, following the paper, unlike the rest of the package which uses ms.
 - The instability only appears in the **quasistatic** regime (`M = sigma = 0`) and needs `Ka > Kp`. With R&Q's dynamic parameters at small `dt` the inertia term `M/dt^2` swamps `Kp` and hides it — so a test that fails to show oscillation may just be in the wrong regime, not fixed.
 
-**2. Runtime EP/mechanics coupling (`ode_model.RuntimeODEModel`, `interpolation.py`)**
+**2. Runtime EP/mechanics coupling (`ode_model.RuntimeODEModel`, `transfers.py`, `interpolation.py`)**
 
-`RuntimeODEModel` wraps the loaded `ep_model` module dict and owns two `MissingValue` instances (`missing_mech`, `missing_ep`) — one per direction of data flow between the EP mesh and the mechanics mesh. Each `MissingValue` holds dolfinx `Function`s on both meshes/function spaces plus a `TransferOperator` (`interpolation.py`) that precomputes non-matching-mesh interpolation data (`dolfinx.fem.create_interpolation_data` / `interpolate_nonmatching`) so values can be pushed between the (generally non-matching) EP and mechanics meshes every step.
+Which variables cross is the **backend's** to declare, not the library's to assume — that is what lets one controller drive either split. `transfers.py` reconciles the backend's declaration against the split the `.ode` file describes and **raises** when they disagree: the buffers are positional while backends are named, so pairing `caisplit.ode` with `ZetaSplitUFL` would otherwise write `cai` into `XS` and produce plausible wrong numbers. Both generated modules expose `missing` as a name→index dict, which is exactly that mapping.
+
+`generate_ode_code` also appends a `units` map to each generated module (gotranx does not propagate units into generated code). `Transfer.unit` is checked against it, but only where the source declares one — `None` means "the source did not say", which is **not** dimensionless, and is currently the case for every crossing variable in every shipped `.ode` file, so that check is presently inert on them.
+
+The coupler interpolates **directly into and out of the `Function`s the backend owns** (`backend.ep_inputs` / `ep_outputs`). `MissingValue` therefore holds only the EP side of a transfer; `TransferOperator` (`interpolation.py`) still owns non-matching-mesh interpolation (`create_interpolation_data` / `interpolate_nonmatching`). Two mechanics-side buffers were removed as part of this and were not merely unused: `u_mechanics_int` was read as an interpolation source and **written by nothing**, which made mechano-electric feedback deliver zeros for every zeta-split run; `prev_missing_mech` was written every step and read by nothing.
+
+`Transfer` deliberately has no state-vs-monitor field: the forward path goes through the generated `missing_values()` function and the backward path writes positionally, so neither needs one.
 
 **3. Mechanics problem**
 
@@ -72,7 +78,9 @@ There is no problem subclass: stock `pulse.StaticProblem` is used. The active st
 
 **4. Orchestration (`controller.py`)**
 
-`SimulationController.step()` is the whole time-stepping algorithm: run `dt_mech / dt_ep` EP micro-steps (with an `ep_callback` hook per micro-step), transfer the resulting EP state to the mechanics missing-values, solve one mechanics Newton step, call `backend.post_solve()` (updates active-model kinematics + advances Land state), then transfer mechanics state (stretch etc.) back to the EP side for mechano-electric feedback next round.
+`SimulationController.step()` is the whole time-stepping algorithm: run `dt_mech / dt_ep` EP micro-steps (with an `ep_callback` hook per micro-step), transfer the resulting EP state to the mechanics missing-values, solve one mechanics Newton step, call `backend.post_solve()`, then pull the backend's outputs back onto the EP mesh for mechano-electric feedback next round.
+
+It takes its `backend` **explicitly** and asserts at construction that it is `mechanics_problem.model.active`. The backend is reachable through the problem, but going through two objects hides the controller's most important collaborator from its signature — and nothing otherwise stops a caller advancing one backend while the solve uses another.
 
 **5. Output (`datacollector.py`)**
 
@@ -86,4 +94,20 @@ There is no problem subclass: stock `pulse.StaticProblem` is used. The active st
 
 Tests avoid needing a real EP/mechanics stack where possible: `test_coupled_system.py` drives `SimulationController` with a `DummyEPSolver`/`MockODEModel`, `test_isolated_ep.py` builds a minimal synthetic `.ode` file on the fly (via `generate_ode_code`) to test mechano-electric feedback, and `test_isolated_mechanics.py` / `test_stability.py` exercise `ZetaSplitUFL` directly against `pulse.StaticProblem`.
 
+`test_coupler.py` holds the five gate tests that define what "the coupling works" means, driven through `SimulationController` against an EP solver that really integrates the generated ODE. Nothing in it reaches past the controller to inject a value it then asserts on — that is precisely how the old smoke test passed while the return path transferred zeros. `test_transfers.py` covers the mismatch and unit refusals without needing a mesh.
+
 `test_backends.py` carries the equivalence record for the port: it writes out, by hand, the stress form that the deleted `MechanicsProblem._material_form` built, and requires the backend to reproduce it. Since that form no longer exists in the package, the test is the only remaining copy of it — don't delete it when adding backends.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as local markdown under `.scratch/<feature-slug>/` in this repo. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), recorded as a `Status:` line in each issue file. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

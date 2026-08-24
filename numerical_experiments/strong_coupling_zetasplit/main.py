@@ -288,13 +288,13 @@ def main():
     material = pulse.HolzapfelOgden(f0=mech_geo.f0, s0=mech_geo.s0, **material_params)
     comp_model = pulse.compressibility.Incompressible()
 
-    # Pass the EP variables directly via missing_mech u_mechanics functions
+    # The backend owns the Functions its transfers land in, and declares which
+    # variables cross; the controller resolves those names against the split
+    # the .ode file describes and interpolates into them.
     active_model = ZetaSplitUFL(
         f0=mech_geo.f0,
         s0=mech_geo.s0,
         n0=mech_geo.n0,
-        XS=ode_model.missing_mech.u_mechanics[0],
-        XW=ode_model.missing_mech.u_mechanics[1],
         mesh=mech_geo.mesh,
     )
 
@@ -353,6 +353,7 @@ def main():
         mechanics_problem=problem,
         ep_solver=ep_solver,
         ode_model=ode_model,
+        backend=active_model,
         dt_mech=dt_mech,
         dt_ep=dt_ep,
     )
@@ -362,8 +363,8 @@ def main():
         "Zetas": active_model._Zetas,
         "Zetaw": active_model._Zetaw,
         "lambda": active_model.lmbda,
-        "XS": ode_model.missing_mech.u_mechanics[0],
-        "XW": ode_model.missing_mech.u_mechanics[1],
+        "XS": active_model.ep_inputs["XS"],
+        "XW": active_model.ep_inputs["XW"],
         "dLambda": active_model._dLambda,
     }
 

@@ -163,7 +163,11 @@ class Timers:
                 timings[task_name] = Timing(  # type: ignore[call-arg]
                     *dolfinx.common.timing(task_name),  # type: ignore[arg-type]
                 )
-            except RuntimeError:
+            except (RuntimeError, TypeError):
+                # TypeError is the FIXME above. Skipping is what this clause
+                # already does for a task dolfinx has no timing for; catching
+                # it here keeps a run from dying at the summary without
+                # deciding what the summary should report.
                 continue
 
         (outdir / "solve_timings.json").write_text(
@@ -363,7 +367,8 @@ class DataCollector:
         return self._broadcast(values, u, indices)
 
     def write_node_data_mech(self, i):
-        i_ = int(i / self.config["sim"]["save_frequency_mech"])
+        # 1-based, as in write_node_data_ep.
+        i_ = int(i / self.config["sim"]["save_frequency_mech"]) - 1
         self._t_mech.append(self.t[int(i_ * self.config["sim"]["N"])])
         for var_nr, data in enumerate(self.config["output"]["point_mech"]):
             out_mech_var = data["name"]
@@ -382,7 +387,11 @@ class DataCollector:
             )
 
     def write_node_data_ep(self, i):
-        i_ = int(i / self.config["sim"]["save_frequency_ep"])
+        # Callers pass a 1-based step counter and call only on multiples of the
+        # save frequency, so the n-th save is n, not n-1. Without the shift the
+        # first slot is never written and the last save runs off the end of an
+        # array sized for exactly this many saves.
+        i_ = int(i / self.config["sim"]["save_frequency_ep"]) - 1
         self._t_ep.append(self.t[i_])
         for var_nr, data in enumerate(self.config["output"]["point_ep"]):
             out_ep_var = data["name"]
