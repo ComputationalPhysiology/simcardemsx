@@ -249,6 +249,7 @@ def build_simulation(
     dt_ep=0.1,
     n_mech=1,
     n_ep=2,
+    units="strict",
 ):
     """Wire a coupled simulation from an ODE file and a backend.
 
@@ -285,6 +286,7 @@ def build_simulation(
         backend=backend,
         dt_mech=dt_mech,
         dt_ep=dt_ep,
+        units=units,
     )
     return Simulation(controller, backend, ep_solver, ode_model, problem)
 
@@ -651,3 +653,66 @@ def test_a_coupled_run_assumes_no_units_it_was_not_told(tmp_path):
         cai_assumed = [w for w in caught if issubclass(w.category, AssumedUnitWarning)]
     assert [w for w in cai_assumed if "J_TRPN" in str(w.message)], cai_assumed
     assert len(cai_assumed) == 1, "only the derived flux should need assuming"
+
+
+UNANNOTATED_CAI_ODE = CAI_SPLIT_ODE.replace(
+    'cai=ScalarParam(0.0001, unit="mM")',
+    "cai=0.0001",
+)
+
+WRONGLY_ANNOTATED_CAI_ODE = CAI_SPLIT_ODE.replace(
+    'cai=ScalarParam(0.0001, unit="mM")',
+    'cai=ScalarParam(0.0001, unit="uM")',
+)
+
+
+def test_a_wrong_unit_stops_a_run_by_default(tmp_path):
+    """The whole point of the check: calcium a thousand times out would give a
+    transient that looks entirely plausible."""
+    from simcardemsx.transfers import TransferMismatch
+
+    with pytest.raises(TransferMismatch, match="One uM is 0.001 mM"):
+        build_simulation(tmp_path, WRONGLY_ANNOTATED_CAI_ODE, _cai_backend)
+
+
+def test_a_user_can_opt_out_of_units_entirely(tmp_path):
+    """Some users do not annotate units and do not want to be told about it.
+
+    `units="off"` is the whole opt-out: no checking, no warnings, and no need
+    to import anything to say so.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", category=UserWarning)
+        sim = build_simulation(
+            tmp_path / "off",
+            UNANNOTATED_CAI_ODE,
+            _cai_backend,
+            units="off",
+        )
+    sim.run(2)
+    assert np.all(np.isfinite(sim.backend.active_tension.x.array))
+
+
+def test_opting_out_of_units_does_not_opt_out_of_the_split_check(tmp_path):
+    """Units are a preference. Pairing a backend with the wrong split is not:
+    it writes calcium into a crossbridge population and runs to completion."""
+    from simcardemsx.transfers import TransferMismatch
+
+    with pytest.raises(TransferMismatch):
+        build_simulation(tmp_path, CAI_SPLIT_ODE, _zeta_backend, units="off")
+
+
+def test_the_warn_policy_runs_but_says_so(tmp_path):
+    """For an ODE file whose annotations are known to be wrong, while they get
+    fixed."""
+    from simcardemsx.transfers import UnitMismatchWarning
+
+    with pytest.warns(UnitMismatchWarning, match="One uM is 0.001 mM"):
+        sim = build_simulation(
+            tmp_path,
+            WRONGLY_ANNOTATED_CAI_ODE,
+            _cai_backend,
+            units="warn",
+        )
+    sim.run(2)
+    assert np.all(np.isfinite(sim.backend.active_tension.x.array))

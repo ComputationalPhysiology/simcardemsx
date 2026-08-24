@@ -4,7 +4,7 @@ import logging
 
 import numpy as np
 
-from .transfers import resolve
+from .transfers import UnitPolicy, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,11 @@ class SimulationController:
 
     Which variables move in steps 2 and 6 is the backend's to declare, not this
     class's to assume -- that is what lets one controller drive either split.
+
+    ``units`` governs how hard to insist that the backend and the ODE file
+    agree about units; see :class:`~simcardemsx.transfers.UnitPolicy`. Pass
+    ``"off"`` to skip unit checking entirely. It does not affect the check that
+    the two describe the same *split*, which is always made.
     """
 
     def __init__(
@@ -33,6 +38,7 @@ class SimulationController:
         backend,
         dt_mech: float,
         dt_ep: float,
+        units: UnitPolicy | str = UnitPolicy.strict,
     ):
         # The backend is passed rather than reached for. It is available as
         # mechanics_problem.model.active, but going through two objects to find
@@ -62,6 +68,7 @@ class SimulationController:
 
         self.plan = resolve(
             backend,
+            policy=UnitPolicy(units),
             ep_missing=ode_model.ep_missing,
             mech_missing=ode_model.mech_missing,
             units=ode_model.units,

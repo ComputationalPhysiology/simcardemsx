@@ -66,7 +66,15 @@ A single gotranx `.ode` file describes the full cellular model, with one compone
 
 Which variables cross is the **backend's** to declare, not the library's to assume — that is what lets one controller drive either split. `transfers.py` reconciles the backend's declaration against the split the `.ode` file describes and **raises** when they disagree: the buffers are positional while backends are named, so pairing `caisplit.ode` with `ZetaSplitUFL` would otherwise write `cai` into `XS` and produce plausible wrong numbers. Both generated modules expose `missing` as a name→index dict, which is exactly that mapping.
 
-`generate_ode_code` also appends a `units` map to each generated module (gotranx does not propagate units into generated code). `Transfer.unit` is checked against it. Where the source declares nothing, the coupler **assumes the backend's unit and warns** (`AssumedUnitWarning`) rather than proceeding silently — escalate with `warnings.simplefilter("error", AssumedUnitWarning)` to require every crossing variable to be declared. A small alias table treats `1`/`dimensionless`/`""` as the same unit; anything more belongs in a real units library, not here.
+`generate_ode_code` also appends a `units` map to each generated module (gotranx does not propagate units into generated code). `Transfer.unit` is checked against it **using `pint`**, so units are compared on dimension and scale rather than spelling: `mmol/L` and `mM` agree, `µm` and `µM` do not. An earlier hand-rolled alias table got that second case backwards, which turned the check into a source of the error it exists to catch — don't reintroduce one.
+
+`UnitPolicy` governs how hard to insist, and is passed to `SimulationController(units=...)`:
+
+- `strict` (default) — a real disagreement raises, reporting the conversion (`One uM is 0.001 mM`); an undeclared unit is assumed and warned about (`AssumedUnitWarning`).
+- `warn` — a disagreement warns (`UnitMismatchWarning`) instead of raising.
+- `off` — no unit checking, no warnings.
+
+**No policy disables the *name* check.** Units are a preference; pairing a backend with the wrong split writes `cai` into `XS` and is a correctness bug.
 
 Every state and parameter in the three shipped `.ode` files is now annotated — the Land block was the gap, and each unit there is *derived from the equations in the file* (e.g. `Ta = h_lambda*(Tref/rs)*(...)` fixes `Tref` in kPa; `dZetas_dt = As*dLambda - cs*Zetas` fixes `dLambda` in 1/ms). **Intermediates cannot be annotated** — gotranx has no syntax to attach a unit to an expression — so `J_TRPN` is permanently assumed-and-warned, and is the only such case in the shipped files.
 

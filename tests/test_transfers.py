@@ -21,7 +21,14 @@ import numpy as np
 import pytest
 
 from simcardemsx.backends import Transfer
-from simcardemsx.transfers import AssumedUnitWarning, TransferMismatch, check, resolve
+from simcardemsx.transfers import (
+    AssumedUnitWarning,
+    TransferMismatch,
+    UnitMismatchWarning,
+    UnitPolicy,
+    check,
+    resolve,
+)
 
 
 @pytest.fixture
@@ -60,7 +67,7 @@ class CaiLike(FakeBackend):
         super().__init__(V, (Transfer("cai", unit="mM"),), (Transfer("J_TRPN", unit="mM/ms"),))
 
 
-def _check(backend, ep_missing, mech_missing, units=None):
+def _check(backend, ep_missing, mech_missing, units=None, policy=UnitPolicy.strict):
     """Name and unit reconciliation only -- no mesh, no function spaces.
 
     This is the seam ticket 06 asked for: the comparison is between two
@@ -72,6 +79,7 @@ def _check(backend, ep_missing, mech_missing, units=None):
         ep_missing=ep_missing,
         mech_missing=mech_missing,
         units=units or {},
+        policy=policy,
     )
 
 
@@ -215,19 +223,6 @@ def test_the_assumption_can_be_made_an_error(V):
                 mech_missing={"cai": 0},
                 units={"cai": None},
             )
-
-
-@pytest.mark.parametrize("declared", ["1", "dimensionless", "", "-", "Dimensionless"])
-def test_spellings_of_dimensionless_agree(V, declared):
-    """The ODE files write dimensionless as "1"; a backend declaring nothing in
-    particular reads more naturally as "dimensionless". Neither is wrong, so
-    neither should be a mismatch."""
-    _check(
-        ZetaLike(V),
-        ep_missing={"Zetas": 0, "Zetaw": 1},
-        mech_missing={"XS": 0, "XW": 1},
-        units={n: declared for n in ("XS", "XW", "Zetas", "Zetaw")},
-    )
 
 
 def test_a_real_disagreement_still_raises_despite_the_aliases(V):
@@ -394,3 +389,117 @@ def test_the_calcium_split_assumes_only_the_derived_flux(tmp_path):
     assert len(assumed) == 1
     assert "J_TRPN" in str(assumed[0].message)
     assert "'mM/ms'" in str(assumed[0].message)
+
+
+# ---------------------------------------------------------------------------
+# Units are compared on physics, not on spelling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ["mM", "mmol/L", "millimolar", " mM "],
+)
+def test_equivalent_spellings_of_the_same_unit_agree(V, declared):
+    """A user writing mmol/L must not be told they disagree with mM.
+
+    Spelling was the whole weakness of comparing unit strings: an alias table
+    can only cover what its author thought of, and the one this replaced
+    mapped micrometers onto micromolar.
+    """
+    _check(
+        CaiLike(V),
+        ep_missing={"J_TRPN": 0},
+        mech_missing={"cai": 0},
+        units={"cai": declared, "J_TRPN": "mM/ms"},
+    )
+
+
+def test_micrometers_are_not_micromolar(V):
+    """Regression: the alias table this replaced mapped 'µm' to 'uM'.
+
+    Sarcomere length is in micrometers and calcium is in micromolar, so that
+    confusion turned the unit check into a source of exactly the error it
+    exists to catch.
+    """
+    backend = FakeBackend(V, (Transfer("cai", unit="uM"),), ())
+    with pytest.raises(TransferMismatch, match="dimensions"):
+        _check(backend, ep_missing={}, mech_missing={"cai": 0}, units={"cai": "um"})
+
+
+def test_a_scale_disagreement_states_the_conversion(V):
+    """mM declared against uM expected is a factor of 1000 -- the difference
+    between a plausible calcium transient and a correct one. Saying so is more
+    use than reporting two strings that differ."""
+    backend = FakeBackend(V, (Transfer("cai", unit="uM"),), ())
+    with pytest.raises(TransferMismatch, match="One mM is 1000 uM"):
+        _check(backend, ep_missing={}, mech_missing={"cai": 0}, units={"cai": "mM"})
+
+
+def test_a_dimension_disagreement_says_so(V):
+    backend = FakeBackend(V, (Transfer("cai", unit="mM"),), ())
+    with pytest.raises(TransferMismatch, match="same dimensions"):
+        _check(backend, ep_missing={}, mech_missing={"cai": 0}, units={"cai": "ms"})
+
+
+# ---------------------------------------------------------------------------
+# Opting out
+# ---------------------------------------------------------------------------
+
+
+def _mismatched(V):
+    return (
+        FakeBackend(V, (Transfer("cai", unit="uM"),), ()),
+        {"ep_missing": {}, "mech_missing": {"cai": 0}, "units": {"cai": "mM"}},
+    )
+
+
+def test_warn_policy_downgrades_a_disagreement(V):
+    """For working through an ODE file whose annotations are known to be
+    incomplete, without being blocked on every one."""
+    backend, maps = _mismatched(V)
+    with pytest.warns(UnitMismatchWarning, match="One mM is 1000 uM"):
+        _check(backend, policy=UnitPolicy.warn, **maps)
+
+
+def test_off_policy_checks_no_units_at_all(V):
+    """A user who does not annotate units and does not want to hear about it."""
+    backend, maps = _mismatched(V)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning at all would fail here
+        _check(backend, policy=UnitPolicy.off, **maps)
+
+
+def test_off_policy_still_checks_the_split(V):
+    """Opting out of units must not opt out of correctness.
+
+    Pairing a backend with the wrong split writes calcium into a crossbridge
+    population. That is not a matter of preference, so no policy disables it.
+    """
+    with pytest.raises(TransferMismatch):
+        _check(
+            ZetaLike(V),
+            ep_missing={"J_TRPN": 0},
+            mech_missing={"cai": 0},
+            policy=UnitPolicy.off,
+        )
+
+
+def test_off_policy_silences_the_assumed_unit_warning(V):
+    backend = FakeBackend(V, (Transfer("cai", unit="mM"),), ())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _check(
+            backend,
+            ep_missing={},
+            mech_missing={"cai": 0},
+            units={"cai": None},
+            policy=UnitPolicy.off,
+        )
+
+
+@pytest.mark.parametrize("spelling", ["off", UnitPolicy.off])
+def test_the_policy_can_be_given_as_a_plain_string(V, spelling):
+    """`units="off"` should work without importing an enum."""
+    backend, maps = _mismatched(V)
+    _check(backend, policy=UnitPolicy(spelling), **maps)

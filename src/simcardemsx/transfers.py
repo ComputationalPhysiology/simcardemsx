@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+from enum import Enum
+from functools import lru_cache
 from typing import TYPE_CHECKING, Mapping
 
 import dolfinx
@@ -117,51 +119,102 @@ def _check_names(
 class AssumedUnitWarning(UserWarning):
     """A transfer's unit was not declared, so the backend's was assumed.
 
-    Raised as a warning rather than an error because the assumption is almost
-    always right and refusing to run would be unhelpful. It is a warning rather
-    than silence because the assumption is exactly the kind that produces a
-    plausible wrong answer when it is wrong -- millimolar read as micromolar
-    gives a calcium transient that looks fine and is off by a thousand.
+    A warning rather than an error because the assumption is almost always
+    right, and because some variables *cannot* be declared: a derived
+    expression, such as the troponin buffering flux, has nowhere in the ODE
+    syntax to carry a unit. A warning rather than silence because this is
+    exactly the assumption that produces a plausible wrong answer when it is
+    wrong -- millimolar read as micromolar gives a calcium transient that looks
+    entirely reasonable and is off by a thousand.
 
-    Escalate it with ``warnings.simplefilter("error", AssumedUnitWarning)`` to
+    Escalate with ``warnings.simplefilter("error", AssumedUnitWarning)`` to
     require every crossing variable to be declared.
     """
 
 
-#: Spellings that mean the same unit. Deliberately a small alias table and not
-#: a unit system: the ODE files write dimensionless as "1", while a backend
-#: declaring nothing in particular is more naturally read as "dimensionless".
-#: Anything beyond this belongs in a real units library, not here.
-_ALIASES = {
-    "": "1",
-    "-": "1",
-    "none": "1",
-    "dimensionless": "1",
-    "unitless": "1",
-    "micromolar": "uM",
-    "\u00b5m": "uM",
-    "umol/l": "uM",
-    "millimolar": "mM",
-    "mmol/l": "mM",
-}
+class UnitMismatchWarning(UserWarning):
+    """A declared unit disagreed with what the backend expects, under
+    :attr:`UnitPolicy.warn`, where it would otherwise have been an error."""
 
 
-def _canonical(unit: str) -> str:
-    return _ALIASES.get(unit.strip().lower(), unit.strip())
+class UnitPolicy(str, Enum):
+    """How hard to insist on units.
+
+    Only units. The *names* that cross are always checked: a backend paired
+    with the wrong split is a correctness bug that no preference makes
+    acceptable, and it is the error this module mainly exists to catch.
+    """
+
+    #: Disagreement raises; an undeclared unit is assumed and warned about.
+    #: The default, because a scale error here is silent and large.
+    strict = "strict"
+
+    #: Disagreement warns instead of raising. For working through an ODE file
+    #: whose annotations are known to be incomplete or wrong.
+    warn = "warn"
+
+    #: No unit checking and no warnings at all. For a user who does not
+    #: annotate units and does not want to hear about it.
+    off = "off"
+
+
+@lru_cache(maxsize=1)
+def _registry():
+    # Built lazily: constructing a pint registry is not free, and a user who
+    # has opted out should never pay for it.
+    import pint
+
+    return pint.UnitRegistry()
+
+
+def _quantity(unit: str):
+    """``unit`` as a pint quantity, or ``None`` if pint cannot read it."""
+    try:
+        return _registry()(unit)
+    except Exception:
+        # A unit we cannot read is not the same as a wrong one. Fall back to comparing the
+        # strings, rather than rejecting a unit we merely failed to understand.
+        return None
+
+
+def _compare(declared: str, expected: str) -> tuple[bool, float | None]:
+    """``(agree, ratio)``.
+
+    ``ratio`` is how many ``expected`` units make one ``declared`` unit, when
+    the two share a dimension -- so 1000.0 for millimolar declared against
+    micromolar expected. It is ``None`` when the units have different
+    dimensions, or when pint could not read one of them.
+    """
+    if declared.strip() == expected.strip():
+        return True, 1.0
+
+    a, b = _quantity(declared), _quantity(expected)
+    if a is None or b is None:
+        # Neither could be understood well enough to call it a disagreement.
+        return declared.strip().lower() == expected.strip().lower(), None
+    if a.dimensionality != b.dimensionality:
+        return False, None
+
+    ratio = (1 * a).to(b).magnitude
+    return bool(abs(ratio - 1.0) < 1e-12), float(ratio)
 
 
 def _check_unit(
     transfer,
     units: Mapping[str, str | None],
     backend_name: str,
+    policy: "UnitPolicy",
 ) -> None:
+    if policy is UnitPolicy.off:
+        return
+
     declared = units.get(transfer.name)
     if declared is None:
         # The source did not say. Assume what the backend expects -- the only
         # assumption under which the coupling is correct -- and say so, rather
-        # than proceeding silently. Some variables cannot be declared at all: one
-        # derived by an expression, such as the troponin buffering flux, has
-        # nowhere in the ODE syntax to carry a unit.
+        # than proceeding silently. Some variables cannot be declared at all:
+        # one derived by an expression, such as the troponin buffering flux,
+        # has nowhere in the ODE syntax to carry a unit.
         warnings.warn(
             f"{backend_name}: the ODE file declares no unit for "
             f"{transfer.name!r}, so {transfer.unit!r} is assumed, which is what "
@@ -169,15 +222,32 @@ def _check_unit(
             f"source to make this explicit; if it is a derived expression, it "
             f"cannot be annotated and this warning is the record.",
             AssumedUnitWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
         return
-    if _canonical(declared) != _canonical(transfer.unit):
-        raise TransferMismatch(
-            f"{backend_name} expects {transfer.name!r} in {transfer.unit!r}, but "
-            f"the ODE file declares it in {declared!r}. Convert on one side, or "
-            f"correct whichever declaration is wrong.",
-        )
+
+    agree, ratio = _compare(declared, transfer.unit)
+    if agree:
+        return
+
+    # Stated as a conversion rather than a bare factor: "a factor of 0.001"
+    # leaves the reader to work out which way round it goes, which is the one
+    # thing they most need to know.
+    scale = (
+        f" One {declared} is {ratio:g} {transfer.unit}."
+        if ratio is not None
+        else " They do not even have the same dimensions, so one of the two is"
+        " describing a different quantity."
+    )
+    message = (
+        f"{backend_name} expects {transfer.name!r} in {transfer.unit!r}, but "
+        f"the ODE file declares it in {declared!r}.{scale} Correct whichever "
+        f"declaration is wrong, or pass units=UnitPolicy.warn to proceed anyway."
+    )
+    if policy is UnitPolicy.warn:
+        warnings.warn(message, UnitMismatchWarning, stacklevel=4)
+        return
+    raise TransferMismatch(message)
 
 
 def check(
@@ -186,6 +256,7 @@ def check(
     ep_missing: Mapping[str, int],
     mech_missing: Mapping[str, int],
     units: Mapping[str, str | None],
+    policy: UnitPolicy = UnitPolicy.strict,
 ) -> tuple[tuple, tuple]:
     """Verify a backend's declared transfers against the ODE file's split.
 
@@ -193,6 +264,9 @@ def check(
     backend already holds. That is deliberate -- this is a comparison between
     two mappings, and keeping it cheap is what makes it practical to check
     every backend against every split.
+
+    ``policy`` governs the unit check only; see :class:`UnitPolicy`. The names
+    that cross are always checked.
 
     Returns the declared transfers, in both directions. Raises
     :class:`TransferMismatch` if the two descriptions disagree.
@@ -206,7 +280,7 @@ def check(
     _check_names(gives, ep_missing, "mechanics -> EP", backend_name)
 
     for transfer in wants + gives:
-        _check_unit(transfer, units, backend_name)
+        _check_unit(transfer, units, backend_name, policy)
 
     return wants, gives
 
@@ -219,6 +293,7 @@ def resolve(
     units: Mapping[str, str | None],
     ep_sources: Mapping[str, dolfinx.fem.Function],
     ep_targets: Mapping[str, dolfinx.fem.Function],
+    policy: UnitPolicy = UnitPolicy.strict,
 ) -> TransferPlan:
     """Reconcile a backend's declared transfers with the ODE file's split.
 
@@ -238,6 +313,7 @@ def resolve(
         ep_missing=ep_missing,
         mech_missing=mech_missing,
         units=units,
+        policy=policy,
     )
 
     inputs = backend.ep_inputs
