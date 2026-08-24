@@ -187,3 +187,6 @@ demos/*.png
 numerical_experiments/**/generated_odes/
 numerical_experiments/**/meshes/
 numerical_experiments/**/output/
+
+# ODE modules generated when running the demos
+demos/_generated/
