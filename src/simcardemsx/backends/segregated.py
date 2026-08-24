@@ -183,7 +183,7 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         term and will run unbuffered if it is not transferred back. Nothing
         raises -- the calcium transient is just too large and too fast.
         """
-        return (Transfer(name="J_TRPN", unit="mM/ms", kind="monitor"),)
+        return (Transfer(name="J_TRPN", unit="mM/ms"),)
 
     @property
     def ep_inputs(self) -> dict[str, dolfinx.fem.Function]:

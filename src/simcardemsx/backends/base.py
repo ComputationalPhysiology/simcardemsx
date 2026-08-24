@@ -28,7 +28,7 @@ external-operator backend ``Ta`` is opaque by construction. This is fine:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Mapping, Protocol
+from typing import Mapping, Protocol
 
 import dolfinx
 import ufl
@@ -53,14 +53,17 @@ class Transfer:
         micromolar -- and carrying the unit here is what lets the coupler
         convert explicitly instead of relying on a lookup table keyed
         invisibly by name.
-    kind:
-        Whether ``name`` is an ODE state or a monitored (derived) expression.
-        They need different index lookups in the generated module.
+
+        There is deliberately no state-or-monitor field. Neither direction
+        needs one: the forward path goes through the generated
+        ``missing_values`` function, which requires no index lookup, and the
+        backward path writes positionally into the EP side's missing array. A
+        variable crossing back is an EP *missing* variable regardless of how
+        the producing side derived it.
     """
 
     name: str
     unit: str = "dimensionless"
-    kind: Literal["state", "monitor"] = "state"
 
 
 class ActivationBackend(Protocol):
