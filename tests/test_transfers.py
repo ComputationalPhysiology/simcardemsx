@@ -11,6 +11,7 @@ comparison between two mappings, and making it cheap is what allows it to be
 tested across every combination that matters.
 """
 
+import warnings
 from pathlib import Path
 
 from mpi4py import MPI
@@ -20,7 +21,7 @@ import numpy as np
 import pytest
 
 from simcardemsx.backends import Transfer
-from simcardemsx.transfers import TransferMismatch, check, resolve
+from simcardemsx.transfers import AssumedUnitWarning, TransferMismatch, check, resolve
 
 
 @pytest.fixture
@@ -183,20 +184,62 @@ def test_a_matching_unit_resolves(V):
     assert plan.from_ep[0].unit == "mM"
 
 
-def test_an_undeclared_unit_is_not_treated_as_a_disagreement(V):
-    """None means the source did not say, not that it said "dimensionless".
+def test_an_undeclared_unit_is_assumed_and_announced(V):
+    """Silence in the source is not a disagreement, but it is not nothing either.
 
-    This is the common case -- no shipped ODE file declares a unit on a
-    crossing variable -- so getting it wrong would reject every real split.
+    The coupler assumes what the backend expects -- the only assumption under
+    which the coupling is correct -- and warns. Proceeding silently is what
+    makes a millimolar-for-micromolar error produce a calcium transient that
+    looks entirely plausible and is off by a thousand.
     """
-    plan = _resolve(
-        CaiLike(V),
-        ep_missing={"J_TRPN": 0},
-        mech_missing={"cai": 0},
-        units={"cai": None, "J_TRPN": None},
-        V=V,
+    with pytest.warns(AssumedUnitWarning, match="no unit for 'cai'") as record:
+        _check(
+            CaiLike(V),
+            ep_missing={"J_TRPN": 0},
+            mech_missing={"cai": 0},
+            units={"cai": None, "J_TRPN": None},
+        )
+
+    assert len(record) == 2, "both crossing variables are undeclared"
+    assert "'mM'" in str(record[0].message), "the warning must name the assumed unit"
+
+
+def test_the_assumption_can_be_made_an_error(V):
+    """A user who wants every crossing variable declared can demand it."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", AssumedUnitWarning)
+        with pytest.raises(AssumedUnitWarning):
+            _check(
+                CaiLike(V),
+                ep_missing={"J_TRPN": 0},
+                mech_missing={"cai": 0},
+                units={"cai": None},
+            )
+
+
+@pytest.mark.parametrize("declared", ["1", "dimensionless", "", "-", "Dimensionless"])
+def test_spellings_of_dimensionless_agree(V, declared):
+    """The ODE files write dimensionless as "1"; a backend declaring nothing in
+    particular reads more naturally as "dimensionless". Neither is wrong, so
+    neither should be a mismatch."""
+    _check(
+        ZetaLike(V),
+        ep_missing={"Zetas": 0, "Zetaw": 1},
+        mech_missing={"XS": 0, "XW": 1},
+        units={n: declared for n in ("XS", "XW", "Zetas", "Zetaw")},
     )
-    assert plan.from_ep[0].unit == "mM"
+
+
+def test_a_real_disagreement_still_raises_despite_the_aliases(V):
+    """The alias table must not be so eager that it swallows a genuine
+    mismatch -- which is the entire point of the check."""
+    with pytest.raises(TransferMismatch, match="uM"):
+        _check(
+            CaiLike(V),
+            ep_missing={"J_TRPN": 0},
+            mech_missing={"cai": 0},
+            units={"cai": "uM", "J_TRPN": "mM/ms"},
+        )
 
 
 def test_a_split_with_no_return_path_resolves(V):
@@ -320,3 +363,34 @@ def test_the_catrpn_split_matches_neither_shipped_backend(tmp_path, kind):
 
     with pytest.raises(TransferMismatch):
         check(_real_backend(kind, mesh), **maps)
+
+
+def test_the_zeta_split_now_declares_every_variable_that_crosses(tmp_path):
+    """All four zeta-split crossing variables are annotated in the .ode source,
+    so nothing has to be assumed."""
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        check(
+            _real_backend("zeta", mesh),
+            **_real_maps(tmp_path, "ToRORd_dynCl_endo_zetasplit.ode"),
+        )
+    assumed = [w for w in caught if issubclass(w.category, AssumedUnitWarning)]
+    assert assumed == [], f"nothing should need assuming, got {[str(w.message) for w in assumed]}"
+
+
+def test_the_calcium_split_assumes_only_the_derived_flux(tmp_path):
+    """J_TRPN is an intermediate -- a computed expression -- and gotranx has no
+    syntax to attach a unit to one. It is therefore the one crossing variable
+    that cannot be declared, and the warning is its permanent record."""
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        check(
+            _real_backend("cai", mesh),
+            **_real_maps(tmp_path, "ToRORd_dynCl_endo_caisplit.ode"),
+        )
+    assumed = [w for w in caught if issubclass(w.category, AssumedUnitWarning)]
+    assert len(assumed) == 1
+    assert "J_TRPN" in str(assumed[0].message)
+    assert "'mM/ms'" in str(assumed[0].message)

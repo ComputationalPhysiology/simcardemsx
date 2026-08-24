@@ -56,6 +56,10 @@ class Transfer:
         convert explicitly instead of relying on a lookup table keyed
         invisibly by name.
 
+        Defaults to ``"1"``, dimensionless, spelled as the ``.ode`` files spell
+        it. When the ODE source declares no unit for a variable the coupler
+        assumes this one and warns, rather than proceeding silently.
+
         There is deliberately no state-or-monitor field. Neither direction
         needs one: the forward path goes through the generated
         ``missing_values`` function, which requires no index lookup, and the
@@ -65,7 +69,7 @@ class Transfer:
     """
 
     name: str
-    unit: str = "dimensionless"
+    unit: str = "1"
 
 
 class ActivationBackend(Protocol):

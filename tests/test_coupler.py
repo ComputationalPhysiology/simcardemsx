@@ -12,6 +12,7 @@ inject a value it then asserts on -- that is exactly how the existing feedback
 test missed a transfer path delivering zeros.
 """
 
+import warnings
 from pathlib import Path
 
 from mpi4py import MPI
@@ -42,12 +43,18 @@ from simcardemsx.ode_model import RuntimeODEModel, load_ode_modules
 # kPa. Driving it far harder makes the stretch oscillate between steps, which
 # is a genuine property of that backend at a millisecond step and not
 # something these tests are here to characterize.
+#
+# Units are declared on everything that can carry one, so these exercise the
+# path where the coupler has no assumption to make. J_TRPN below is the
+# exception and cannot be annotated: it is an expression, and the ODE syntax
+# has nowhere to put a unit on one.
 # ---------------------------------------------------------------------------
 
 ZETA_SPLIT_ODE = """
-parameters("ep", a=1.0)
-states("ep", v=0.0, XS=0.0, XW=0.0)
-states("mechanics", Zetas=0.0, Zetaw=0.0)
+parameters("ep", a=ScalarParam(1.0, unit="mV/ms"))
+states("ep", v=ScalarParam(0.0, unit="mV"), XS=ScalarParam(0.0, unit="1"),
+       XW=ScalarParam(0.0, unit="1"))
+states("mechanics", Zetas=ScalarParam(0.0, unit="1"), Zetaw=ScalarParam(0.0, unit="1"))
 expressions("mechanics")
 dZetas_dt = XS - Zetas
 dZetaw_dt = XW - Zetaw
@@ -58,10 +65,10 @@ dXW_dt = 2e-6 * (1.0 - XW) - 0.02 * XW * (1.0 + Zetaw)
 """
 
 CAI_SPLIT_ODE = """
-parameters("ep", a=1.0)
-states("ep", v=0.0, cai=0.0001)
-parameters("mechanics", trpnmax=0.07)
-states("mechanics", CaTrpn=0.0)
+parameters("ep", a=ScalarParam(1.0, unit="mV/ms"))
+states("ep", v=ScalarParam(0.0, unit="mV"), cai=ScalarParam(0.0001, unit="mM"))
+parameters("mechanics", trpnmax=ScalarParam(0.07, unit="mM"))
+states("mechanics", CaTrpn=ScalarParam(0.0, unit="1"))
 expressions("mechanics")
 dCaTrpn_dt = cai - CaTrpn
 J_TRPN = dCaTrpn_dt * trpnmax
@@ -621,3 +628,26 @@ def test_a_backend_on_the_wrong_split_is_refused_end_to_end(tmp_path):
     message = str(excinfo.value)
     assert "ZetaSplitUFL" in message
     assert "cai" in message and "XS" in message
+
+
+def test_a_coupled_run_assumes_no_units_it_was_not_told(tmp_path):
+    """A fully-annotated split should leave the coupler nothing to assume.
+
+    The Ca_i split still has one: the troponin buffering flux is a derived
+    expression, so no unit can be attached to it in the source, and the warning
+    is the only place that assumption is recorded.
+    """
+    from simcardemsx.transfers import AssumedUnitWarning
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        build_simulation(tmp_path / "zeta", ZETA_SPLIT_ODE, _zeta_backend)
+        zeta_assumed = [w for w in caught if issubclass(w.category, AssumedUnitWarning)]
+    assert zeta_assumed == [], "the zeta split declares everything that crosses"
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        build_simulation(tmp_path / "cai", CAI_SPLIT_ODE, _cai_backend)
+        cai_assumed = [w for w in caught if issubclass(w.category, AssumedUnitWarning)]
+    assert [w for w in cai_assumed if "J_TRPN" in str(w.message)], cai_assumed
+    assert len(cai_assumed) == 1, "only the derived flux should need assuming"

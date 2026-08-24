@@ -20,6 +20,7 @@ moves, and in what units.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Mapping
 
@@ -113,6 +114,42 @@ def _check_names(
     raise TransferMismatch("\n".join(lines))
 
 
+class AssumedUnitWarning(UserWarning):
+    """A transfer's unit was not declared, so the backend's was assumed.
+
+    Raised as a warning rather than an error because the assumption is almost
+    always right and refusing to run would be unhelpful. It is a warning rather
+    than silence because the assumption is exactly the kind that produces a
+    plausible wrong answer when it is wrong -- millimolar read as micromolar
+    gives a calcium transient that looks fine and is off by a thousand.
+
+    Escalate it with ``warnings.simplefilter("error", AssumedUnitWarning)`` to
+    require every crossing variable to be declared.
+    """
+
+
+#: Spellings that mean the same unit. Deliberately a small alias table and not
+#: a unit system: the ODE files write dimensionless as "1", while a backend
+#: declaring nothing in particular is more naturally read as "dimensionless".
+#: Anything beyond this belongs in a real units library, not here.
+_ALIASES = {
+    "": "1",
+    "-": "1",
+    "none": "1",
+    "dimensionless": "1",
+    "unitless": "1",
+    "micromolar": "uM",
+    "\u00b5m": "uM",
+    "umol/l": "uM",
+    "millimolar": "mM",
+    "mmol/l": "mM",
+}
+
+
+def _canonical(unit: str) -> str:
+    return _ALIASES.get(unit.strip().lower(), unit.strip())
+
+
 def _check_unit(
     transfer,
     units: Mapping[str, str | None],
@@ -120,11 +157,22 @@ def _check_unit(
 ) -> None:
     declared = units.get(transfer.name)
     if declared is None:
-        # The source did not say. Not the same as dimensionless, and not
-        # something to guess at -- currently the case for every variable that
-        # crosses in the shipped ODE files.
+        # The source did not say. Assume what the backend expects -- the only
+        # assumption under which the coupling is correct -- and say so, rather
+        # than proceeding silently. Some variables cannot be declared at all: one
+        # derived by an expression, such as the troponin buffering flux, has
+        # nowhere in the ODE syntax to carry a unit.
+        warnings.warn(
+            f"{backend_name}: the ODE file declares no unit for "
+            f"{transfer.name!r}, so {transfer.unit!r} is assumed, which is what "
+            f"{backend_name} expects. Annotate {transfer.name!r} in the .ode "
+            f"source to make this explicit; if it is a derived expression, it "
+            f"cannot be annotated and this warning is the record.",
+            AssumedUnitWarning,
+            stacklevel=3,
+        )
         return
-    if declared != transfer.unit:
+    if _canonical(declared) != _canonical(transfer.unit):
         raise TransferMismatch(
             f"{backend_name} expects {transfer.name!r} in {transfer.unit!r}, but "
             f"the ODE file declares it in {declared!r}. Convert on one side, or "
