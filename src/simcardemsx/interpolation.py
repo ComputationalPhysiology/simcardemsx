@@ -8,6 +8,16 @@ import ufl
 logger = logging.getLogger(__name__)
 
 
+def _num_dofs(V: dolfinx.fem.FunctionSpace) -> int:
+    """Local dof count of ``V``, including ghosts.
+
+    Equal to ``dolfinx.fem.Function(V).x.array.size``, but available without
+    allocating a Function.
+    """
+    index_map = V.dofmap.index_map
+    return (index_map.size_local + index_map.num_ghosts) * V.dofmap.index_map_bs
+
+
 class TransferOperator:
     """
     A generic operator to interpolate functions between two non-matching FEniCSx function spaces.
@@ -62,8 +72,12 @@ class MissingValue:
             dolfinx.fem.Function(self.V_mechanics_int) for _ in range(self.num_values)
         ]
 
-        self.values_ep = np.zeros((self.num_values, self.u_ep[0].x.array.size))
-        self.values_mechanics = np.zeros((self.num_values, self.u_mechanics[0].x.array.size))
+        # Sized from the function spaces rather than from u_ep[0], so that
+        # num_values == 0 is representable. That case is real: gotranx omits a
+        # side's `missing` entry entirely when it needs nothing from the other,
+        # as in the CaTrpn split where EP needs nothing back from mechanics.
+        self.values_ep = np.zeros((self.num_values, _num_dofs(self.V_ep)))
+        self.values_mechanics = np.zeros((self.num_values, _num_dofs(self.V_mechanics)))
 
         # Setup Transfer Operators instead of manual interpolation data
         self.transfer_ep2mech = TransferOperator(V_source=self.V_ep_int, V_target=self.V_mechanics)

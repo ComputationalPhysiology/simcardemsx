@@ -11,12 +11,10 @@ import pulse
 import ufl
 
 import cardiac_geometries
+from simcardemsx.backends import ZetaSplitUFL
 from simcardemsx.controller import SimulationController
 from simcardemsx.datacollector import DataCollector
-from simcardemsx.land import LandModel
-from simcardemsx.mechanicsproblem import MechanicsProblem
-from simcardemsx.ode_model import RuntimeODEModel, generate_ode_code
-from simcardemsx.utils import load_module_from_path
+from simcardemsx.ode_model import RuntimeODEModel, load_ode_modules
 
 logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
@@ -169,8 +167,8 @@ def main():
     out_dir = Path("generated_odes")
 
     logger.info(f"Generating ODE modules from {odefile}")
-    generate_ode_code(odefile, out_dir)
-    ep_module = load_module_from_path("ep_model", out_dir / "ep_model.py")
+    modules = load_ode_modules(odefile, out_dir)
+    ep_module = modules.ep
 
     # ---------------------------------------------------------
     # 2. Setup Meshes & Geometries
@@ -214,6 +212,7 @@ def main():
     # ---------------------------------------------------------
     ode_model = RuntimeODEModel(
         ep_module_dict=ep_module.__dict__,
+        mech_module_dict=modules.mechanics.__dict__,
         mech_ode_space=mech_ode_space,
         ep_ode_space=ep_ode_space,
     )
@@ -290,7 +289,7 @@ def main():
     comp_model = pulse.compressibility.Incompressible()
 
     # Pass the EP variables directly via missing_mech u_mechanics functions
-    active_model = LandModel(
+    active_model = ZetaSplitUFL(
         f0=mech_geo.f0,
         s0=mech_geo.s0,
         n0=mech_geo.n0,
@@ -335,7 +334,7 @@ def main():
     bcs = pulse.BoundaryConditions(dirichlet=(dirichlet_bc,))
 
     # Important: BaseBC must be free since we manually constrain X, Y, Z boundaries
-    problem = MechanicsProblem(
+    problem = pulse.StaticProblem(
         model=model,
         geometry=mech_geo,
         bcs=bcs,

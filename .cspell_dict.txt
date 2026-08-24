@@ -19,6 +19,7 @@ arange
 Arevalo
 argmin
 assp
+atleast
 atol
 axlast
 axpy
@@ -31,6 +32,7 @@ Bcajsr
 bCaMK
 Bcass
 bcast
+behaviour
 Beta0
 Beta1
 bnd_rigid
@@ -40,6 +42,7 @@ BSLmax
 BSRmax
 bt
 cai
+caisplit
 cajsr
 calib
 CaMKo
@@ -53,6 +56,7 @@ cardiomyocytes
 cass
 cat50_ref
 CaTrpn
+catrpnsplit
 cbcbeat
 Cd
 Cécile
@@ -60,6 +64,7 @@ cellmodel
 cellmodels
 celltype
 Clbk
+cmax
 cmdnmax
 CMISS
 codecov
@@ -68,6 +73,8 @@ computationalphysiology
 conda
 conds
 Cristobal
+crossbridge
+crossbridges
 csqnmax
 d
 datacollector
@@ -78,8 +85,10 @@ dcajsr
 dcansr
 dcass
 decaytime
+defence
 delta
 delta_epi
+deviatoric
 dfcaf
 dfcafp
 dfcas
@@ -266,8 +275,10 @@ lambda_max
 lastbeat
 leftback
 leftbottom
+Lewalle
 lightcoral
 linalg
+linearizes
 linesearch
 linestyle
 linf
@@ -282,6 +293,7 @@ Markerwise
 Martyn
 mathjax
 matplotlib
+maxiter
 maxlmbda
 Mcontrol
 mechanicsproblem
@@ -290,16 +302,20 @@ meshfunction
 meshfunctions
 MgADP
 MgATP
+micromolar
+millimolar
 minlmbda
 mL
 mode
 modelparams
 modifyitems
 monodomain
+monolithically
 mpio
 mult
 multigrid
 multiselect
+Myklebust
 myocytes
 nai
 nao
@@ -319,6 +335,7 @@ ntm
 ntrpn
 numpyfy
 odefile
+odefiles
 onlylastbeat
 opencarp
 opencmiss
@@ -355,12 +372,16 @@ pyplot
 pytest
 qca
 qna
+Quarteroni
+quasistatic
 R
 rad
 Rdmm
+Regazzoni
 relp
 Remedios
 repolarisation
+resid
 rightback
 rightbottom
 rint
@@ -369,6 +390,7 @@ rtol
 rw
 ryanodine
 ryanodione
+sarcomere
 sarcomeres
 savefig
 savetxt
@@ -455,12 +477,14 @@ TmB
 tolist
 Tomek
 Topnes
+torord
 Tot_A
 tqdm
 transmembrane
 Transmembrane
 transversally
 Tref
+troponin
 TRPN
 Trpn50
 trpnmax
@@ -470,7 +494,10 @@ twinx
 txrf
 txrs
 uflacs
+unactivated
+undeformed
 undiseased
+unstabilized
 updegrove
 usecols
 v
@@ -512,6 +539,7 @@ ymin
 Yoram
 zca
 Zetas
+zetasplit
 Zetaw
 zk
 zmax

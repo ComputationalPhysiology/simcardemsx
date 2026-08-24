@@ -54,8 +54,11 @@ class SimulationController:
         # 3. Solve Mechanics Problem
         self.mechanics_problem.model.active.t.value = self.t
         nit = self.mechanics_problem.solve()
-        self.mechanics_problem.post_solve()
-        self.mechanics_problem.model.active.update_prev()
+        # The activation backend owns the post-solve update: it records the new
+        # stretch and advances its own state. It also advances the previous
+        # values, so the separate update_prev() call this used to make was
+        # redundant.
+        self.mechanics_problem.model.active.post_solve()
         self.mech_step_idx += 1
 
         # 4. Transfer state from Mechanics back to EP

@@ -9,7 +9,20 @@ authors = [{name = "Henrik Finsberg", email = "henriknf@simula.no"}]
 license = {file = "LICENSE"}
 readme = "README.md"
 requires-python = ">=3.10.0"
-dependencies = ["fenics-dolfinx", "fenicsx-pulse", "fenicsx-beat", "gotranx", "toml", "pydantic", "pydantic_pint"]
+dependencies = [
+    "fenics-dolfinx",
+    "fenicsx-pulse",
+    "fenicsx-beat",
+    # crossbridge backs the Ca_i-split activation backend and is imported at
+    # package import time via simcardemsx.backends
+    "crossbridge",
+    # scipy is used by simcardemsx.zero_d for the monolithic reference solve
+    "scipy",
+    "gotranx",
+    "toml",
+    "pydantic",
+    "pydantic_pint",
+]
 
 [project.optional-dependencies]
 test = [
@@ -24,12 +37,12 @@ dev = [
     "pre-commit",
 ]
 demo = [
+    "matplotlib",
     "cardiac-geometriesx",
     "fenicsx-ldrb",
     "circulation",
     "gotranx",
     "io4dolfinx",
-    "scipy",
 ]
 docs = [
    "jupyter-book",
