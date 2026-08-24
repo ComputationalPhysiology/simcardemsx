@@ -30,6 +30,35 @@ class ODEModules(NamedTuple):
     mechanics: ModuleType
 
 
+def _unit_map(ode) -> Dict[str, str | None]:
+    """Name-to-unit for everything the ODE declares.
+
+    gotranx does not propagate units into generated code, so the only record of
+    them is the ``.ode`` source. Built from the *whole* ODE rather than per
+    side, because each side needs the units of what it receives from the other:
+    the EP module has to know what ``J_TRPN`` arrives in, and ``J_TRPN`` is
+    defined on the mechanics side.
+
+    A variable the source gives no unit for maps to ``None``. That is common --
+    the shipped ToR-ORd files declare units on many parameters but on none of
+    the variables that actually cross -- and it means "unknown", never
+    "dimensionless". A consumer must not treat the two as the same.
+    """
+    units: Dict[str, str | None] = {}
+    for group in (ode.states, ode.parameters, ode.intermediates):
+        for item in group:
+            units.setdefault(item.name, getattr(item, "unit_str", None))
+    return units
+
+
+def _append_units(path: Path, units: Dict[str, str | None]) -> None:
+    """Record the unit map in an already-written generated module."""
+    with path.open("a") as fh:
+        fh.write("\n\n# Units as declared in the .ode source; None means the\n")
+        fh.write("# source did not say, which is not the same as dimensionless.\n")
+        fh.write(f"units = {units!r}\n")
+
+
 def generate_ode_code(odefile: Path, output_dir: Path) -> ODEModulePaths:
     """
     Pre-processing step: Generates EP and Mechanics Python modules
@@ -60,6 +89,10 @@ def generate_ode_code(odefile: Path, output_dir: Path) -> ODEModulePaths:
         missing_values=mechanics_ode.missing_variables,
     )
     ep_module_file.write_text(code_ep)
+
+    units = _unit_map(ode)
+    _append_units(ep_module_file, units)
+    _append_units(mechanics_module_file, units)
 
     return ODEModulePaths(ep=ep_module_file, mechanics=mechanics_module_file)
 
