@@ -19,13 +19,12 @@ def test_land_relaxation_stability():
     s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
     n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
 
-    V_dg = dolfinx.fem.functionspace(mesh, ("DG", 1))
-    XS = dolfinx.fem.Function(V_dg)
-    XW = dolfinx.fem.Function(V_dg)
+    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh)
+    XS = active_model.XS
+    V_dg = active_model.function_space
 
     # 1. Simulate fully contracted state
     XS.x.array[:] = 0.5
-    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
 
     # 2. Force a massive negative stretch rate (rapid relaxation)
     active_model.lmbda_prev.x.array[:] = 1.2  # Was stretched
@@ -60,11 +59,9 @@ def test_coupled_long_term_stability():
     s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
     n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
 
-    V_dg = dolfinx.fem.functionspace(mesh, ("DG", 1))
-    XS = dolfinx.fem.Function(V_dg)
-    XW = dolfinx.fem.Function(V_dg)
-
-    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, XS=XS, XW=XW, mesh=mesh)
+    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh)
+    XS = active_model.XS
+    XW = active_model.XW
     mat_params = pulse.HolzapfelOgden.transversely_isotropic_parameters()
     cardiac_model = pulse.CardiacModel(
         material=pulse.HolzapfelOgden(f0=f0, s0=s0, **mat_params),

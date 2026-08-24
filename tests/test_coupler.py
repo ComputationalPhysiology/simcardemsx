@@ -31,6 +31,17 @@ from simcardemsx.ode_model import RuntimeODEModel, load_ode_modules
 # Small enough to generate inside a test, but real splits: each declares a
 # mechanics component, so gotranx derives a genuine two-way interface. The
 # shipped ToR-ORd files are used in exactly one test, marked slow.
+#
+# Both transients relax towards a bound rather than ramping without limit. An
+# unbounded ramp activates the contraction model within a single millisecond
+# step, and the resulting shortening rate drives the distortion states so far
+# negative that active tension clamps at zero -- a fixture artefact that looks
+# exactly like a broken coupling.
+#
+# The gains are set so the zeta backend generates a physiological few tens of
+# kPa. Driving it far harder makes the stretch oscillate between steps, which
+# is a genuine property of that backend at a millisecond step and not
+# something these tests are here to characterize.
 # ---------------------------------------------------------------------------
 
 ZETA_SPLIT_ODE = """
@@ -42,8 +53,8 @@ dZetas_dt = XS - Zetas
 dZetaw_dt = XW - Zetaw
 expressions("ep")
 dv_dt = a
-dXS_dt = 0.02 * v - 0.1 * XS * (1.0 + Zetas)
-dXW_dt = 0.02 * v - 0.1 * XW * (1.0 + Zetaw)
+dXS_dt = 2e-6 * (1.0 - XS) - 0.02 * XS * (1.0 + Zetas)
+dXW_dt = 2e-6 * (1.0 - XW) - 0.02 * XW * (1.0 + Zetaw)
 """
 
 CAI_SPLIT_ODE = """
@@ -56,7 +67,7 @@ dCaTrpn_dt = cai - CaTrpn
 J_TRPN = dCaTrpn_dt * trpnmax
 expressions("ep")
 dv_dt = a
-dcai_dt = 0.00002 * v - J_TRPN
+dcai_dt = 0.02 * (0.0015 - cai) - J_TRPN
 """
 
 
@@ -358,6 +369,8 @@ def test_isometric_clamp_matches_standalone_contraction_model(tmp_path):
     coupled_Ta = float(np.mean(sim.backend.active_tension.x.array))
     standalone_Ta = float(standalone.get_active_tension()[0])
 
+    assert np.allclose(sim.backend.lmbda.x.array, 1.0), "the clamp did not hold the stretch at one"
+    assert coupled_Ta > 0.0, "no tension developed, so agreement proves nothing"
     assert coupled_Ta == pytest.approx(standalone_Ta, rel=1e-8), (
         f"coupled path gives Ta={coupled_Ta}, standalone gives {standalone_Ta}"
     )
@@ -439,9 +452,13 @@ def test_zeta_return_path_delivers_the_computed_distortion_states(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _ramped_bcs(mesh, velocity):
-    """Shorten the fibre at a prescribed velocity by driving the far face."""
-    state = {"t": 0.0}
+def _shortening_bcs(mesh):
+    """Drive the far face inwards, so the fibre shortens at a prescribed rate.
+
+    The Function the moving boundary reads is handed back, so the caller can
+    advance it between steps.
+    """
+    holder: dict = {}
 
     def dirichlet_bc(V):
         V0, _ = V.sub(0).collapse()
@@ -450,76 +467,94 @@ def _ramped_bcs(mesh, velocity):
         zero.x.array[:] = 0.0
         moving = dolfinx.fem.Function(V0)
         moving.x.array[:] = 0.0
-        state["moving"] = moving
+        holder["moving"] = moving
 
-        x0 = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[0], 0.0))
-        x1 = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[0], 1.0))
-        y0 = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[1], 0.0))
-        z0 = dolfinx.mesh.locate_entities_boundary(mesh, fdim, lambda x: np.isclose(x[2], 0.0))
+        def on(axis, value):
+            return dolfinx.mesh.locate_entities_boundary(
+                mesh,
+                fdim,
+                lambda x, axis=axis, value=value: np.isclose(x[axis], value),
+            )
+
+        def bc(func, sub, facets):
+            return dolfinx.fem.dirichletbc(
+                func,
+                dolfinx.fem.locate_dofs_topological((V.sub(sub), V0), fdim, facets),
+                V.sub(sub),
+            )
+
         return [
-            dolfinx.fem.dirichletbc(
-                zero,
-                dolfinx.fem.locate_dofs_topological((V.sub(0), V0), fdim, x0),
-                V.sub(0),
-            ),
-            dolfinx.fem.dirichletbc(
-                moving,
-                dolfinx.fem.locate_dofs_topological((V.sub(0), V0), fdim, x1),
-                V.sub(0),
-            ),
-            dolfinx.fem.dirichletbc(
-                zero,
-                dolfinx.fem.locate_dofs_topological((V.sub(1), V0), fdim, y0),
-                V.sub(1),
-            ),
-            dolfinx.fem.dirichletbc(
-                zero,
-                dolfinx.fem.locate_dofs_topological((V.sub(2), V0), fdim, z0),
-                V.sub(2),
-            ),
+            bc(zero, 0, on(0, 0.0)),
+            bc(moving, 0, on(0, 1.0)),
+            bc(zero, 1, on(1, 0.0)),
+            bc(zero, 2, on(2, 0.0)),
         ]
 
-    return pulse.BoundaryConditions(dirichlet=[dirichlet_bc]), state
+    return pulse.BoundaryConditions(dirichlet=[dirichlet_bc]), holder
 
 
-def test_peak_tension_falls_with_shortening_velocity(tmp_path):
-    """Peak active tension must fall monotonically with shortening velocity.
+def _tension_at_common_stretch(tmp_path, velocity, target_lmbda, n_steps=40, dt_mech=1.0):
+    """Shorten at ``velocity`` and report the tension when the stretch passes
+    ``target_lmbda``.
+
+    Comparing at a *common stretch* is what isolates the velocity effect.
+    Comparing peaks would not: shortening lowers tension through the
+    force-length relation as well, so a run that shortens faster reaches a
+    lower tension for reasons that have nothing to do with the shortening rate,
+    and a flipped sign on that rate would still look monotonic.
+    """
+    holder: dict = {}
+
+    def bcs(mesh):
+        built, state = _shortening_bcs(mesh)
+        holder.update(state=state)
+        return built
+
+    sim = build_simulation(
+        tmp_path,
+        CAI_SPLIT_ODE,
+        _cai_backend,
+        bcs=bcs,
+        dt_mech=dt_mech,
+    )
+
+    stretches, tensions = [], []
+    for step in range(n_steps):
+        moving = holder["state"].get("moving")
+        if moving is not None:
+            moving.x.array[:] = -velocity * (step + 1) * dt_mech
+        sim.controller.step()
+        stretches.append(float(np.mean(sim.backend.lmbda.x.array)))
+        tensions.append(float(np.mean(sim.backend.active_tension.x.array)))
+
+    stretches = np.array(stretches)
+    tensions = np.array(tensions)
+    if stretches.min() > target_lmbda:
+        raise AssertionError(
+            f"velocity {velocity} never reached lmbda={target_lmbda} "
+            f"(got down to {stretches.min():.5f})",
+        )
+    # np.interp needs an increasing x; stretch decreases through the run.
+    order = np.argsort(stretches)
+    return float(np.interp(target_lmbda, stretches[order], tensions[order]))
+
+
+def test_tension_falls_with_shortening_velocity(tmp_path):
+    """At a common stretch, active tension must fall as shortening velocity rises.
 
     This is the only test that can see the sign of the sarcomere length-change
     rate. The isometric clamp cannot: at constant stretch that rate is zero, so
-    a flipped sign is invisible there.
+    a flipped sign is invisible there. Comparing at equal stretch is what makes
+    it sensitive to the rate rather than to the length.
     """
-    dt_mech = 1.0
-    n_steps = 12
-    peaks = []
+    target = 0.99
+    tensions = [
+        _tension_at_common_stretch(tmp_path / f"v{v}", v, target) for v in (0.0005, 0.002, 0.004)
+    ]
 
-    for velocity in (0.0, 0.004, 0.008):
-        state_holder = {}
-
-        def bcs(mesh, velocity=velocity, holder=state_holder):
-            built, state = _ramped_bcs(mesh, velocity)
-            holder["state"] = state
-            return built
-
-        sim = build_simulation(
-            tmp_path / f"v{velocity}",
-            CAI_SPLIT_ODE,
-            _cai_backend,
-            bcs=bcs,
-            dt_mech=dt_mech,
-        )
-
-        peak = 0.0
-        for step in range(n_steps):
-            moving = state_holder["state"].get("moving")
-            if moving is not None:
-                moving.x.array[:] = -velocity * (step + 1) * dt_mech
-            sim.controller.step()
-            peak = max(peak, float(np.max(sim.backend.active_tension.x.array)))
-        peaks.append(peak)
-
-    assert peaks[0] > peaks[1] > peaks[2], (
-        f"peak tension must fall with shortening velocity, got {peaks}"
+    assert tensions[0] > tensions[1] > tensions[2], (
+        "at a common stretch, faster shortening must give lower tension; got "
+        f"{tensions} at lmbda={target}"
     )
 
 

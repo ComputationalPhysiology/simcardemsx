@@ -74,10 +74,11 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         Fibre, sheet and sheet-normal directions.
     mesh:
         The mechanics mesh.
-    XS, XW:
-        Thin-filament populations transferred from the EP subsystem. Created
-        internally if not supplied; either way the coupler writes into them
-        via :attr:`ep_inputs`.
+    Notes
+    -----
+    The thin-filament populations ``XS`` and ``XW`` are owned by this backend
+    and exposed through :attr:`ep_inputs`, which is where the coupler writes
+    the values it transfers from the EP subsystem.
     formulation:
         Which active-stress convention to use. The default ``stretch`` is the
         Regazzoni & Quarteroni normalization,
@@ -106,14 +107,11 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         s0,
         n0,
         mesh,
-        XS=None,
-        XW=None,
         parameters=None,
         eta=0.0,
         scheme: Scheme = Scheme.analytic,
         dLambda_tol: float = 1e-12,
         formulation: pulse.ActiveStressFormulation = pulse.ActiveStressFormulation.stretch,
-        **kwargs,
     ):
         logger.debug("Initialize ZetaSplitUFL")
 
@@ -130,8 +128,11 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         self.u = dolfinx.fem.Function(self.u_space)
         self.u_prev = dolfinx.fem.Function(self.u_space)
 
-        self.XS = XS if XS is not None else dolfinx.fem.Function(self.function_space, name="XS")
-        self.XW = XW if XW is not None else dolfinx.fem.Function(self.function_space, name="XW")
+        # Owned here, not injected. The coupler interpolates into these; a
+        # caller wiring in its own Functions is how positional assumptions
+        # about the transfer buffers used to leak into calling code.
+        self.XS = dolfinx.fem.Function(self.function_space, name="XS")
+        self.XW = dolfinx.fem.Function(self.function_space, name="XW")
 
         self._parameters = parameters if parameters is not None else _parameters
 

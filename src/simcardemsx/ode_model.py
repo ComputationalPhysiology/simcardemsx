@@ -179,6 +179,44 @@ class RuntimeODEModel:
         for i in range(self.missing_mech.num_values):
             self.prev_missing_mech.u_mechanics[i].x.array[:] = self.missing_mech.values_mechanics[i]
 
+    # -- the split, as the generated modules describe it ---------------------
+
+    @property
+    def ep_missing(self) -> Dict[str, int]:
+        """What the EP side needs from mechanics, name to row."""
+        return self.ep_module_dict.get("missing", {}) or {}
+
+    @property
+    def mech_missing(self) -> Dict[str, int]:
+        """What the mechanics side needs from EP, name to row."""
+        return self.mech_module_dict.get("missing", {}) or {}
+
+    @property
+    def units(self) -> Dict[str, Any]:
+        """Units as the ODE source declared them; see :func:`generate_ode_code`."""
+        return self.ep_module_dict.get("units", {}) or {}
+
+    # -- EP-mesh Functions the transfers pass through ------------------------
+
+    def ep_transfer_sources(self) -> Dict[str, dolfinx.fem.Function]:
+        """EP-mesh Functions holding what mechanics is missing, keyed by name."""
+        return {name: self.missing_mech.u_ep_int[i] for name, i in self.mech_missing.items()}
+
+    def ep_transfer_targets(self) -> Dict[str, dolfinx.fem.Function]:
+        """EP-mesh Functions receiving what EP is missing, keyed by name."""
+        return {name: self.missing_ep.u_ep[i] for name, i in self.ep_missing.items()}
+
+    def ep_transfer_source_functions(self):
+        """The same, positionally -- row order is the generated module's."""
+        return self.missing_mech.u_ep_int
+
+    def ep_transfer_target_functions(self):
+        return self.missing_ep.u_ep
+
+    def commit_ep_missing_values(self) -> None:
+        """Read the EP-mesh Functions into the array the EP solver consumes."""
+        self.missing_ep.ep_function_to_values()
+
     def update_ep_missing_values(self, t, values, parameters):
         # Calls the function from the injected dictionary
         missing_ep_values = self.mv(t, values, parameters, self.missing_ep.values_ep)
