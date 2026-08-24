@@ -61,3 +61,20 @@ zeta-split path failing to improve as the step is refined, on a single element.
 It is the symptom, in the solver you would actually run;
 `stabilized_vs_naive_coupling.py` is the diagnosis and the fix, in 0D where a true
 monolithic reference is available. Takes a few minutes.
+
+## [A full coupling with monodomain EP](monodomain_coupling.py)
+
+The other demos drive electrophysiology at the ODE level, one cell per degree of
+freedom. This one runs a real monodomain solve from
+[fenicsx-beat](https://github.com/finsberg/fenicsx-beat), so the activation
+wavefront propagates through the tissue, and couples it to a `crossbridge`
+contraction model through the Ca_i split.
+
+That combination is the point of the package, and until recently was not reachable:
+the crossbridge backend existed, but nothing could hand it calcium produced by an EP
+solve. The two physics run on **different meshes** — fine for the wavefront, coarse
+for mechanics — which is what the transfer operators are for.
+
+Ends by checking the coupled tension against the same contraction model driven
+standalone, which is the cheapest guard against a transfer that looks like it works.
+Runs in well under a minute.
