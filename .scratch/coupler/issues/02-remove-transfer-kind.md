@@ -4,9 +4,9 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The field is gone from the transfer record and from both backends' declarations
-- [ ] The docstring rationale claiming states and monitors need different index lookups is gone with it
-- [ ] Assertions pinning the field are removed
-- [ ] The full suite still passes
+- [x] The field is gone from the transfer record and from both backends' declarations
+- [x] The docstring rationale claiming states and monitors need different index lookups is gone with it
+- [x] Assertions pinning the field are removed
+- [x] The full suite still passes

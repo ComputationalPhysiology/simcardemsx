@@ -4,11 +4,11 @@
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The Ca_i-split backend runs in a coupled simulation, receiving calcium from EP
-- [ ] The troponin buffering flux crosses back to the EP subsystem
-- [ ] Gate test 1 passes: both backends run through one coupler, each on its own split
-- [ ] Gate test 3 passes: the buffering flux measurably changes the calcium transient
-- [ ] One test exercises the real ToR-ORd Ca_i split and is marked slow
-- [ ] The backend-direct test suite still passes unchanged — backends remain usable without a coupler
+- [x] The Ca_i-split backend runs in a coupled simulation, receiving calcium from EP
+- [x] The troponin buffering flux crosses back to the EP subsystem
+- [x] Gate test 1 passes: both backends run through one coupler, each on its own split
+- [x] Gate test 3 passes: the buffering flux measurably changes the calcium transient
+- [x] One test exercises the real ToR-ORd Ca_i split and is marked slow
+- [x] The backend-direct test suite still passes unchanged — backends remain usable without a coupler

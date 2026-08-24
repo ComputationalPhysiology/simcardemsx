@@ -4,10 +4,10 @@
 
 **Blocked by:** 03, 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] A backend paired with an ODE file describing a different split raises, naming both sides of the disagreement
-- [ ] A declared unit disagreeing with the generated unit mapping raises
-- [ ] Matching declarations resolve without complaint for all three shipped splits
-- [ ] These checks are testable without constructing a mesh or a mechanics problem
-- [ ] The error says what to change, not merely that something is wrong
+- [x] A backend paired with an ODE file describing a different split raises, naming both sides of the disagreement
+- [x] A declared unit disagreeing with the generated unit mapping raises
+- [x] Matching declarations resolve without complaint for all three shipped splits
+- [x] These checks are testable without constructing a mesh or a mechanics problem
+- [x] The error says what to change, not merely that something is wrong

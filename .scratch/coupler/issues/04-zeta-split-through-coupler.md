@@ -6,13 +6,13 @@ Fixes the mechano-electric feedback bug by construction — the backward transfe
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The controller takes its activation backend explicitly and refuses a backend that is not the one in the mechanics form
-- [ ] Transfers are resolved by name against the split the ODE file describes, in one place
-- [ ] The forward transfer lands directly in the Functions the backend owns
-- [ ] The backward transfer reads directly from the Functions the backend exposes
-- [ ] The zeta-split backend no longer accepts injected Functions; it owns its own
-- [ ] Gate test 4 passes: the EP side receives the distortion states the backend computed
-- [ ] Verified against a synthetic ODE file built in the test
-- [ ] Buffers made dead by this change are left in place for now, to keep this one slice
+- [x] The controller takes its activation backend explicitly and refuses a backend that is not the one in the mechanics form
+- [x] Transfers are resolved by name against the split the ODE file describes, in one place
+- [x] The forward transfer lands directly in the Functions the backend owns
+- [x] The backward transfer reads directly from the Functions the backend exposes
+- [x] The zeta-split backend no longer accepts injected Functions; it owns its own
+- [x] Gate test 4 passes: the EP side receives the distortion states the backend computed
+- [x] Verified against a synthetic ODE file built in the test
+- [x] Buffers made dead by this change are left in place for now, to keep this one slice

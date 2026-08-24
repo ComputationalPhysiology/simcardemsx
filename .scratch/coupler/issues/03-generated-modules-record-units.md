@@ -4,9 +4,9 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Both generated modules expose a unit mapping derived from the parsed ODE
-- [ ] The mapping covers the variables that cross between EP and mechanics for all three shipped splits
-- [ ] Nothing consumes it yet and nothing breaks — this is purely additive
-- [ ] A variable the source gives no unit for is representable without inventing one
+- [x] Both generated modules expose a unit mapping derived from the parsed ODE
+- [x] The mapping covers the variables that cross between EP and mechanics for all three shipped splits
+- [x] Nothing consumes it yet and nothing breaks — this is purely additive
+- [x] A variable the source gives no unit for is representable without inventing one

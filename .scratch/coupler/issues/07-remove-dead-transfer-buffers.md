@@ -4,10 +4,10 @@
 
 **Blocked by:** 04, 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The mechanics-side Functions and value arrays made dead by direct interpolation are gone
-- [ ] The previous-values structure, written every step and read by nothing, is gone
-- [ ] The non-matching-mesh interpolation machinery is untouched and its tests still pass
-- [ ] No buffer remains that is read but never written, or written but never read
-- [ ] The full suite passes
+- [x] The mechanics-side Functions and value arrays made dead by direct interpolation are gone
+- [x] The previous-values structure, written every step and read by nothing, is gone
+- [x] The non-matching-mesh interpolation machinery is untouched and its tests still pass
+- [x] No buffer remains that is read but never written, or written but never read
+- [x] The full suite passes

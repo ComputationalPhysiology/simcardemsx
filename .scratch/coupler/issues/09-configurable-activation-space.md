@@ -4,9 +4,9 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Both activation backends accept a function space specification
-- [ ] The default is what the package used before this change
-- [ ] Results are unchanged at the default, demonstrably
-- [ ] The two backends agree on how the space is specified
+- [x] Both activation backends accept a function space specification
+- [x] The default is what the package used before this change
+- [x] Results are unchanged at the default, demonstrably
+- [x] The two backends agree on how the space is specified

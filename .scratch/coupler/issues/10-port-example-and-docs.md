@@ -4,9 +4,9 @@
 
 **Blocked by:** 05, 07
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The zeta-split experiment runs on the current interface
-- [ ] It reads its transfer variables from the backend rather than reaching into transfer buffers positionally
-- [ ] Its results change is stated plainly in the commit message: it has been running without distortion feedback
-- [ ] The architecture documentation matches the code, including that generated modules now record units
+- [x] The zeta-split experiment runs on the current interface
+- [x] It reads its transfer variables from the backend rather than reaching into transfer buffers positionally
+- [x] Its results change is stated plainly in the commit message: it has been running without distortion feedback
+- [x] The architecture documentation matches the code, including that generated modules now record units
