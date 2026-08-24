@@ -326,3 +326,70 @@ def test_land_alias_still_works_but_warns(mesh, dirs):
     with pytest.warns(DeprecationWarning, match="ZetaSplitUFL"):
         model = LandModel(f0=f0, s0=s0, n0=n0, mesh=mesh)
     assert isinstance(model, ZetaSplitUFL)
+
+
+@pytest.mark.parametrize("space", [("DG", 0), ("DG", 1), ("Lagrange", 1)])
+def test_activation_space_is_configurable(space):
+    """A researcher can choose where the activation state lives.
+
+    Trading interpolation error against cost is a real choice: a quadrature
+    element matching the form removes the error between the activation state
+    and what the assembler integrates, but costs more dofs.
+    """
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+    s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
+    n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
+
+    backend = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh, element=space)
+    expected = dolfinx.fem.functionspace(mesh, space)
+
+    assert backend.function_space.element.signature == expected.element.signature
+    # Everything the activation owns must land on that one space, or the
+    # stretch and the state it is measured against stop being comparable.
+    for name in ("XS", "XW"):
+        assert backend.ep_inputs[name].function_space is backend.function_space
+
+
+def test_both_backends_specify_the_space_the_same_way():
+    """One rule, not a per-backend convention."""
+    from simcardemsx.backends import CrossbridgeSegregated
+
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+    s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
+    n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
+
+    space = ("DG", 0)
+    zeta = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh, element=space)
+    cai = CrossbridgeSegregated(f0=f0, mesh=mesh, element=space)
+
+    assert zeta.function_space.element.signature == cai.function_space.element.signature
+
+
+def test_the_default_space_is_unchanged():
+    """The default must reproduce what the package did before the space became
+    configurable, or making it configurable would have moved everyone's
+    results."""
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+    s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
+    n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
+
+    default = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh)
+    explicit = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh, element=("DG", 1))
+
+    assert default.function_space.element.signature == explicit.function_space.element.signature
+
+    for backend in (default, explicit):
+        backend.XS.x.array[:] = 0.05
+        backend.XW.x.array[:] = 0.02
+
+    points = default.function_space.element.interpolation_points
+    a = dolfinx.fem.Function(default.function_space)
+    a.interpolate(dolfinx.fem.Expression(default.Ta(1.0), points))
+    b = dolfinx.fem.Function(explicit.function_space)
+    b.interpolate(dolfinx.fem.Expression(explicit.Ta(1.0), points))
+
+    assert np.allclose(a.x.array, b.x.array)
+    assert np.max(a.x.array) > 0.0, "no tension, so agreement proves nothing"

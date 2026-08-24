@@ -74,6 +74,17 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         Fibre, sheet and sheet-normal directions.
     mesh:
         The mechanics mesh.
+    element:
+        The function space the activation state lives on, as a
+        ``dolfinx.fem.functionspace`` specification. The default matches what
+        this package used before the space became configurable, and what the
+        simcardems paper used. A quadrature element matching the form's
+        ``quadrature_degree`` removes the interpolation error between the
+        activation state and what the assembler integrates, at greater cost.
+
+        Changing it changes results, so it is not something to vary while
+        establishing that a coupling reproduces a reference.
+
     Notes
     -----
     The thin-filament populations ``XS`` and ``XW`` are owned by this backend
@@ -107,6 +118,7 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         s0,
         n0,
         mesh,
+        element=("DG", 1),
         parameters=None,
         eta=0.0,
         scheme: Scheme = Scheme.analytic,
@@ -123,7 +135,7 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         self._dLambda_tol = dLambda_tol
         self.formulation = formulation
 
-        self.function_space = dolfinx.fem.functionspace(mesh, ("DG", 1))
+        self.function_space = dolfinx.fem.functionspace(mesh, element)
         self.u_space = dolfinx.fem.functionspace(mesh, ("P", 2, (3,)))
         self.u = dolfinx.fem.Function(self.u_space)
         self.u_prev = dolfinx.fem.Function(self.u_space)
