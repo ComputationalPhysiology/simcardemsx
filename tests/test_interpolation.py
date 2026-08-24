@@ -51,40 +51,47 @@ def test_transfer_operator_accuracy():
     assert error < 1e-12, f"Interpolation failed. Max error: {error}"
 
 
-def test_missing_value_data_flow():
-    mesh_mechanics, mesh_ep = create_meshes()
-    element = basix.ufl.element(basix.ElementFamily.P, mesh_mechanics.basix_cell(), 1)
-    # Usually EP and interpolation elements are the same in this setup
-    interp_element = basix.ufl.element(basix.ElementFamily.P, mesh_ep.basix_cell(), 1)
+def test_missing_value_holds_the_ep_side_of_a_transfer():
+    """The buffers a transfer passes through on the EP mesh.
 
-    num_values = 2
+    The mechanics side of a transfer is the activation backend's own Function,
+    which the coupler interpolates into and out of directly, so nothing here
+    holds one. Two of the mechanics-side buffers this class used to allocate
+    were not merely unused: one was read as an interpolation source and never
+    written, which is why the EP subsystem received zeros for every distortion
+    state.
+    """
+    _, mesh_ep = create_meshes()
+    element = basix.ufl.element(basix.ElementFamily.P, mesh_ep.basix_cell(), 1)
+
     mv = MissingValue(
         element=element,
-        interpolation_element=interp_element,
-        mechanics_mesh=mesh_mechanics,
+        interpolation_element=element,
         ep_mesh=mesh_ep,
-        num_values=num_values,
+        num_values=2,
     )
 
-    # --- Test 1: EP Array to Mechanics Array Pipeline ---
+    # The coupler interpolates into u_ep; the EP solver reads values_ep.
+    mv.u_ep[0].x.array[:] = 7.0
+    mv.u_ep[1].x.array[:] = 11.0
+    mv.ep_function_to_values()
 
-    # 1. Provide raw array data from EP (e.g., from ODE solver)
-    # Fill value index 0 with 5.0, value index 1 with 10.0
-    mv.values_ep[0, :] = 5.0
-    mv.values_ep[1, :] = 10.0
+    assert np.allclose(mv.values_ep[0, :], 7.0)
+    assert np.allclose(mv.values_ep[1, :], 11.0)
 
-    # 2. Push to FEniCSx function (normally u_ep, but the code currently expects
-    # to interpolate from u_ep_int in interpolate_ep_to_mechanics). Let's simulate
-    # the exact flow the user takes. For this test, we load u_ep_int directly.
-    mv.u_ep_int[0].x.array[:] = mv.values_ep[0, :]
-    mv.u_ep_int[1].x.array[:] = mv.values_ep[1, :]
 
-    # 3. Perform interpolation from EP mesh to Mechanics mesh
-    mv.interpolate_ep_to_mechanics()
+def test_a_direction_that_carries_nothing_is_representable():
+    """gotranx omits a side's `missing` entry entirely when it needs nothing
+    from the other, as in the CaTrpn split. Zero-width must not crash."""
+    _, mesh_ep = create_meshes()
+    element = basix.ufl.element(basix.ElementFamily.P, mesh_ep.basix_cell(), 1)
 
-    # 4. Pull to Mechanics array
-    mv.mechanics_function_to_values()
+    mv = MissingValue(
+        element=element,
+        interpolation_element=element,
+        ep_mesh=mesh_ep,
+        num_values=0,
+    )
 
-    # Assert values transferred accurately
-    assert np.allclose(mv.values_mechanics[0, :], 5.0)
-    assert np.allclose(mv.values_mechanics[1, :], 10.0)
+    assert mv.values_ep.shape[0] == 0
+    mv.ep_function_to_values()

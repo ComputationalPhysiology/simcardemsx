@@ -48,71 +48,45 @@ class TransferOperator:
 
 @dataclass
 class MissingValue:
+    """EP-mesh buffers for the variables crossing between the two subsystems.
+
+    One instance per direction. It holds the EP-side Functions a transfer
+    passes through and the array the EP solver reads its missing variables
+    from; the mechanics side of a transfer is the activation backend's own
+    Function, which the coupler interpolates into and out of directly.
+
+    It used to hold mechanics-side Functions too. Two of those were the cause
+    of a bug rather than a cost: one was read as an interpolation source and
+    written by nothing, so every distortion state delivered to the EP
+    subsystem was zero, and another was written every step and read by
+    nothing.
+    """
+
     element: ufl.finiteelement.AbstractFiniteElement
     interpolation_element: ufl.finiteelement.AbstractFiniteElement
-    mechanics_mesh: dolfinx.mesh.Mesh
     ep_mesh: dolfinx.mesh.Mesh
     num_values: int
 
     def __post_init__(self):
         self.V_ep = dolfinx.fem.functionspace(self.ep_mesh, self.element)
-        self.V_mechanics = dolfinx.fem.functionspace(self.mechanics_mesh, self.element)
-
         self.V_ep_int = dolfinx.fem.functionspace(self.ep_mesh, self.interpolation_element)
-        self.V_mechanics_int = dolfinx.fem.functionspace(
-            self.mechanics_mesh,
-            self.interpolation_element,
-        )
 
+        #: Targets for what the EP side is missing, on the EP mesh.
         self.u_ep = [dolfinx.fem.Function(self.V_ep) for _ in range(self.num_values)]
-        self.u_mechanics = [dolfinx.fem.Function(self.V_mechanics) for _ in range(self.num_values)]
-
+        #: Sources for what the mechanics side is missing, on the EP mesh.
         self.u_ep_int = [dolfinx.fem.Function(self.V_ep_int) for _ in range(self.num_values)]
-        self.u_mechanics_int = [
-            dolfinx.fem.Function(self.V_mechanics_int) for _ in range(self.num_values)
-        ]
 
-        # Sized from the function spaces rather than from u_ep[0], so that
+        # Sized from the function space rather than from u_ep[0], so that
         # num_values == 0 is representable. That case is real: gotranx omits a
         # side's `missing` entry entirely when it needs nothing from the other,
         # as in the CaTrpn split where EP needs nothing back from mechanics.
         self.values_ep = np.zeros((self.num_values, _num_dofs(self.V_ep)))
-        self.values_mechanics = np.zeros((self.num_values, _num_dofs(self.V_mechanics)))
-
-        # Setup Transfer Operators instead of manual interpolation data
-        self.transfer_ep2mech = TransferOperator(V_source=self.V_ep_int, V_target=self.V_mechanics)
-        self.transfer_mech2ep = TransferOperator(V_source=self.V_mechanics_int, V_target=self.V_ep)
-
-    @property
-    def domain_mechanics(self):
-        return self.mechanics_mesh
 
     @property
     def domain_ep(self):
         return self.ep_mesh
 
-    def ep_values_to_function(self) -> None:
-        for i in range(self.num_values):
-            self.u_ep[i].x.array[:] = self.values_ep[i]
-
     def ep_function_to_values(self) -> None:
+        """Read the transferred Functions into the array the EP solver consumes."""
         for i in range(self.num_values):
             self.values_ep[i, :] = self.u_ep[i].x.array[:]
-
-    def mechanics_values_to_function(self) -> None:
-        for i in range(self.num_values):
-            self.u_mechanics[i].x.array[:] = self.values_mechanics[i]
-
-    def mechanics_function_to_values(self) -> None:
-        for i in range(self.num_values):
-            self.values_mechanics[i, :] = self.u_mechanics[i].x.array[:]
-
-    def interpolate_ep_to_mechanics(self) -> None:
-        logger.debug("Interpolate ep to mechanics")
-        for i in range(self.num_values):
-            self.transfer_ep2mech.interpolate(self.u_ep_int[i], self.u_mechanics[i])
-
-    def interpolate_mechanics_to_ep(self) -> None:
-        logger.debug("Interpolate mechanics to ep")
-        for i in range(self.num_values):
-            self.transfer_mech2ep.interpolate(self.u_mechanics_int[i], self.u_ep[i])

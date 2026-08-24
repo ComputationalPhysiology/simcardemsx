@@ -146,7 +146,6 @@ class RuntimeODEModel:
         self.missing_mech = MissingValue(
             element=self.mech_ode_space.ufl_element(),
             interpolation_element=self.ep_ode_space.ufl_element(),
-            mechanics_mesh=self.mech_ode_space.mesh,
             ep_mesh=self.ep_ode_space.mesh,
             num_values=len(mechanics_missing_values_),
         )
@@ -154,30 +153,13 @@ class RuntimeODEModel:
         self.missing_ep = MissingValue(
             element=self.ep_ode_space.ufl_element(),
             interpolation_element=self.mech_ode_space.ufl_element(),
-            mechanics_mesh=self.mech_ode_space.mesh,
             ep_mesh=self.ep_ode_space.mesh,
             num_values=len(ep_missing_values_),
         )
 
-        self.missing_ep.values_mechanics.T[:] = ep_missing_values_
         self.missing_ep.values_ep.T[:] = ep_missing_values_
 
         self.missing_mech.values_ep.T[:] = mechanics_missing_values_
-        self.missing_mech.values_mechanics.T[:] = mechanics_missing_values_
-        self.missing_mech.mechanics_values_to_function()
-
-        self.prev_missing_mech = MissingValue(
-            element=self.mech_ode_space.ufl_element(),
-            interpolation_element=self.ep_ode_space.ufl_element(),
-            mechanics_mesh=self.mech_ode_space.mesh,
-            ep_mesh=self.ep_ode_space.mesh,
-            num_values=len(mechanics_missing_values_),
-        )
-        self.update_prev_missing_mech()
-
-    def update_prev_missing_mech(self):
-        for i in range(self.missing_mech.num_values):
-            self.prev_missing_mech.u_mechanics[i].x.array[:] = self.missing_mech.values_mechanics[i]
 
     # -- the split, as the generated modules describe it ---------------------
 
