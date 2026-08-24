@@ -336,6 +336,7 @@ ntrpn
 numpyfy
 odefile
 odefiles
+odesolver
 onlylastbeat
 opencarp
 opencmiss
@@ -344,10 +345,9 @@ outdir
 outfilename
 outpath
 p_a
-p_b
-p_k
 Panfilov
 pathophysiology
+p_b
 pbar
 PCab
 perc
@@ -355,6 +355,7 @@ permodel
 petsc
 phi
 Piola
+p_k
 PKNa
 plotly
 PNab

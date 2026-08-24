@@ -76,6 +76,9 @@ addopts = [
 testpaths = [
     "tests"
 ]
+markers = [
+    "slow: runs a full shipped cell model rather than a synthetic one",
+]
 
 
 [tool.ruff]
