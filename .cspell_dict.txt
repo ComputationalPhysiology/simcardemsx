@@ -1,6 +1,7 @@
 a
 aCaMK
 Acap
+actioned
 Afcaf
 Afcas
 Aff
@@ -294,6 +295,7 @@ Markerwise
 Martyn
 mathjax
 matplotlib
+mattpocock
 maxiter
 maxlmbda
 Mcontrol
@@ -517,6 +519,8 @@ vmyo
 vnsr
 Vpeak
 Wactive
+wayfinder
+Wayfinding
 wca
 wna
 wnaca
