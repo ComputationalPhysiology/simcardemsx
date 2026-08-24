@@ -58,7 +58,7 @@ def test_runtime_ode_model_with_mock_dict():
     model.update_ep_missing_values(t=0.0, values=dummy_values, parameters=None)
 
     # Assert the mock function was called and values applied to the interpolation function
-    assert np.allclose(model.missing_mech.u_ep_int[0].x.array, 7.5)
+    assert np.allclose(model.missing_mech.u_ep[0].x.array, 7.5)
 
 
 def test_code_generator_smoke_test(tmp_path):
@@ -187,3 +187,116 @@ def test_real_split_files_have_the_expected_interfaces(tmp_path):
         modules = load_ode_modules(odefile, tmp_path / stem)
         assert set(getattr(modules.ep, "missing", {})) == ep_missing, stem
         assert set(getattr(modules.mechanics, "missing", {})) == mech_missing, stem
+
+
+def test_generated_modules_record_units(tmp_path):
+    """Both generated modules carry the units the ODE source declares.
+
+    gotranx does not propagate units into generated code, so without this the
+    only record of them is the .ode file, and checking a transfer's units would
+    mean re-parsing it.
+    """
+    ode_file = tmp_path / "units.ode"
+    ode_file.write_text(
+        """
+        parameters("ep", a=ScalarParam(1.0, unit="mM"))
+        states("ep", v=0.0, cai=ScalarParam(0.0001, unit="mM"))
+        states("mechanics", XS=0.0)
+        expressions("mechanics")
+        dXS_dt = cai - XS
+        expressions("ep")
+        dv_dt = a
+        dcai_dt = 0.001 * v * XS
+        """,
+    )
+    modules = load_ode_modules(ode_file, tmp_path / "generated")
+
+    # Both sides get the same map, built from the whole ODE: each needs the
+    # units of what it receives from the other.
+    for module in (modules.ep, modules.mechanics):
+        assert module.units["cai"] == "mM"
+        assert module.units["a"] == "mM"
+
+
+def test_undeclared_units_are_unknown_not_dimensionless(tmp_path):
+    """A variable the source gives no unit for maps to None.
+
+    This is the common case: the shipped ToR-ORd files declare units on many
+    parameters but on none of the variables that actually cross. Recording that
+    as "dimensionless" would turn silence into a false claim, and a consumer
+    would then reject a correct transfer.
+    """
+    ode_file = tmp_path / "bare.ode"
+    ode_file.write_text(
+        """
+        parameters("ep", a=1.0)
+        states("ep", v=0.0, cai=0.0001)
+        states("mechanics", XS=0.0)
+        expressions("mechanics")
+        dXS_dt = cai - XS
+        expressions("ep")
+        dv_dt = a
+        dcai_dt = 0.001 * v * XS
+        """,
+    )
+    modules = load_ode_modules(ode_file, tmp_path / "generated")
+
+    assert modules.ep.units["cai"] is None
+    assert "cai" in modules.ep.units, "an undeclared unit must still be recorded"
+
+
+@pytest.mark.parametrize(
+    "odefile, crossing",
+    [
+        ("ToRORd_dynCl_endo_caisplit.ode", ("cai", "J_TRPN")),
+        ("ToRORd_dynCl_endo_zetasplit.ode", ("XS", "XW", "Zetas", "Zetaw")),
+    ],
+)
+def test_shipped_files_have_their_crossing_variables_in_the_map(tmp_path, odefile, crossing):
+    """The variables that cross are present in the map for the shipped splits.
+
+    Present, but currently all None: none of the shipped files declares a unit
+    on a crossing variable. Pinning that here so it is a visible fact rather
+    than a surprise when a unit check silently never fires.
+    """
+    source = Path(__file__).parent.parent / "numerical_experiments" / "odefiles" / odefile
+    modules = load_ode_modules(source, tmp_path / "generated")
+
+    for name in crossing:
+        assert name in modules.ep.units, f"{name} missing from the unit map"
+
+
+def test_transfer_functions_follow_the_row_the_ode_file_assigns(tmp_path):
+    """Which EP-mesh Function carries a variable is decided by the generated
+    module's `missing` mapping, not by any order the caller assumes.
+
+    The buffers are positional and the backends are named, so this mapping is
+    the only thing standing between the two. Getting it wrong transposes a
+    transfer, which stays silent: both variables are populated, just swapped.
+    """
+    ode_file = tmp_path / "split.ode"
+    ode_file.write_text(SPLIT_ODE)
+    modules = load_ode_modules(ode_file, tmp_path / "generated")
+
+    comm = MPI.COMM_WORLD
+    mesh = dolfinx.mesh.create_unit_cube(comm, 1, 1, 1)
+    element = basix.ufl.element(basix.ElementFamily.P, mesh.basix_cell(), 1)
+    V = dolfinx.fem.functionspace(mesh, element)
+
+    model = RuntimeODEModel(
+        ep_module_dict=modules.ep.__dict__,
+        mech_module_dict=modules.mechanics.__dict__,
+        mech_ode_space=V,
+        ep_ode_space=V,
+    )
+
+    sources = model.ep_transfer_sources()
+    for name, row in model.mech_missing.items():
+        assert sources[name] is model.missing_mech.u_ep[row]
+
+    targets = model.ep_transfer_targets()
+    for name, row in model.ep_missing.items():
+        assert targets[name] is model.missing_ep.u_ep[row]
+
+    assert set(sources) == set(model.mech_missing)
+    assert set(targets) == set(model.ep_missing)

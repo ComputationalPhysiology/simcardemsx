@@ -30,6 +30,35 @@ class ODEModules(NamedTuple):
     mechanics: ModuleType
 
 
+def _unit_map(ode) -> Dict[str, str | None]:
+    """Name-to-unit for everything the ODE declares.
+
+    gotranx does not propagate units into generated code, so the only record of
+    them is the ``.ode`` source. Built from the *whole* ODE rather than per
+    side, because each side needs the units of what it receives from the other:
+    the EP module has to know what ``J_TRPN`` arrives in, and ``J_TRPN`` is
+    defined on the mechanics side.
+
+    A variable the source gives no unit for maps to ``None``. That is common --
+    the shipped ToR-ORd files declare units on many parameters but on none of
+    the variables that actually cross -- and it means "unknown", never
+    "dimensionless". A consumer must not treat the two as the same.
+    """
+    units: Dict[str, str | None] = {}
+    for group in (ode.states, ode.parameters, ode.intermediates):
+        for item in group:
+            units.setdefault(item.name, getattr(item, "unit_str", None))
+    return units
+
+
+def _append_units(path: Path, units: Dict[str, str | None]) -> None:
+    """Record the unit map in an already-written generated module."""
+    with path.open("a") as fh:
+        fh.write("\n\n# Units as declared in the .ode source; None means the\n")
+        fh.write("# source did not say, which is not the same as dimensionless.\n")
+        fh.write(f"units = {units!r}\n")
+
+
 def generate_ode_code(odefile: Path, output_dir: Path) -> ODEModulePaths:
     """
     Pre-processing step: Generates EP and Mechanics Python modules
@@ -60,6 +89,10 @@ def generate_ode_code(odefile: Path, output_dir: Path) -> ODEModulePaths:
         missing_values=mechanics_ode.missing_variables,
     )
     ep_module_file.write_text(code_ep)
+
+    units = _unit_map(ode)
+    _append_units(ep_module_file, units)
+    _append_units(mechanics_module_file, units)
 
     return ODEModulePaths(ep=ep_module_file, mechanics=mechanics_module_file)
 
@@ -110,48 +143,53 @@ class RuntimeODEModel:
         ep_missing_values_ = np.zeros(len(self.ep_module_dict.get("missing", ())))
         mechanics_missing_values_ = np.zeros(len(self.mech_module_dict.get("missing", ())))
 
+        # Both directions move values on the EP mesh; the mechanics end of a
+        # transfer is the activation backend's own Function.
         self.missing_mech = MissingValue(
-            element=self.mech_ode_space.ufl_element(),
-            interpolation_element=self.ep_ode_space.ufl_element(),
-            mechanics_mesh=self.mech_ode_space.mesh,
-            ep_mesh=self.ep_ode_space.mesh,
+            ep_space=self.ep_ode_space,
             num_values=len(mechanics_missing_values_),
         )
 
         self.missing_ep = MissingValue(
-            element=self.ep_ode_space.ufl_element(),
-            interpolation_element=self.mech_ode_space.ufl_element(),
-            mechanics_mesh=self.mech_ode_space.mesh,
-            ep_mesh=self.ep_ode_space.mesh,
+            ep_space=self.ep_ode_space,
             num_values=len(ep_missing_values_),
         )
 
-        self.missing_ep.values_mechanics.T[:] = ep_missing_values_
         self.missing_ep.values_ep.T[:] = ep_missing_values_
 
-        self.missing_mech.values_ep.T[:] = mechanics_missing_values_
-        self.missing_mech.values_mechanics.T[:] = mechanics_missing_values_
-        self.missing_mech.mechanics_values_to_function()
+    # -- the split, as the generated modules describe it ---------------------
 
-        self.prev_missing_mech = MissingValue(
-            element=self.mech_ode_space.ufl_element(),
-            interpolation_element=self.ep_ode_space.ufl_element(),
-            mechanics_mesh=self.mech_ode_space.mesh,
-            ep_mesh=self.ep_ode_space.mesh,
-            num_values=len(mechanics_missing_values_),
-        )
-        self.update_prev_missing_mech()
+    @property
+    def ep_missing(self) -> Dict[str, int]:
+        """What the EP side needs from mechanics, name to row."""
+        return self.ep_module_dict.get("missing", {}) or {}
 
-    def update_prev_missing_mech(self):
-        for i in range(self.missing_mech.num_values):
-            self.prev_missing_mech.u_mechanics[i].x.array[:] = self.missing_mech.values_mechanics[i]
+    @property
+    def mech_missing(self) -> Dict[str, int]:
+        """What the mechanics side needs from EP, name to row."""
+        return self.mech_module_dict.get("missing", {}) or {}
+
+    @property
+    def units(self) -> Dict[str, str | None]:
+        """Units as the ODE source declared them; see :func:`generate_ode_code`."""
+        return self.ep_module_dict.get("units", {}) or {}
+
+    # -- EP-mesh Functions the transfers pass through ------------------------
+
+    def ep_transfer_sources(self) -> Dict[str, dolfinx.fem.Function]:
+        """EP-mesh Functions holding what mechanics is missing, keyed by name."""
+        return {name: self.missing_mech.u_ep[i] for name, i in self.mech_missing.items()}
+
+    def ep_transfer_targets(self) -> Dict[str, dolfinx.fem.Function]:
+        """EP-mesh Functions receiving what EP is missing, keyed by name."""
+        return {name: self.missing_ep.u_ep[i] for name, i in self.ep_missing.items()}
 
     def update_ep_missing_values(self, t, values, parameters):
         # Calls the function from the injected dictionary
         missing_ep_values = self.mv(t, values, parameters, self.missing_ep.values_ep)
 
         for k in range(self.missing_mech.num_values):
-            self.missing_mech.u_ep_int[k].x.array[:] = missing_ep_values[k, :]
+            self.missing_mech.u_ep[k].x.array[:] = missing_ep_values[k, :]
 
     @property
     def fgr(self):

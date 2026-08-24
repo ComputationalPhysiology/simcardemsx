@@ -19,6 +19,10 @@ dependencies = [
     # scipy is used by simcardemsx.zero_d for the monolithic reference solve
     "scipy",
     "gotranx",
+    # transfers.py compares transfer units dimensionally rather than by
+    # spelling. It arrives transitively via pydantic_pint, but the import is
+    # direct, so the dependency is declared here too.
+    "pint",
     "toml",
     "pydantic",
     "pydantic_pint",
@@ -75,6 +79,9 @@ addopts = [
 ]
 testpaths = [
     "tests"
+]
+markers = [
+    "slow: runs a full shipped cell model rather than a synthetic one",
 ]
 
 

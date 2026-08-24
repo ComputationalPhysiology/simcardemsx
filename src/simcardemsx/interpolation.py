@@ -3,7 +3,6 @@ from dataclasses import dataclass
 
 import dolfinx
 import numpy as np
-import ufl
 
 logger = logging.getLogger(__name__)
 
@@ -48,71 +47,35 @@ class TransferOperator:
 
 @dataclass
 class MissingValue:
-    element: ufl.finiteelement.AbstractFiniteElement
-    interpolation_element: ufl.finiteelement.AbstractFiniteElement
-    mechanics_mesh: dolfinx.mesh.Mesh
-    ep_mesh: dolfinx.mesh.Mesh
+    """The EP-mesh Functions one direction of transfer passes through.
+
+    One instance per direction, each holding the Functions for that
+    direction's variables plus the array the EP solver reads. The mechanics
+    side of a transfer is the activation backend's own Function, which the
+    coupler interpolates into and out of directly, so nothing here holds one.
+
+    It used to hold four lists -- Functions on both meshes, in two element
+    families. Only one was ever on a path per direction. Two of the others
+    were not merely unused: ``u_mechanics_int`` was read as an interpolation
+    source and written by nothing, which is why the EP subsystem received
+    zeros for every distortion state, and a separate previous-values structure
+    was written every step and read by nothing.
+    """
+
+    ep_space: dolfinx.fem.FunctionSpace
     num_values: int
 
     def __post_init__(self):
-        self.V_ep = dolfinx.fem.functionspace(self.ep_mesh, self.element)
-        self.V_mechanics = dolfinx.fem.functionspace(self.mechanics_mesh, self.element)
+        #: Forward transfers read from these; backward transfers write to them.
+        self.u_ep = [dolfinx.fem.Function(self.ep_space) for _ in range(self.num_values)]
 
-        self.V_ep_int = dolfinx.fem.functionspace(self.ep_mesh, self.interpolation_element)
-        self.V_mechanics_int = dolfinx.fem.functionspace(
-            self.mechanics_mesh,
-            self.interpolation_element,
-        )
-
-        self.u_ep = [dolfinx.fem.Function(self.V_ep) for _ in range(self.num_values)]
-        self.u_mechanics = [dolfinx.fem.Function(self.V_mechanics) for _ in range(self.num_values)]
-
-        self.u_ep_int = [dolfinx.fem.Function(self.V_ep_int) for _ in range(self.num_values)]
-        self.u_mechanics_int = [
-            dolfinx.fem.Function(self.V_mechanics_int) for _ in range(self.num_values)
-        ]
-
-        # Sized from the function spaces rather than from u_ep[0], so that
+        # Sized from the function space rather than from u_ep[0], so that
         # num_values == 0 is representable. That case is real: gotranx omits a
         # side's `missing` entry entirely when it needs nothing from the other,
         # as in the CaTrpn split where EP needs nothing back from mechanics.
-        self.values_ep = np.zeros((self.num_values, _num_dofs(self.V_ep)))
-        self.values_mechanics = np.zeros((self.num_values, _num_dofs(self.V_mechanics)))
-
-        # Setup Transfer Operators instead of manual interpolation data
-        self.transfer_ep2mech = TransferOperator(V_source=self.V_ep_int, V_target=self.V_mechanics)
-        self.transfer_mech2ep = TransferOperator(V_source=self.V_mechanics_int, V_target=self.V_ep)
-
-    @property
-    def domain_mechanics(self):
-        return self.mechanics_mesh
-
-    @property
-    def domain_ep(self):
-        return self.ep_mesh
-
-    def ep_values_to_function(self) -> None:
-        for i in range(self.num_values):
-            self.u_ep[i].x.array[:] = self.values_ep[i]
+        self.values_ep = np.zeros((self.num_values, _num_dofs(self.ep_space)))
 
     def ep_function_to_values(self) -> None:
+        """Read the transferred Functions into the array the EP solver consumes."""
         for i in range(self.num_values):
             self.values_ep[i, :] = self.u_ep[i].x.array[:]
-
-    def mechanics_values_to_function(self) -> None:
-        for i in range(self.num_values):
-            self.u_mechanics[i].x.array[:] = self.values_mechanics[i]
-
-    def mechanics_function_to_values(self) -> None:
-        for i in range(self.num_values):
-            self.values_mechanics[i, :] = self.u_mechanics[i].x.array[:]
-
-    def interpolate_ep_to_mechanics(self) -> None:
-        logger.debug("Interpolate ep to mechanics")
-        for i in range(self.num_values):
-            self.transfer_ep2mech.interpolate(self.u_ep_int[i], self.u_mechanics[i])
-
-    def interpolate_mechanics_to_ep(self) -> None:
-        logger.debug("Interpolate mechanics to ep")
-        for i in range(self.num_values):
-            self.transfer_mech2ep.interpolate(self.u_mechanics_int[i], self.u_ep[i])

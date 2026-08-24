@@ -326,3 +326,68 @@ def test_land_alias_still_works_but_warns(mesh, dirs):
     with pytest.warns(DeprecationWarning, match="ZetaSplitUFL"):
         model = LandModel(f0=f0, s0=s0, n0=n0, mesh=mesh)
     assert isinstance(model, ZetaSplitUFL)
+
+
+@pytest.mark.parametrize("space", [("DG", 0), ("DG", 1), ("Lagrange", 1)])
+def test_activation_space_is_configurable(space):
+    """A researcher can choose where the activation state lives.
+
+    Trading interpolation error against cost is a real choice: a quadrature
+    element matching the form removes the error between the activation state
+    and what the assembler integrates, but costs more dofs.
+    """
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+    s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
+    n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
+
+    backend = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh, element=space)
+    expected = dolfinx.fem.functionspace(mesh, space)
+
+    assert backend.function_space.element.signature == expected.element.signature
+    # Everything the activation owns must land on that one space, or the
+    # stretch and the state it is measured against stop being comparable.
+    for name in ("XS", "XW"):
+        assert backend.ep_inputs[name].function_space is backend.function_space
+
+
+def test_both_backends_specify_the_space_the_same_way():
+    """One rule, not a per-backend convention."""
+    from simcardemsx.backends import CrossbridgeSegregated
+
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+    s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
+    n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
+
+    space = ("DG", 0)
+    zeta = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh, element=space)
+    cai = CrossbridgeSegregated(f0=f0, mesh=mesh, element=space)
+
+    assert zeta.function_space.element.signature == cai.function_space.element.signature
+
+
+def test_the_default_space_is_dg1():
+    """The default must be the space this package used before it became
+    configurable, or making it configurable would have moved everyone's results.
+
+    Asserting the default against an explicitly-passed ("DG", 1) would be true
+    by construction and prove nothing; the claim worth pinning is *which* space
+    the default is.
+    """
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+    s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
+    n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
+
+    from simcardemsx.backends import CrossbridgeSegregated
+
+    dg1 = dolfinx.fem.functionspace(mesh, ("DG", 1))
+    zeta = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh)
+    cai = CrossbridgeSegregated(f0=f0, mesh=mesh)
+
+    for backend in (zeta, cai):
+        assert backend.function_space.element.signature == dg1.element.signature
+        assert backend.function_space.dofmap.index_map.size_local == (
+            dg1.dofmap.index_map.size_local
+        )

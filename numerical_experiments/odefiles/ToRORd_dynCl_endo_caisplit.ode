@@ -37,7 +37,7 @@ nass=ScalarParam(12.3977, unit="mM", description="")
 )
 
 states("intracellular_ions",
-cai=0.0001
+cai=ScalarParam(0.0001, unit="mM")
 )
 
 states("ICaL",
@@ -639,45 +639,44 @@ Jtr = (-cajsr + cansr)/60.0 # mM/ms
 
 
 states("mechanics",
-XS=0,
-XW=0,
-CaTrpn=1e-8,
-TmB=1,
-Zetas=0,
-Zetaw=0,
-Cd=0
+XS=ScalarParam(0, unit="1"),
+XW=ScalarParam(0, unit="1"),
+CaTrpn=ScalarParam(1e-8, unit="1"),
+TmB=ScalarParam(1, unit="1"),
+Zetas=ScalarParam(0, unit="1"),
+Zetaw=ScalarParam(0, unit="1"),
+Cd=ScalarParam(0, unit="1")
 )
 
 parameters("mechanics",
-emcoupling=1,
-lmbda=1,
-dLambda=0,
-mode=1,
-isacs=0,
-calib=1,
-ktrpn = 0.1,
-ntrpn = 2,
-Trpn50 = 0.35,
-rw = 0.5,
-rs = 0.25,
-gammas = 0.0085,
-gammaw = 0.615,
-phi = 2.23,
-Tot_A = 25,
-Beta0 = 2.3,
-Beta1 = -2.4,
-cat50_ref = 0.805,
-Tref = 120,
-kuw = 0.182,
-kws = 0.012,
-ku=0.04,
-ntm=2.4,
-p_a = 2.1,
-p_b = 9.1,
-p_k = 7,
-etal = 200,
-etas = 20)
-
+emcoupling=ScalarParam(1, unit="1"),
+lmbda=ScalarParam(1, unit="1"),
+dLambda=ScalarParam(0, unit="1/ms"),
+mode=ScalarParam(1, unit="1"),
+isacs=ScalarParam(0, unit="1"),
+calib=ScalarParam(1, unit="1"),
+ktrpn=ScalarParam(0.1, unit="1/ms"),
+ntrpn=ScalarParam(2, unit="1"),
+Trpn50=ScalarParam(0.35, unit="1"),
+rw=ScalarParam(0.5, unit="1"),
+rs=ScalarParam(0.25, unit="1"),
+gammas=ScalarParam(0.0085, unit="1/ms"),
+gammaw=ScalarParam(0.615, unit="1/ms"),
+phi=ScalarParam(2.23, unit="1"),
+Tot_A=ScalarParam(25, unit="1"),
+Beta0=ScalarParam(2.3, unit="1"),
+Beta1=ScalarParam(-2.4, unit="uM"),
+cat50_ref=ScalarParam(0.805, unit="uM"),
+Tref=ScalarParam(120, unit="kPa"),
+kuw=ScalarParam(0.182, unit="1/ms"),
+kws=ScalarParam(0.012, unit="1/ms"),
+ku=ScalarParam(0.04, unit="1/ms"),
+ntm=ScalarParam(2.4, unit="1"),
+p_a=ScalarParam(2.1, unit="kPa"),
+p_b=ScalarParam(9.1, unit="1"),
+p_k=ScalarParam(7, unit="1/ms"),
+etal=ScalarParam(200, unit="1"),
+etas=ScalarParam(20, unit="1"))
 expressions("mechanics")
 XS_max = Conditional(Gt(XS, 0), XS, 0)
 XW_max = Conditional(Gt(XW, 0), XW, 0)

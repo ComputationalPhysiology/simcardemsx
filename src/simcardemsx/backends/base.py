@@ -28,7 +28,7 @@ external-operator backend ``Ta`` is opaque by construction. This is fine:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Mapping, Protocol
+from typing import Mapping, Protocol
 
 import dolfinx
 import ufl
@@ -46,21 +46,30 @@ class Transfer:
     ----------
     name:
         The variable's name in the generated ODE module, e.g. ``"cai"`` or
-        ``"XS"``. Used to look up its index via ``state_index``/``monitor_index``.
+        ``"XS"``. The coupler resolves it against that module's ``missing``
+        mapping, which is what gives the variable its row in the positional
+        transfer buffers.
     unit:
         The unit *as the producing side emits it*, e.g. ``"mM"`` for ToR-ORd's
         ``cai``. The consumer may want something else -- crossbridge wants
         micromolar -- and carrying the unit here is what lets the coupler
         convert explicitly instead of relying on a lookup table keyed
         invisibly by name.
-    kind:
-        Whether ``name`` is an ODE state or a monitored (derived) expression.
-        They need different index lookups in the generated module.
+
+        Defaults to ``"1"``, dimensionless, spelled as the ``.ode`` files spell
+        it. When the ODE source declares no unit for a variable the coupler
+        assumes this one and warns, rather than proceeding silently.
+
+        There is deliberately no state-or-monitor field. Neither direction
+        needs one: the forward path goes through the generated
+        ``missing_values`` function, which requires no index lookup, and the
+        backward path writes positionally into the EP side's missing array. A
+        variable crossing back is an EP *missing* variable regardless of how
+        the producing side derived it.
     """
 
     name: str
-    unit: str = "dimensionless"
-    kind: Literal["state", "monitor"] = "state"
+    unit: str = "1"
 
 
 class ActivationBackend(Protocol):
