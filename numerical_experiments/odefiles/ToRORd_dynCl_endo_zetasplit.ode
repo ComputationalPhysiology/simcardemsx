@@ -670,9 +670,9 @@ ku=ScalarParam(0.04, unit="1/ms"),
 ntm=ScalarParam(2.4, unit="1"),
 p_a=ScalarParam(2.1, unit="kPa"),
 p_b=ScalarParam(9.1, unit="1"),
-p_k=ScalarParam(7, unit="1"),
-etal=ScalarParam(200, unit="ms"),
-etas=ScalarParam(20, unit="ms"))
+p_k=ScalarParam(7, unit="1/ms"),
+etal=ScalarParam(200, unit="1"),
+etas=ScalarParam(20, unit="1"))
 expressions("mechanics-ep")
 XS_max = Conditional(Gt(XS, 0), XS, 0)
 XW_max = Conditional(Gt(XW, 0), XW, 0)
