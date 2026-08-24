@@ -21,9 +21,12 @@ moves, and in what units.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 import dolfinx
+
+if TYPE_CHECKING:
+    from .backends.base import Transfer
 
 from .interpolation import TransferOperator
 
@@ -40,8 +43,6 @@ class ResolvedTransfer:
     ----------
     name:
         The variable's name, as both sides call it.
-    index:
-        Its row in the positional missing-values array of the consuming side.
     unit:
         The unit the producing side emits it in, as the backend declared.
     function:
@@ -51,38 +52,42 @@ class ResolvedTransfer:
     """
 
     name: str
-    index: int
     unit: str
     function: dolfinx.fem.Function
+    ep_function: dolfinx.fem.Function
+    operator: TransferOperator
 
 
 @dataclass(frozen=True)
 class TransferPlan:
-    """Everything one coupled step needs in order to move state both ways."""
+    """Everything one coupled step needs in order to move state both ways.
+
+    Each transfer holds both of its ends, resolved once, so moving a step's
+    state needs no arguments and no positional lookup. The caller does not
+    re-supply buffers it has already described.
+    """
 
     from_ep: tuple[ResolvedTransfer, ...]
     to_ep: tuple[ResolvedTransfer, ...]
-    _into_backend: tuple[TransferOperator, ...]
-    _out_of_backend: tuple[TransferOperator, ...]
 
-    def push_to_backend(self, sources: list[dolfinx.fem.Function]) -> None:
+    def push_to_backend(self) -> None:
         """Interpolate EP-mesh values into the backend's own Functions."""
-        for transfer, operator in zip(self.from_ep, self._into_backend):
-            operator.interpolate(sources[transfer.index], transfer.function)
+        for transfer in self.from_ep:
+            transfer.operator.interpolate(transfer.ep_function, transfer.function)
 
-    def pull_from_backend(self, targets: list[dolfinx.fem.Function]) -> None:
+    def pull_from_backend(self) -> None:
         """Interpolate the backend's outputs back onto the EP mesh.
 
         The source is the backend's Function itself. It used to be a separate
         buffer that nothing ever wrote, which is why the EP side received zeros
         for every distortion state.
         """
-        for transfer, operator in zip(self.to_ep, self._out_of_backend):
-            operator.interpolate(transfer.function, targets[transfer.index])
+        for transfer in self.to_ep:
+            transfer.operator.interpolate(transfer.function, transfer.ep_function)
 
 
 def _check_names(
-    declared: tuple,
+    declared: "tuple[Transfer, ...]",
     derived: Mapping[str, int],
     direction: str,
     backend_name: str,
@@ -127,6 +132,37 @@ def _check_unit(
         )
 
 
+def check(
+    backend,
+    *,
+    ep_missing: Mapping[str, int],
+    mech_missing: Mapping[str, int],
+    units: Mapping[str, str | None],
+) -> tuple[tuple, tuple]:
+    """Verify a backend's declared transfers against the ODE file's split.
+
+    Pure: no meshes, no function spaces, no dolfinx objects beyond whatever the
+    backend already holds. That is deliberate -- this is a comparison between
+    two mappings, and keeping it cheap is what makes it practical to check
+    every backend against every split.
+
+    Returns the declared transfers, in both directions. Raises
+    :class:`TransferMismatch` if the two descriptions disagree.
+    """
+    backend_name = type(backend).__name__
+
+    wants = tuple(backend.wants_from_ep())
+    gives = tuple(backend.gives_to_ep())
+
+    _check_names(wants, mech_missing, "EP -> mechanics", backend_name)
+    _check_names(gives, ep_missing, "mechanics -> EP", backend_name)
+
+    for transfer in wants + gives:
+        _check_unit(transfer, units, backend_name)
+
+    return wants, gives
+
+
 def resolve(
     backend,
     *,
@@ -149,16 +185,12 @@ def resolve(
     Raises :class:`TransferMismatch` if the two descriptions disagree, in names
     or in units.
     """
-    backend_name = type(backend).__name__
-
-    wants = tuple(backend.wants_from_ep())
-    gives = tuple(backend.gives_to_ep())
-
-    _check_names(wants, mech_missing, "EP -> mechanics", backend_name)
-    _check_names(gives, ep_missing, "mechanics -> EP", backend_name)
-
-    for transfer in wants + gives:
-        _check_unit(transfer, units, backend_name)
+    wants, gives = check(
+        backend,
+        ep_missing=ep_missing,
+        mech_missing=mech_missing,
+        units=units,
+    )
 
     inputs = backend.ep_inputs
     outputs = backend.ep_outputs
@@ -166,40 +198,28 @@ def resolve(
     from_ep = tuple(
         ResolvedTransfer(
             name=t.name,
-            index=mech_missing[t.name],
             unit=t.unit,
             function=inputs[t.name],
+            ep_function=ep_sources[t.name],
+            operator=TransferOperator(
+                V_source=ep_sources[t.name].function_space,
+                V_target=inputs[t.name].function_space,
+            ),
         )
         for t in wants
     )
     to_ep = tuple(
         ResolvedTransfer(
             name=t.name,
-            index=ep_missing[t.name],
             unit=t.unit,
             function=outputs[t.name],
+            ep_function=ep_targets[t.name],
+            operator=TransferOperator(
+                V_source=outputs[t.name].function_space,
+                V_target=ep_targets[t.name].function_space,
+            ),
         )
         for t in gives
     )
 
-    into_backend = tuple(
-        TransferOperator(
-            V_source=ep_sources[t.name].function_space,
-            V_target=t.function.function_space,
-        )
-        for t in from_ep
-    )
-    out_of_backend = tuple(
-        TransferOperator(
-            V_source=t.function.function_space,
-            V_target=ep_targets[t.name].function_space,
-        )
-        for t in to_ep
-    )
-
-    return TransferPlan(
-        from_ep=from_ep,
-        to_ep=to_ep,
-        _into_backend=into_backend,
-        _out_of_backend=out_of_backend,
-    )
+    return TransferPlan(from_ep=from_ep, to_ep=to_ep)

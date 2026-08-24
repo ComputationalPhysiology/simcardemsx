@@ -143,23 +143,19 @@ class RuntimeODEModel:
         ep_missing_values_ = np.zeros(len(self.ep_module_dict.get("missing", ())))
         mechanics_missing_values_ = np.zeros(len(self.mech_module_dict.get("missing", ())))
 
+        # Both directions move values on the EP mesh; the mechanics end of a
+        # transfer is the activation backend's own Function.
         self.missing_mech = MissingValue(
-            element=self.mech_ode_space.ufl_element(),
-            interpolation_element=self.ep_ode_space.ufl_element(),
-            ep_mesh=self.ep_ode_space.mesh,
+            ep_space=self.ep_ode_space,
             num_values=len(mechanics_missing_values_),
         )
 
         self.missing_ep = MissingValue(
-            element=self.ep_ode_space.ufl_element(),
-            interpolation_element=self.mech_ode_space.ufl_element(),
-            ep_mesh=self.ep_ode_space.mesh,
+            ep_space=self.ep_ode_space,
             num_values=len(ep_missing_values_),
         )
 
         self.missing_ep.values_ep.T[:] = ep_missing_values_
-
-        self.missing_mech.values_ep.T[:] = mechanics_missing_values_
 
     # -- the split, as the generated modules describe it ---------------------
 
@@ -174,7 +170,7 @@ class RuntimeODEModel:
         return self.mech_module_dict.get("missing", {}) or {}
 
     @property
-    def units(self) -> Dict[str, Any]:
+    def units(self) -> Dict[str, str | None]:
         """Units as the ODE source declared them; see :func:`generate_ode_code`."""
         return self.ep_module_dict.get("units", {}) or {}
 
@@ -182,29 +178,18 @@ class RuntimeODEModel:
 
     def ep_transfer_sources(self) -> Dict[str, dolfinx.fem.Function]:
         """EP-mesh Functions holding what mechanics is missing, keyed by name."""
-        return {name: self.missing_mech.u_ep_int[i] for name, i in self.mech_missing.items()}
+        return {name: self.missing_mech.u_ep[i] for name, i in self.mech_missing.items()}
 
     def ep_transfer_targets(self) -> Dict[str, dolfinx.fem.Function]:
         """EP-mesh Functions receiving what EP is missing, keyed by name."""
         return {name: self.missing_ep.u_ep[i] for name, i in self.ep_missing.items()}
-
-    def ep_transfer_source_functions(self):
-        """The same, positionally -- row order is the generated module's."""
-        return self.missing_mech.u_ep_int
-
-    def ep_transfer_target_functions(self):
-        return self.missing_ep.u_ep
-
-    def commit_ep_missing_values(self) -> None:
-        """Read the EP-mesh Functions into the array the EP solver consumes."""
-        self.missing_ep.ep_function_to_values()
 
     def update_ep_missing_values(self, t, values, parameters):
         # Calls the function from the injected dictionary
         missing_ep_values = self.mv(t, values, parameters, self.missing_ep.values_ep)
 
         for k in range(self.missing_mech.num_values):
-            self.missing_mech.u_ep_int[k].x.array[:] = missing_ep_values[k, :]
+            self.missing_mech.u_ep[k].x.array[:] = missing_ep_values[k, :]
 
     @property
     def fgr(self):

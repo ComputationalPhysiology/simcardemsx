@@ -3,7 +3,6 @@ from dataclasses import dataclass
 
 import dolfinx
 import numpy as np
-import ufl
 
 logger = logging.getLogger(__name__)
 
@@ -48,43 +47,33 @@ class TransferOperator:
 
 @dataclass
 class MissingValue:
-    """EP-mesh buffers for the variables crossing between the two subsystems.
+    """The EP-mesh Functions one direction of transfer passes through.
 
-    One instance per direction. It holds the EP-side Functions a transfer
-    passes through and the array the EP solver reads its missing variables
-    from; the mechanics side of a transfer is the activation backend's own
-    Function, which the coupler interpolates into and out of directly.
+    One instance per direction, each holding the Functions for that
+    direction's variables plus the array the EP solver reads. The mechanics
+    side of a transfer is the activation backend's own Function, which the
+    coupler interpolates into and out of directly, so nothing here holds one.
 
-    It used to hold mechanics-side Functions too. Two of those were the cause
-    of a bug rather than a cost: one was read as an interpolation source and
-    written by nothing, so every distortion state delivered to the EP
-    subsystem was zero, and another was written every step and read by
-    nothing.
+    It used to hold four lists -- Functions on both meshes, in two element
+    families. Only one was ever on a path per direction. Two of the others
+    were not merely unused: ``u_mechanics_int`` was read as an interpolation
+    source and written by nothing, which is why the EP subsystem received
+    zeros for every distortion state, and a separate previous-values structure
+    was written every step and read by nothing.
     """
 
-    element: ufl.finiteelement.AbstractFiniteElement
-    interpolation_element: ufl.finiteelement.AbstractFiniteElement
-    ep_mesh: dolfinx.mesh.Mesh
+    ep_space: dolfinx.fem.FunctionSpace
     num_values: int
 
     def __post_init__(self):
-        self.V_ep = dolfinx.fem.functionspace(self.ep_mesh, self.element)
-        self.V_ep_int = dolfinx.fem.functionspace(self.ep_mesh, self.interpolation_element)
-
-        #: Targets for what the EP side is missing, on the EP mesh.
-        self.u_ep = [dolfinx.fem.Function(self.V_ep) for _ in range(self.num_values)]
-        #: Sources for what the mechanics side is missing, on the EP mesh.
-        self.u_ep_int = [dolfinx.fem.Function(self.V_ep_int) for _ in range(self.num_values)]
+        #: Forward transfers read from these; backward transfers write to them.
+        self.u_ep = [dolfinx.fem.Function(self.ep_space) for _ in range(self.num_values)]
 
         # Sized from the function space rather than from u_ep[0], so that
         # num_values == 0 is representable. That case is real: gotranx omits a
         # side's `missing` entry entirely when it needs nothing from the other,
         # as in the CaTrpn split where EP needs nothing back from mechanics.
-        self.values_ep = np.zeros((self.num_values, _num_dofs(self.V_ep)))
-
-    @property
-    def domain_ep(self):
-        return self.ep_mesh
+        self.values_ep = np.zeros((self.num_values, _num_dofs(self.ep_space)))
 
     def ep_function_to_values(self) -> None:
         """Read the transferred Functions into the array the EP solver consumes."""

@@ -46,7 +46,9 @@ class Transfer:
     ----------
     name:
         The variable's name in the generated ODE module, e.g. ``"cai"`` or
-        ``"XS"``. Used to look up its index via ``state_index``/``monitor_index``.
+        ``"XS"``. The coupler resolves it against that module's ``missing``
+        mapping, which is what gives the variable its row in the positional
+        transfer buffers.
     unit:
         The unit *as the producing side emits it*, e.g. ``"mM"`` for ToR-ORd's
         ``cai``. The consumer may want something else -- crossbridge wants

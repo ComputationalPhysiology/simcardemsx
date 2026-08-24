@@ -92,7 +92,7 @@ class SimulationController:
             self.ep_solver.ode._values,
             self.ep_solver.ode.parameters,
         )
-        self.plan.push_to_backend(self.ode_model.ep_transfer_source_functions())
+        self.plan.push_to_backend()
 
         # 3. Advance activation, using the stretch from the previous solve
         self.backend.step(self.t, dt=self.dt_mech)
@@ -105,8 +105,8 @@ class SimulationController:
         self.mech_step_idx += 1
 
         # 6. Mechanics -> EP, for the next round's micro-steps
-        self.plan.pull_from_backend(self.ode_model.ep_transfer_target_functions())
-        self.ode_model.commit_ep_missing_values()
+        self.plan.pull_from_backend()
+        self.ode_model.missing_ep.ep_function_to_values()
 
         if mech_callback:
             mech_callback(self.t, self.mech_step_idx, nit)

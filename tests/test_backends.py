@@ -367,29 +367,27 @@ def test_both_backends_specify_the_space_the_same_way():
     assert zeta.function_space.element.signature == cai.function_space.element.signature
 
 
-def test_the_default_space_is_unchanged():
-    """The default must reproduce what the package did before the space became
-    configurable, or making it configurable would have moved everyone's
-    results."""
+def test_the_default_space_is_dg1():
+    """The default must be the space this package used before it became
+    configurable, or making it configurable would have moved everyone's results.
+
+    Asserting the default against an explicitly-passed ("DG", 1) would be true
+    by construction and prove nothing; the claim worth pinning is *which* space
+    the default is.
+    """
     mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
     f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
     s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
     n0 = dolfinx.fem.Constant(mesh, np.array([0.0, 0.0, 1.0]))
 
-    default = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh)
-    explicit = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh, element=("DG", 1))
+    from simcardemsx.backends import CrossbridgeSegregated
 
-    assert default.function_space.element.signature == explicit.function_space.element.signature
+    dg1 = dolfinx.fem.functionspace(mesh, ("DG", 1))
+    zeta = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh)
+    cai = CrossbridgeSegregated(f0=f0, mesh=mesh)
 
-    for backend in (default, explicit):
-        backend.XS.x.array[:] = 0.05
-        backend.XW.x.array[:] = 0.02
-
-    points = default.function_space.element.interpolation_points
-    a = dolfinx.fem.Function(default.function_space)
-    a.interpolate(dolfinx.fem.Expression(default.Ta(1.0), points))
-    b = dolfinx.fem.Function(explicit.function_space)
-    b.interpolate(dolfinx.fem.Expression(explicit.Ta(1.0), points))
-
-    assert np.allclose(a.x.array, b.x.array)
-    assert np.max(a.x.array) > 0.0, "no tension, so agreement proves nothing"
+    for backend in (zeta, cai):
+        assert backend.function_space.element.signature == dg1.element.signature
+        assert backend.function_space.dofmap.index_map.size_local == (
+            dg1.dofmap.index_map.size_local
+        )

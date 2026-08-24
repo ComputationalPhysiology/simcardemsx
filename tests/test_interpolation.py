@@ -64,12 +64,7 @@ def test_missing_value_holds_the_ep_side_of_a_transfer():
     _, mesh_ep = create_meshes()
     element = basix.ufl.element(basix.ElementFamily.P, mesh_ep.basix_cell(), 1)
 
-    mv = MissingValue(
-        element=element,
-        interpolation_element=element,
-        ep_mesh=mesh_ep,
-        num_values=2,
-    )
+    mv = MissingValue(ep_space=dolfinx.fem.functionspace(mesh_ep, element), num_values=2)
 
     # The coupler interpolates into u_ep; the EP solver reads values_ep.
     mv.u_ep[0].x.array[:] = 7.0
@@ -86,12 +81,7 @@ def test_a_direction_that_carries_nothing_is_representable():
     _, mesh_ep = create_meshes()
     element = basix.ufl.element(basix.ElementFamily.P, mesh_ep.basix_cell(), 1)
 
-    mv = MissingValue(
-        element=element,
-        interpolation_element=element,
-        ep_mesh=mesh_ep,
-        num_values=0,
-    )
+    mv = MissingValue(ep_space=dolfinx.fem.functionspace(mesh_ep, element), num_values=0)
 
     assert mv.values_ep.shape[0] == 0
     mv.ep_function_to_values()

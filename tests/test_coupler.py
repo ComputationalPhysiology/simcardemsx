@@ -371,6 +371,10 @@ def test_isometric_clamp_matches_standalone_contraction_model(tmp_path):
 
     assert np.allclose(sim.backend.lmbda.x.array, 1.0), "the clamp did not hold the stretch at one"
     assert coupled_Ta > 0.0, "no tension developed, so agreement proves nothing"
+    # Both paths run the same integrator on the same inputs, so they should
+    # agree to floating-point round-off, not merely closely. Measured
+    # agreement is ~13 significant figures; 1e-8 leaves room for the mesh
+    # reduction without being loose enough to hide a real coupling error.
     assert coupled_Ta == pytest.approx(standalone_Ta, rel=1e-8), (
         f"coupled path gives Ta={coupled_Ta}, standalone gives {standalone_Ta}"
     )
@@ -433,18 +437,35 @@ def test_zeta_return_path_delivers_the_computed_distortion_states(tmp_path):
     delivered = sim.ode_model.missing_ep.values_ep
     assert delivered.shape[0] == 2, "expected Zetas and Zetaw to cross back"
 
-    computed = {
-        "Zetas": sim.backend.ep_outputs["Zetas"].x.array,
-        "Zetaw": sim.backend.ep_outputs["Zetaw"].x.array,
-    }
-    assert np.max(np.abs(computed["Zetas"])) > 0.0, (
+    assert np.max(np.abs(sim.backend.ep_outputs["Zetas"].x.array)) > 0.0, (
         "the backend itself produced no distortion -- test cannot conclude"
     )
-
     assert np.max(np.abs(delivered)) > 0.0, (
         "the EP side received all zeros: the return path is not transferring "
         "the distortion states the backend computed"
     )
+
+    # Non-zero is not enough: a transposed pair, or a row read from the wrong
+    # variable, would also be non-zero. Each delivered row must carry the state
+    # it claims to, at the row the ODE file assigns it.
+    #
+    # The comparison is between means because the two sides live on different
+    # meshes -- the mechanics field is interpolated onto the finer EP mesh on
+    # the way across -- so the arrays have different lengths by construction.
+    computed = {n: float(np.mean(f.x.array)) for n, f in sim.backend.ep_outputs.items()}
+    assert not np.isclose(computed["Zetas"], computed["Zetaw"]), (
+        "Zetas and Zetaw are indistinguishable here, so this test could not "
+        "detect a transposed transfer"
+    )
+
+    for name, row in sim.ode_model.ep_missing.items():
+        arrived = float(np.mean(delivered[row]))
+        nearest = min(computed, key=lambda n: abs(computed[n] - arrived))
+        assert nearest == name, (
+            f"row {row} should carry {name} ({computed[name]:.6g}) but holds "
+            f"{arrived:.6g}, which is {nearest}"
+        )
+        assert arrived == pytest.approx(computed[name], rel=1e-6)
 
 
 # ---------------------------------------------------------------------------

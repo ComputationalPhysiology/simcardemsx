@@ -58,7 +58,7 @@ def test_runtime_ode_model_with_mock_dict():
     model.update_ep_missing_values(t=0.0, values=dummy_values, parameters=None)
 
     # Assert the mock function was called and values applied to the interpolation function
-    assert np.allclose(model.missing_mech.u_ep_int[0].x.array, 7.5)
+    assert np.allclose(model.missing_mech.u_ep[0].x.array, 7.5)
 
 
 def test_code_generator_smoke_test(tmp_path):
@@ -264,3 +264,39 @@ def test_shipped_files_have_their_crossing_variables_in_the_map(tmp_path, odefil
 
     for name in crossing:
         assert name in modules.ep.units, f"{name} missing from the unit map"
+
+
+def test_transfer_functions_follow_the_row_the_ode_file_assigns(tmp_path):
+    """Which EP-mesh Function carries a variable is decided by the generated
+    module's `missing` mapping, not by any order the caller assumes.
+
+    The buffers are positional and the backends are named, so this mapping is
+    the only thing standing between the two. Getting it wrong transposes a
+    transfer, which stays silent: both variables are populated, just swapped.
+    """
+    ode_file = tmp_path / "split.ode"
+    ode_file.write_text(SPLIT_ODE)
+    modules = load_ode_modules(ode_file, tmp_path / "generated")
+
+    comm = MPI.COMM_WORLD
+    mesh = dolfinx.mesh.create_unit_cube(comm, 1, 1, 1)
+    element = basix.ufl.element(basix.ElementFamily.P, mesh.basix_cell(), 1)
+    V = dolfinx.fem.functionspace(mesh, element)
+
+    model = RuntimeODEModel(
+        ep_module_dict=modules.ep.__dict__,
+        mech_module_dict=modules.mechanics.__dict__,
+        mech_ode_space=V,
+        ep_ode_space=V,
+    )
+
+    sources = model.ep_transfer_sources()
+    for name, row in model.mech_missing.items():
+        assert sources[name] is model.missing_mech.u_ep[row]
+
+    targets = model.ep_transfer_targets()
+    for name, row in model.ep_missing.items():
+        assert targets[name] is model.missing_ep.u_ep[row]
+
+    assert set(sources) == set(model.mech_missing)
+    assert set(targets) == set(model.ep_missing)
