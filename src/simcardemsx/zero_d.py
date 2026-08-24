@@ -239,7 +239,23 @@ def solve(
                 def residual(e_new: float) -> float:
                     return inertia(e_new) + tissue.stress(e_new) + Ta - load
 
-            e_new = float(scipy.optimize.newton(residual, e_cur, tol=1e-12, maxiter=100))
+            # The naive scheme is the one under test *for divergence* (see
+            # module docstring and test_naive_scheme_does_not_converge): at
+            # fine dt in the unstable regime it can genuinely blow past the
+            # strain domain (e <= -1, where tissue.stress's log1p is undefined)
+            # before 100 iterations are up. That is the expected failure mode,
+            # not a bug -- so let it return whatever it lands on (nan or not)
+            # instead of raising, and keep failing loudly for "stabilized",
+            # which is supposed to be well-posed here.
+            e_new = float(
+                scipy.optimize.newton(
+                    residual,
+                    e_cur,
+                    tol=1e-12,
+                    maxiter=100,
+                    disp=(scheme != "segregated"),
+                ),
+            )
             total_iterations += 1
 
         e_old, e_cur = e_cur, e_new
