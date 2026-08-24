@@ -127,6 +127,7 @@ Esac
 Esac_ns
 etal
 etas
+excinfo
 F
 fcaf
 fcafp

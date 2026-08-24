@@ -582,3 +582,21 @@ def test_real_torord_cai_split_runs_coupled(tmp_path):
     assert np.all(np.isfinite(sim.backend.active_tension.x.array))
     assert np.all(np.isfinite(sim.ep_solver.state("cai")))
     assert np.all(sim.ep_solver.state("cai") > 0.0), "calcium went non-positive"
+
+
+def test_a_backend_on_the_wrong_split_is_refused_end_to_end(tmp_path):
+    """The motivating configuration error, through the real machinery.
+
+    A zeta-split backend loaded against a Ca_i-split ODE file. The transfer
+    buffers are positional, so without a check the coupler writes calcium into
+    the crossbridge population and the run completes with plausible, wrong
+    numbers.
+    """
+    from simcardemsx.transfers import TransferMismatch
+
+    with pytest.raises(TransferMismatch) as excinfo:
+        build_simulation(tmp_path, CAI_SPLIT_ODE, _zeta_backend)
+
+    message = str(excinfo.value)
+    assert "ZetaSplitUFL" in message
+    assert "cai" in message and "XS" in message
