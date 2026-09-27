@@ -3,6 +3,7 @@ from mpi4py import MPI
 import basix
 import dolfinx
 import numpy as np
+import pytest
 
 from simcardemsx.interpolation import MissingValue, TransferOperator
 
@@ -88,3 +89,20 @@ def test_missing_value_data_flow():
     # Assert values transferred accurately
     assert np.allclose(mv.values_mechanics[0, :], 5.0)
     assert np.allclose(mv.values_mechanics[1, :], 10.0)
+
+
+def test_refuses_a_quadrature_source():
+    """A quadrature source must be rejected before any interpolation is attempted.
+
+    dolfinx does not raise a Python exception for this -- it aborts the whole
+    process -- so this only constructs the TransferOperator (never calling
+    interpolate_nonmatching / create_interpolation_data from a quadrature source)
+    and checks that construction itself raises.
+    """
+    mesh, _ = create_meshes()
+    Q = dolfinx.fem.functionspace(
+        mesh,
+        basix.ufl.quadrature_element(mesh.basix_cell(), value_shape=(), degree=2),
+    )
+    with pytest.raises(ValueError, match="quadrature"):
+        TransferOperator(V_source=Q, V_target=dolfinx.fem.functionspace(mesh, ("P", 1)))

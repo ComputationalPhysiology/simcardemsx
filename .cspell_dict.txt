@@ -21,6 +21,7 @@ argmin
 assp
 atleast
 atol
+averager
 axlast
 axpy
 Axrf
@@ -63,6 +64,7 @@ Cécile
 cellmodel
 cellmodels
 celltype
+cellwise
 Clbk
 cmax
 cmdnmax
@@ -109,6 +111,7 @@ dnca
 docname
 docnames
 dofmap
+dofmaps
 dofs
 dolfin
 dolfinx
@@ -323,6 +326,7 @@ nass
 nca
 nconv
 ndarray
+neighbouring
 nestedkey
 neumann
 Neumann
@@ -466,6 +470,7 @@ tauh
 tauj
 taujp
 taum
+tdim
 testgroup
 tfcaf
 tfcafp

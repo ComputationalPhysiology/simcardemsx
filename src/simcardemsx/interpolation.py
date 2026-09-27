@@ -24,6 +24,17 @@ class TransferOperator:
     """
 
     def __init__(self, V_source: dolfinx.fem.FunctionSpace, V_target: dolfinx.fem.FunctionSpace):
+        # dolfinx does not support interpolating *from* a quadrature space -- it
+        # segfaults/aborts the whole process instead of raising, so this must be
+        # caught before anything else here (create_interpolation_data included) runs.
+        if V_source.ufl_element().family_name == "quadrature":
+            raise ValueError(
+                "TransferOperator cannot use a quadrature space as its source "
+                f"(V_source has family {V_source.ufl_element().family_name!r}); "
+                "quadrature values only exist at that element's own points and "
+                "cannot be interpolated from.",
+            )
+
         self.V_source = V_source
         self.V_target = V_target
 
