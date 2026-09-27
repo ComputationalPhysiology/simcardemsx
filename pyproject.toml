@@ -18,7 +18,7 @@ dependencies = [
     "crossbridge",
     # scipy is used by simcardemsx.zero_d for the monolithic reference solve
     "scipy",
-    "gotranx",
+    "gotranx>=1.8",
     "toml",
     "pydantic",
     "pydantic_pint",
