@@ -6,6 +6,7 @@ import basix.ufl
 import dolfinx
 import numpy as np
 import pytest
+import ufl
 
 from simcardemsx.ode_model import RuntimeODEModel, generate_ode_code, load_ode_modules
 
@@ -98,7 +99,8 @@ def test_code_generator_smoke_test(tmp_path):
     assert "def generalized_rush_larsen" in ep_code
 
     mech_code = mech_file.read_text()
-    assert "def" in mech_code
+    assert "def generalized_rush_larsen" in mech_code
+    assert "import ufl" in mech_code
 
 
 # Each generated module's `missing` dict names what that side needs *from the
@@ -187,3 +189,44 @@ def test_real_split_files_have_the_expected_interfaces(tmp_path):
         modules = load_ode_modules(odefile, tmp_path / stem)
         assert set(getattr(modules.ep, "missing", {})) == ep_missing, stem
         assert set(getattr(modules.mechanics, "missing", {})) == mech_missing, stem
+
+
+@pytest.mark.parametrize(
+    "split, mech_missing, ep_missing",
+    [
+        ("caisplit", {"cai"}, {"J_TRPN"}),
+        ("zetasplit", {"XS", "XW"}, {"Zetas", "Zetaw"}),
+        ("catrpnsplit", {"CaTrpn"}, set()),
+    ],
+)
+def test_generated_modules_describe_the_split(split_modules, split, mech_missing, ep_missing):
+    """`provides` on each module names what it hands to the *other* side.
+
+    It is derived from the other side's `missing` dict at generation time
+    (Task 3), so `mech.provides` mirrors `ep.missing` and vice versa -- here
+    that means `mech.provides` == `ep_missing` and `ep.provides` ==
+    `mech_missing`.
+    """
+    ep, mech = split_modules[split]
+    assert set(getattr(mech, "missing", {})) == mech_missing
+    assert set(mech.provides) == ep_missing
+    assert set(ep.provides) == mech_missing
+    assert "Ta" in mech.monitor
+    assert {"lmbda", "dLambda"} <= set(mech.parameter)
+
+
+def test_mechanics_module_emits_ufl(split_modules):
+    """The mechanics module's generated scheme must build a UFL expression
+    tree, not compute a numpy value -- that is the whole point of switching
+    to `gotranx.cli.gotran2ufl`. Every parameter/state/missing-variable is
+    passed in as a `dolfinx.fem.Constant` here, never a Python float: the
+    generated code uses `ufl.Or`/`ufl.lt` etc., which raise on plain Python
+    bools produced by comparing floats directly.
+    """
+    _, mech = split_modules["caisplit"]
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    c = lambda v: dolfinx.fem.Constant(mesh, float(v))
+    p = [c(v) for v in mech.init_parameter_values()]
+    s = [c(v) for v in mech.init_state_values()]
+    out = mech.generalized_rush_larsen(s, c(0.0), c(1.0), p, [c(1e-4)])
+    assert all(isinstance(e, ufl.core.expr.Expr) for e in out)

@@ -336,6 +336,7 @@ ntrpn
 numpyfy
 odefile
 odefiles
+odesolver
 onlylastbeat
 opencarp
 opencmiss
