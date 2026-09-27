@@ -22,6 +22,7 @@ Quarteroni instead.
 from __future__ import annotations
 
 import logging
+import warnings
 from enum import Enum
 
 import dolfinx
@@ -43,8 +44,12 @@ class Scheme(str, Enum):
 def _Zeta(Zeta_prev, A, c, dLambda, dt, scheme):
     dZetas_dt = A * dLambda - Zeta_prev * c
     dZetas_dt_linearized = -c
+    # dt may be a plain float (called outside UFL construction) or a UFL
+    # expression of Constants (called while building the monolithic form, so
+    # the value is read at assembly/Newton time rather than baked in now).
+    exp = ufl.exp if hasattr(dt, "ufl_shape") else np.exp
     if abs(c) > 1e-8:
-        ans = Zeta_prev + dZetas_dt * (np.exp(-c * dt) - 1.0) / dZetas_dt_linearized
+        ans = Zeta_prev + dZetas_dt * (exp(-c * dt) - 1.0) / dZetas_dt_linearized
     else:
         ans = Zeta_prev + dZetas_dt * dt
 
@@ -116,6 +121,14 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         **kwargs,
     ):
         logger.debug("Initialize ZetaSplitUFL")
+        warnings.warn(
+            "simcardemsx.backends.ZetaSplitUFL is deprecated in favour of "
+            "simcardemsx.backends.GeneratedActivation, which derives the same "
+            "Land model from the .ode file instead of a hand-ported copy. "
+            "ZetaSplitUFL is retained only because physcardems imports it.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         self.f0 = f0
         self.s0 = s0
@@ -266,9 +279,16 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
 
     def dLambda(self, lmbda):
         logger.debug("Evaluate dLambda")
-        if self.dt == 0:
-            return self._dLambda
-        return (lmbda - self.lmbda_prev) / self.dt
+        # dt as a UFL expression of Constants, not the Python float `self.dt`:
+        # pulse.StaticProblem compiles this form once, while t == t_prev == 0,
+        # so a Python-float branch taken here would be baked in forever. Built
+        # this way, the value is read fresh at every assembly/Newton iteration.
+        dt_expr = self.t - self._t_prev
+        return ufl.conditional(
+            ufl.gt(dt_expr, 0),
+            (lmbda - self.lmbda_prev) / ufl.max_value(dt_expr, 1e-12),
+            self._dLambda,
+        )
 
     @property
     def Aw(self):
@@ -317,10 +337,15 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         )
 
     def Zetas(self, lmbda):
-        return _Zeta(self.Zetas_prev, self.As, self.cs, self.dLambda(lmbda), self.dt, self._scheme)
+        # Same reasoning as dLambda: pass the UFL dt expression, not the float
+        # property, or the exponential decay factor would be baked in at
+        # compile time (t == t_prev == 0) same as the division was.
+        dt_expr = self.t - self._t_prev
+        return _Zeta(self.Zetas_prev, self.As, self.cs, self.dLambda(lmbda), dt_expr, self._scheme)
 
     def Zetaw(self, lmbda):
-        return _Zeta(self.Zetaw_prev, self.Aw, self.cw, self.dLambda(lmbda), self.dt, self._scheme)
+        dt_expr = self.t - self._t_prev
+        return _Zeta(self.Zetaw_prev, self.Aw, self.cw, self.dLambda(lmbda), dt_expr, self._scheme)
 
     def update_Zetas(self, lmbda):
         logger.debug("update Zetas")

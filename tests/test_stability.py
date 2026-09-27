@@ -3,8 +3,17 @@ from mpi4py import MPI
 import dolfinx
 import numpy as np
 import pulse
+import pytest
 
 from simcardemsx.backends import ZetaSplitUFL
+
+# ZetaSplitUFL emits a DeprecationWarning at construction (it is being
+# replaced by GeneratedActivation); this file constructs it directly, so
+# silence that one specific warning rather than the noise it would otherwise
+# leave in every run's summary.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:simcardemsx.backends.ZetaSplitUFL is deprecated:DeprecationWarning",
+)
 
 
 def test_land_relaxation_stability():

@@ -4,12 +4,21 @@ from mpi4py import MPI
 import dolfinx
 import numpy as np
 import pulse
+import pytest
 
 from simcardemsx.backends import ZetaSplitUFL
 from simcardemsx.controller import SimulationController
 
 # Assuming you have a way to initialize a basic EP solver from fenicsx-beat
 # from beat import MonodomainModel, ...
+
+# ZetaSplitUFL emits a DeprecationWarning at construction (it is being
+# replaced by GeneratedActivation); this file constructs it directly, so
+# silence that one specific warning rather than the noise it would otherwise
+# leave in every run's summary.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:simcardemsx.backends.ZetaSplitUFL is deprecated:DeprecationWarning",
+)
 
 
 def test_coupled_smoke_test():

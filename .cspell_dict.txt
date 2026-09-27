@@ -354,6 +354,7 @@ perc
 permodel
 petsc
 phi
+physcardems
 Piola
 PKNa
 plotly
@@ -370,6 +371,7 @@ pycode
 pypi
 pyplot
 pytest
+pytestmark
 qca
 qna
 Quarteroni
