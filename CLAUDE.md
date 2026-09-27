@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This package requires FEniCSx/dolfinx, which is not pip-installable on its own — it must come from the `ghcr.io/fenics/dolfinx/dolfinx` container image (see `.devcontainer/`). Assume dolfinx, mpi4py, petsc4py, ufl, and basix are already present in the environment rather than trying to pip install them.
 
-`third-party/` contains local, untracked (gitignored) checkouts of sibling/dependency projects (`fenicsx-beat`, `fenicsx-pulse`, `circulation`, `crossbrigde`) kept around for reference when reading their source — they are not part of this repo's history and shouldn't be edited as part of work here.
+`third-party/` contains local, untracked (gitignored) checkouts of sibling/dependency projects (`fenicsx-beat`, `fenicsx-pulse`, `crossbridge`, `cardiac-geometriesx`) kept around for reference when reading their source. They are not part of this repo's history. They are maintained by the same people, so a change that belongs upstream is made as a PR against that project's own repo, not patched around here.
 
 ## Common commands
 
@@ -87,3 +87,7 @@ There is no problem subclass: stock `pulse.StaticProblem` is used. The active st
 Tests avoid needing a real EP/mechanics stack where possible: `test_coupled_system.py` drives `SimulationController` with a `DummyEPSolver`/`MockODEModel`, `test_isolated_ep.py` builds a minimal synthetic `.ode` file on the fly (via `generate_ode_code`) to test mechano-electric feedback, and `test_isolated_mechanics.py` / `test_stability.py` exercise `ZetaSplitUFL` directly against `pulse.StaticProblem`.
 
 `test_backends.py` carries the equivalence record for the port: it writes out, by hand, the stress form that the deleted `MechanicsProblem._material_form` built, and requires the backend to reproduce it. Since that form no longer exists in the package, the test is the only remaining copy of it — don't delete it when adding backends.
+
+## Planning docs
+
+Specs, implementation plans, ADRs, the domain glossary and handoff notes live in `.scratch/`, which is gitignored on purpose: they are working material, not part of the repo. `.scratch/roadmap.md` is the entry point and lists the sub-projects in order. `.scratch/CONTEXT.md` is the glossary and `.scratch/adr/` holds the decisions still in force. `.scratch/archive/feat-coupler/` preserves what the abandoned `feat/coupler` branch learned; read its `HANDOFF.md` before re-deriving anything about the EP/mechanics coupling.
