@@ -41,8 +41,8 @@ dev = [
     "ipython",
     "bump2version",
     "mypy",
-    # Stubs for mypy, which pre-commit runs from this environment (language: system)
-    "scipy-stubs",
+    # Stubs for mypy, which pre-commit runs from this environment (language: system).
+    # Not scipy-stubs: see the scipy mypy override below.
     "types-toml",
     "pre-commit",
 ]
@@ -105,6 +105,13 @@ markers = ["slow: takes more than a few seconds"]
 # Their current releases ship no py.typed marker, so mypy refuses to analyse them. Once the
 # minimum versions required above ship one, this does nothing and can be removed.
 module = ["beat", "beat.*", "crossbridge", "crossbridge.*", "pulse", "pulse.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# scipy ships no types of its own. scipy-stubs would supply them, but it installs optype, and
+# pint >= 0.26 imports optype when it is present, which sends mypy <= 2.3.1 into infinite
+# recursion (python/mypy#21985; fixed on mypy master by python/mypy#22036, not yet released).
+module = ["scipy", "scipy.*"]
 ignore_missing_imports = true
 
 
