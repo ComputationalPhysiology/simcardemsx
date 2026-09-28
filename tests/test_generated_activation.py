@@ -17,6 +17,7 @@ from pathlib import Path
 
 from mpi4py import MPI
 
+import basix.ufl
 import dolfinx
 import gotranx
 import numpy as np
@@ -405,3 +406,86 @@ def test_is_a_pulse_active_model_with_no_potential(split_modules):
     assert isinstance(backend, pulse.active_model.ActiveModel)
     with pytest.raises(NotImplementedError):
         backend.strain_energy(ufl.Identity(3))
+
+
+def _two_tet_mesh() -> dolfinx.mesh.Mesh:
+    """Two tetrahedra sharing the face (1,0,0)-(0,1,0)-(0,0,1).
+
+    Cell 0 is the reference tet, with the exclusive vertex (0, 0, 0); cell 1
+    shares that face and has the exclusive vertex (1, 1, 1).
+    """
+    x = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+    )
+    cells = np.array([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=np.int64)
+    element = basix.ufl.element("Lagrange", "tetrahedron", 1, shape=(3,))
+    return dolfinx.mesh.create_mesh(MPI.COMM_WORLD, cells, ufl.Mesh(element), x)
+
+
+def test_tension_scale_zeroes_the_masked_cell(split_modules):
+    """``tension_scale`` multiplies ``Ta`` in both ``S`` and ``active_tension``.
+
+    A DG0 mask, 0 on cell 0 and 1 (a no-op) on cell 1, is compared against an
+    otherwise identical backend with no ``tension_scale`` at all, driven by the
+    same Ca_i split and inputs: cell 0's active stress and tension must vanish
+    exactly; cell 1's must be untouched.
+    """
+    _, mech = split_modules["caisplit"]
+    mesh = _two_tet_mesh()
+    f0 = _f0(mesh)
+    quadrature_degree = 2
+
+    V_dg0 = dolfinx.fem.functionspace(mesh, ("DG", 0))
+    tension_scale = dolfinx.fem.Function(V_dg0)
+    tension_scale.x.array[V_dg0.dofmap.cell_dofs(0)[0]] = 0.0
+    tension_scale.x.array[V_dg0.dofmap.cell_dofs(1)[0]] = 1.0
+
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("P", 2, (3,))))
+    masked = GeneratedActivation(
+        mech,
+        mesh,
+        f0,
+        quadrature_degree=quadrature_degree,
+        tension_scale=tension_scale,
+    )
+    unmasked = GeneratedActivation(mech, mesh, f0, quadrature_degree=quadrature_degree)
+    masked.register(u)
+    unmasked.register(u)
+
+    for n in range(30):
+        for backend in (masked, unmasked):
+            backend.t.value = float(n)
+            backend.dt.value = 1.0
+            backend.inputs["cai"].x.array[:] = 1e-3
+            backend.post_solve()
+
+    # The comparison means nothing unless the unmasked backend actually activated.
+    assert unmasked.active_tension.x.array.max() > 1.0  # kPa
+
+    F = ufl.grad(u) + ufl.Identity(3)
+    C = F.T * F
+    points = masked.space.element.interpolation_points
+    cells = np.array([0, 1], dtype=np.int32)
+    S_masked = dolfinx.fem.Expression(masked.S(C), points).eval(mesh, cells)
+    S_unmasked = dolfinx.fem.Expression(unmasked.S(C), points).eval(mesh, cells)
+
+    np.testing.assert_array_equal(S_masked[0], 0.0)
+    np.testing.assert_allclose(S_masked[1], S_unmasked[1], rtol=1e-12)
+
+    V_p1 = masked.active_tension.function_space
+    coords = V_p1.tabulate_dof_coordinates()
+    dof_cell0_exclusive = int(np.argmin(np.linalg.norm(coords - np.array([0.0, 0.0, 0.0]), axis=1)))
+    dof_cell1_exclusive = int(np.argmin(np.linalg.norm(coords - np.array([1.0, 1.0, 1.0]), axis=1)))
+
+    assert masked.active_tension.x.array[dof_cell0_exclusive] == 0.0
+    np.testing.assert_allclose(
+        masked.active_tension.x.array[dof_cell1_exclusive],
+        unmasked.active_tension.x.array[dof_cell1_exclusive],
+        rtol=1e-12,
+    )

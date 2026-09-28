@@ -1,12 +1,16 @@
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Literal
+
+from mpi4py import MPI
 
 import beat
 import dolfinx
 import numpy as np
 import pulse
 import pytest
+import ufl
 
 from simcardemsx.backends import GeneratedActivation
 from simcardemsx.ode_model import ODEModules, load_ode_modules
@@ -161,3 +165,111 @@ def _mechanics(
 def make_mechanics():
     """Factory for :func:`_mechanics`: ``make_mechanics(mech_module, mesh, ...)``."""
     return _mechanics
+
+
+@dataclass
+class _TrueUActive(pulse.DynamicProblem):
+    """A ``DynamicProblem`` that adds a hand-built end-of-step active stress.
+
+    This is physcardems's ``cavity.py:56-63`` (``ControlledCavityDynamicProblem``),
+    without ``dev`` -- ``GeneratedActivation.S`` takes no such argument -- built
+    independently of :attr:`~pulse.active_model.ActiveModel.evaluate_at_end_of_step`
+    so it can serve as the reference the flag is checked against: ``true_u_active``
+    is evaluated at the true end-of-step displacement ``self.u``, exactly what the
+    flag makes ``DynamicProblem`` itself do, but by a completely separate code path.
+    """
+
+    true_u_active: GeneratedActivation | None = None
+
+    def _material_form(self, u, v, p):
+        forms = super()._material_form(u, v, p)
+        if self.true_u_active is not None:
+            F = ufl.grad(self.u) + ufl.Identity(3)
+            C = F.T * F
+            var_C = ufl.grad(self.u_test).T * F + F.T * ufl.grad(self.u_test)
+            forms[0] += ufl.inner(self.true_u_active.S(C), 0.5 * var_C) * self.geometry.dx
+        return forms
+
+
+def _dynamic_mechanics(
+    mech_module: ModuleType,
+    *,
+    dt_ms: float,
+    reference: bool = False,
+    end_of_step: bool = True,
+    quadrature_degree: int = 2,
+) -> tuple[pulse.DynamicProblem, GeneratedActivation]:
+    """The pinned D1/D2 element: a one-element ``pulse.DynamicProblem``.
+
+    A unit cube scaled to L = 0.01 m (``mesh_unit`` "m", ``DynamicProblem``'s
+    default), rollers (:func:`_rollers`), Holzapfel-Ogden (transversely
+    isotropic), ``pulse.Compressible()``, ``pulse.Viscous()`` (its default eta,
+    100 Pa s), rho = 1e3 (``DynamicProblem``'s default), ``dt =
+    Variable(dt_ms * 1e-3, "s")``, ``snes_atol`` = :data:`SNES_ATOL`.
+
+    With ``reference=True``, ``model.active`` is ``pulse.active_model.Passive()``
+    and the problem is :class:`_TrueUActive`: the backend's ``S`` is added by hand
+    at the true end-of-step displacement instead of through the flag, giving the
+    reference D1 checks the flag against. Because the backend is not
+    ``model.active`` in that case, ``pulse.StaticProblem`` never calls
+    ``backend.register``, so it is called here instead.
+
+    With ``end_of_step=False``, ``backend.evaluate_at_end_of_step`` is set to
+    ``False`` on the instance *before* the problem is built: ``pulse.DynamicProblem``
+    reads the flag when it compiles the form, i.e. in construction, not at solve
+    time. This is the alpha_f variant.
+    """
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    mesh.geometry.x[:] *= 0.01
+    geometry = pulse.Geometry(mesh=mesh, metadata={"quadrature_degree": quadrature_degree})
+    f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+    s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
+
+    backend = GeneratedActivation(mech_module, mesh, f0, quadrature_degree=quadrature_degree)
+    if not end_of_step:
+        backend.evaluate_at_end_of_step = False
+
+    material = pulse.HolzapfelOgden(
+        f0=f0,
+        s0=s0,
+        **pulse.HolzapfelOgden.transversely_isotropic_parameters(),
+    )
+    model = pulse.CardiacModel(
+        material=material,
+        active=pulse.active_model.Passive() if reference else backend,
+        compressibility=pulse.Compressible(),
+        viscoelasticity=pulse.Viscous(),
+    )
+
+    petsc_options = pulse.DynamicProblem.default_parameters()["petsc_options"]
+    petsc_options["snes_atol"] = SNES_ATOL
+    parameters = {
+        "dt": pulse.Variable(dt_ms * 1e-3, "s"),
+        "petsc_options": petsc_options,
+    }
+    bcs = pulse.BoundaryConditions(dirichlet=[_rollers(mesh)])
+
+    problem: pulse.DynamicProblem
+    if reference:
+        problem = _TrueUActive(
+            model=model,
+            geometry=geometry,
+            bcs=bcs,
+            parameters=parameters,
+            true_u_active=backend,
+        )
+        backend.register(problem.u)
+    else:
+        problem = pulse.DynamicProblem(
+            model=model,
+            geometry=geometry,
+            bcs=bcs,
+            parameters=parameters,
+        )
+    return problem, backend
+
+
+@pytest.fixture
+def make_dynamic_mechanics():
+    """Factory for :func:`_dynamic_mechanics`: ``make_dynamic_mechanics(mech_module, ...)``."""
+    return _dynamic_mechanics
