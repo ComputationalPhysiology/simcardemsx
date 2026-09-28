@@ -72,3 +72,12 @@ def test_dt_mech_a_multiple_of_dt_ep_up_to_round_off_is_accepted(
     problem, backend = make_mechanics(modules.mechanics, _unit_cube(1))
     controller = SimulationController(problem, ep_solver, backend, modules, 0.7, 0.1)
     assert controller.ep_steps_per_mech == 7
+
+
+def test_ep_ode_solver_must_be_a_dolfin_ode_solver(split_modules, make_ep_solver, make_mechanics):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    ep_solver.ode = object()
+    problem, backend = make_mechanics(modules.mechanics, _unit_cube(1))
+    with pytest.raises(TypeError, match="DolfinODESolver"):
+        SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)

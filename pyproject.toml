@@ -41,6 +41,9 @@ dev = [
     "ipython",
     "bump2version",
     "mypy",
+    # Stubs for mypy, which pre-commit runs from this environment (language: system)
+    "scipy-stubs",
+    "types-toml",
     "pre-commit",
 ]
 demo = [
@@ -96,6 +99,13 @@ testpaths = [
     "tests"
 ]
 markers = ["slow: takes more than a few seconds"]
+
+
+[[tool.mypy.overrides]]
+# Their current releases ship no py.typed marker, so mypy refuses to analyse them. Once the
+# minimum versions required above ship one, this does nothing and can be removed.
+module = ["beat", "beat.*", "crossbridge", "crossbridge.*", "pulse", "pulse.*"]
+ignore_missing_imports = true
 
 
 [tool.ruff]

@@ -11,10 +11,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
+import beat
+import numpy as np
+
 from .transfer_plan import TransferPlan, resolve
 
 if TYPE_CHECKING:
-    import beat
     import pulse
 
     from .backends import GeneratedActivation
@@ -52,6 +54,8 @@ class SimulationController:
         If ``backend`` is not the problem's active model, if ``dt_mech`` is not a
         multiple of ``dt_ep``, or if the backend stores its states on a quadrature
         space whose degree differs from the mechanics form's.
+    TypeError
+        If ``ep_solver.ode`` is not a :class:`beat.odesolver.DolfinODESolver`.
     NotImplementedError
         From :class:`~simcardemsx.transfer_plan.TransferPlan`, if the EP ODE space is
         neither P1 nor DG0.
@@ -80,17 +84,27 @@ class SimulationController:
             )
 
         if backend.space.ufl_element().family_name == "quadrature":
-            geometry_degree = mechanics_problem.geometry.metadata.get("quadrature_degree")
+            # The measure every integral of the pulse form uses, so its metadata is the
+            # degree the form asks for.
+            geometry_degree = mechanics_problem.geometry.dx.metadata().get("quadrature_degree")
             if backend.quadrature_degree != geometry_degree:
                 raise ValueError(
                     f"The backend stores its states at quadrature degree "
                     f"{backend.quadrature_degree}, but the mechanics form integrates at "
-                    f"geometry.metadata['quadrature_degree'] = {geometry_degree}. They must "
+                    f"quadrature degree {geometry_degree} (geometry.dx). They must "
                     "be equal: FFCx evaluates the whole integrand at a quadrature-element "
                     "coefficient's own degree and ignores the measure's quadrature_degree, so "
                     "a mismatch would silently change the quadrature of the whole momentum "
                     "integral, not just which states are looked up.",
                 )
+
+        # beat types this as its generic ODE-solver protocol. The transfer plan needs
+        # the one-model solver: it writes into its missing_variables and parameters arrays.
+        ode = ep_solver.ode
+        if not isinstance(ode, beat.odesolver.DolfinODESolver):
+            raise TypeError(
+                f"ep_solver.ode must be a beat.odesolver.DolfinODESolver, got {type(ode).__name__}",
+            )
 
         self.mechanics_problem = mechanics_problem
         self.ep_solver = ep_solver
@@ -103,7 +117,7 @@ class SimulationController:
         self.plan = TransferPlan(
             resolve(ode_modules.ep, ode_modules.mechanics),
             ode_modules.ep,
-            ep_solver.ode,
+            ode,
             backend,
         )
 
@@ -139,8 +153,8 @@ class SimulationController:
 
         self.plan.forward(self.t)
 
-        self.backend.t.value = t_n
-        self.backend.dt.value = self.dt_mech
+        self.backend.t.value = np.asarray(t_n)
+        self.backend.dt.value = np.asarray(self.dt_mech)
         ok = self.mechanics_problem.solve()
         if not ok:
             raise RuntimeError(

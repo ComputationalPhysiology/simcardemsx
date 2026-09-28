@@ -198,7 +198,7 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         ``t - t_prev`` inside the form at every Newton iteration, which is what
         makes this backend monolithic. All this does is move the clock.
         """
-        self.t.value = t
+        self.t.value = np.asarray(t)
 
     def post_solve(self) -> None:
         """Record the stretch and advance the zeta states, after the solve.

@@ -343,21 +343,24 @@ def main(argv: list[str] | None = None):
         V0, _ = V.sub(0).collapse()
         zero = dolfinx.fem.Function(V0)
         zero.x.array[:] = 0.0
+        # The slab is always written with facet markers; ffun is optional only in general.
+        ffun = mech_geo.ffun
+        assert ffun is not None
 
         x0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(0), V0),
-            mech_geo.ffun.dim,
-            mech_geo.ffun.find(mech_geo.markers["X0"][0]),
+            ffun.dim,
+            ffun.find(mech_geo.markers["X0"][0]),
         )
         y0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(1), V0),
-            mech_geo.ffun.dim,
-            mech_geo.ffun.find(mech_geo.markers["Y0"][0]),
+            ffun.dim,
+            ffun.find(mech_geo.markers["Y0"][0]),
         )
         z0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(2), V0),
-            mech_geo.ffun.dim,
-            mech_geo.ffun.find(mech_geo.markers["Z0"][0]),
+            ffun.dim,
+            ffun.find(mech_geo.markers["Z0"][0]),
         )
 
         return [
@@ -404,11 +407,13 @@ def main(argv: list[str] | None = None):
     )
 
     # Timing baseline: wall time spent in the EP ODE step, the EP PDE step and the
-    # mechanics solve, accumulated over the run.
+    # mechanics solve, accumulated over the run. Replacing the methods on these objects
+    # is deliberate: beat's splitting solver and the controller call them through
+    # these attributes, which is what mypy's method-assign objects to.
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0, "mech_s": 0.0}
-    ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")
-    ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")
-    problem.solve = accumulate_time(problem.solve, timings, "mech_s")
+    ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
+    ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
+    problem.solve = accumulate_time(problem.solve, timings, "mech_s")  # type: ignore[method-assign]
 
     # Ta is backend.active_tension, in kPa (ZetaSplitUFL's Ta_current was in Pa).
     # The backend's outputs live on a quadrature space, which cannot be evaluated at
