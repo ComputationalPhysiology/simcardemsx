@@ -23,16 +23,28 @@ one -- does the EP module have a use for it -- answered by whether `lmbda`
 appears in the EP module's `parameter` dict. `dLambda` never crosses back:
 no shipped EP remainder consumes it.
 
-`TransferPlan` (the next layer, not this module) adds the function spaces and
-`interpolation.TransferOperator`s that actually move these names' values
-between the EP and mechanics meshes at runtime.
+:class:`TransferPlan` is the runtime half: it adds the function spaces,
+averagers and `interpolation.TransferOperator`s that move these names' values
+between beat's arrays on the EP mesh and the activation backend on the
+mechanics mesh.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Mapping
+from typing import TYPE_CHECKING, Callable, Mapping, NamedTuple
+
+import dolfinx
+import numpy as np
+
+from .averaging import make_averager
+from .interpolation import TransferOperator
+
+if TYPE_CHECKING:
+    import beat
+
+    from .backends import GeneratedActivation
 
 
 @dataclass(frozen=True)
@@ -107,3 +119,176 @@ def resolve(ep_module: ModuleType, activation_module: ModuleType) -> Crossings:
         backward=_names_by_index(ep_missing),
         stretch_to_ep="lmbda" in ep_parameter,
     )
+
+
+#: Averaging target on the mechanics mesh, by EP ODE space: the space matching it,
+#: so that the operator onto the EP mesh is the identity when the meshes coincide.
+_AVERAGING_ELEMENT: dict[str, tuple[str, int]] = {"P1": ("P", 1), "DG0": ("DG", 0)}
+
+
+def _space_name(V: dolfinx.fem.FunctionSpace) -> str:
+    """``"P1"``, ``"DG0"``, ``"DG1"``, ``"quadrature2"``, ...: the family and degree of ``V``."""
+    element = V.ufl_element()
+    family = "DG" if element.discontinuous else element.family_name
+    return f"{family}{element.degree}"
+
+
+def _require_shape(what: str, array, expected: tuple[int, int], why: str) -> None:
+    if not isinstance(array, np.ndarray) or array.shape != expected:
+        shape = array.shape if isinstance(array, np.ndarray) else type(array).__name__
+        raise ValueError(f"{what} must be an array of shape {expected}, got {shape}: {why}")
+
+
+class _Backward(NamedTuple):
+    """One name crossing activation -> EP, and where in beat's arrays it lands."""
+
+    name: str
+    average: Callable[[], None]
+    averaged: dolfinx.fem.Function  # on the mechanics mesh, in the space matching EP's
+    received: dolfinx.fem.Function  # on the EP ODE space
+    array: str  # attribute of the ODE solver: "missing_variables" or "parameters"
+    row: int
+
+
+class TransferPlan:
+    """Move the values named by ``crossings`` between beat's EP arrays and ``backend``.
+
+    Forward (EP -> activation): :meth:`forward` calls the EP module's generated
+    ``missing_values()`` on beat's state and parameter arrays, and interpolates
+    each row it produces from the EP ODE space straight into the backend's input
+    Function of that name (a quadrature space, typically, on another mesh).
+
+    Backward (activation -> EP): :meth:`backward` **averages, never
+    point-interpolates**, each backend output -- the backward names, plus
+    ``lmbda`` when ``crossings.stretch_to_ep`` -- onto a space on the mechanics
+    mesh matching the EP ODE space (lumped projection onto P1, or the cell
+    average onto DG0; see :func:`~simcardemsx.averaging.make_averager`),
+    interpolates that onto the EP ODE space, and writes it into row
+    ``ep_module.missing[name]`` of ``ode.missing_variables``, or, for ``lmbda``,
+    row ``ep_module.parameter["lmbda"]`` of ``ode.parameters``. λ is
+    discontinuous across cells, and point interpolation into P1 would take each
+    node's value from whichever neighbouring cell was visited last.
+
+    Both writes are **in place**: beat's ``DolfinODESolver`` hands its
+    ``parameters`` and ``missing_variables`` arrays to its inner solver by
+    reference at construction, so rebinding the attributes would leave EP
+    integrating with the old arrays. For the same reason the arrays must already
+    have one column per point: a λ that varies between points cannot be written
+    into a parameter array that has one value for all of them.
+
+    Parameters
+    ----------
+    crossings:
+        From :func:`resolve` on ``ep_module`` and the backend's module.
+    ep_module:
+        The generated EP module; the one ``ode`` integrates.
+    ode:
+        beat's ODE solver. Its ODE space (``ode.v_ode.function_space``) must be P1
+        or DG0.
+    backend:
+        The activation backend on the mechanics mesh.
+
+    Raises
+    ------
+    NotImplementedError
+        If the EP ODE space is neither P1 nor DG0.
+    ValueError
+        If values cross back and ``ode.missing_variables`` is not an array of
+        shape ``(len(ep_module.missing), num_points)``, or if ``lmbda`` crosses
+        back and ``ode.parameters`` is not an array of shape
+        ``(num_parameters, num_points)``.
+    """
+
+    def __init__(
+        self,
+        crossings: Crossings,
+        ep_module: ModuleType,
+        ode: beat.odesolver.DolfinODESolver,
+        backend: GeneratedActivation,
+    ):
+        V_ep = ode.v_ode.function_space
+        space = _space_name(V_ep)
+        if space not in _AVERAGING_ELEMENT:
+            raise NotImplementedError(
+                f"The EP ODE space is {space}; only {' and '.join(_AVERAGING_ELEMENT)} are "
+                "supported, because values going back to EP are averaged onto a matching "
+                "space on the mechanics mesh first, and averaging is only defined onto those.",
+            )
+
+        num_points = ode.v_ode.x.array.size
+        ep_missing: Mapping[str, int] = getattr(ep_module, "missing", {})
+        if crossings.backward:
+            _require_shape(
+                "ode.missing_variables",
+                ode.missing_variables,
+                (len(ep_missing), num_points),
+                f"{list(crossings.backward)} cross back to EP, one row each, one column "
+                "per point of the EP ODE space",
+            )
+        if crossings.stretch_to_ep:
+            _require_shape(
+                "ode.parameters",
+                ode.parameters,
+                (len(ep_module.init_parameter_values()), num_points),
+                "lmbda crosses back to EP and differs between points, so the parameters "
+                "need one column per point of the EP ODE space (e.g. np.tile them)",
+            )
+
+        self.crossings = crossings
+        self.ep_module = ep_module
+        self.ode = ode
+        self.backend = backend
+
+        # The generated missing_values() takes a missing_variables argument only
+        # when the EP side needs something back, i.e. when there are backward names.
+        self._ep_takes_missing = bool(crossings.backward)
+
+        self._forward_sources = {
+            name: dolfinx.fem.Function(V_ep, name=name) for name in crossings.forward
+        }
+        self._forward_operator = (
+            TransferOperator(V_source=V_ep, V_target=backend.space) if crossings.forward else None
+        )
+
+        targets = [("missing_variables", name, ep_missing[name]) for name in crossings.backward]
+        if crossings.stretch_to_ep:
+            targets.append(("parameters", "lmbda", ep_module.parameter["lmbda"]))
+        V_averaged = dolfinx.fem.functionspace(backend.space.mesh, _AVERAGING_ELEMENT[space])
+        self._backward_operator = (
+            TransferOperator(V_source=V_averaged, V_target=V_ep) if targets else None
+        )
+        self._backward: list[_Backward] = []
+        for array, name, row in targets:
+            averaged = dolfinx.fem.Function(V_averaged, name=name)
+            self._backward.append(
+                _Backward(
+                    name=name,
+                    average=make_averager(backend.outputs[name], averaged),
+                    averaged=averaged,
+                    received=dolfinx.fem.Function(V_ep, name=name),
+                    array=array,
+                    row=row,
+                ),
+            )
+
+    def forward(self, t: float) -> None:
+        """EP -> ``backend.inputs``, from beat's current states at time ``t``."""
+        if self._forward_operator is None:
+            return
+        ode = self.ode
+        args = [t, ode.values, ode.parameters]
+        if self._ep_takes_missing:
+            args.append(ode.missing_variables)
+        values = self.ep_module.missing_values(*args)
+        for name, source in self._forward_sources.items():
+            source.x.array[:] = values[self.ep_module.provides[name]]
+            self._forward_operator.interpolate(source, self.backend.inputs[name])
+
+    def backward(self) -> None:
+        """``backend.outputs`` -> ``ode.missing_variables`` / ``ode.parameters``, in place."""
+        if self._backward_operator is None:
+            return
+        for crossing in self._backward:
+            crossing.average()
+            self._backward_operator.interpolate(crossing.averaged, crossing.received)
+            getattr(self.ode, crossing.array)[crossing.row, :] = crossing.received.x.array
