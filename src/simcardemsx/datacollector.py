@@ -177,7 +177,10 @@ class DataCollector:
     def __post_init__(self):
         self.outdir.mkdir(exist_ok=True, parents=True)
 
-        self._t = np.arange(0, self.config["sim"]["sim_dur"], self.config["sim"]["dt"])
+        # The time at the end of each EP step: self.t[i] is when EP step i (from 0) has
+        # been taken, which is when the controller's ep_callback for it fires.
+        dt = self.config["sim"]["dt"]
+        self._t = np.arange(0, self.config["sim"]["sim_dur"], dt) + dt
         self._t_ep = []
         self._t_mech = []
         (self.outdir / "config.txt").write_text(toml.dumps(self.config))
@@ -348,8 +351,11 @@ class DataCollector:
         return self._broadcast(values, u, indices)
 
     def write_node_data_mech(self, i):
+        """Record the mechanics point and mesh-average data after mechanics step ``i``
+        (counted from 0)."""
         i_ = int(i / self.config["sim"]["save_frequency_mech"])
-        self._t_mech.append(self.t[int(i_ * self.config["sim"]["N"])])
+        # Mechanics step i ends with EP step (i + 1) * N - 1.
+        self._t_mech.append(self.t[(i + 1) * self.config["sim"]["N"] - 1])
         for var_nr, data in enumerate(self.config["output"]["point_mech"]):
             out_mech_var = data["name"]
             # Trace variable in coordinate
@@ -367,8 +373,9 @@ class DataCollector:
             )
 
     def write_node_data_ep(self, i):
+        """Record the EP point and mesh-average data after EP step ``i`` (counted from 0)."""
         i_ = int(i / self.config["sim"]["save_frequency_ep"])
-        self._t_ep.append(self.t[i_])
+        self._t_ep.append(self.t[i])
         for var_nr, data in enumerate(self.config["output"]["point_ep"]):
             out_ep_var = data["name"]
             # Trace variable in coordinate
