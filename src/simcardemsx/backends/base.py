@@ -3,9 +3,16 @@
 An *activation backend* owns everything about how active tension is generated
 and how it reaches the mechanics solve. Different backends make genuinely
 different numerical choices -- where the EP/mechanics split is cut, and whether
-the force-generation model is coupled monolithically or in a segregated way --
-but they present one interface, so a simulation can swap between them by
-changing one line.
+the force-generation model is coupled monolithically or in a segregated way.
+
+Only :class:`ZetaSplitUFL` and :class:`CrossbridgeSegregated` implement the
+``ActivationBackend`` protocol below. :class:`~simcardemsx.backends.generated.
+GeneratedActivation` does not: it has no ``wants_from_ep``/``gives_to_ep``/
+``ep_inputs``, since what crosses between EP and activation is instead derived
+from the two generated modules by :func:`simcardemsx.transfer_plan.resolve` and
+moved by :class:`simcardemsx.transfer_plan.TransferPlan`. It is also the only
+backend driven through :class:`~simcardemsx.controller.SimulationController`
+rather than directly against ``pulse``.
 
 That matters more than usual here, because the choices are not equivalent.
 A segregated coupling of force generation to mechanics is unstable, and in

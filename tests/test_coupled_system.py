@@ -1,142 +1,83 @@
-# tests/test_coupled_system.py
+"""The guards :class:`SimulationController` checks at construction.
+
+That values actually cross through the controller is gate 5, in
+``tests/test_round_trip.py``.
+"""
+
 from mpi4py import MPI
 
 import dolfinx
-import numpy as np
-import pulse
+import pytest
 
-from simcardemsx.backends import ZetaSplitUFL
+from simcardemsx.backends import GeneratedActivation
 from simcardemsx.controller import SimulationController
 
-# Assuming you have a way to initialize a basic EP solver from fenicsx-beat
-# from beat import MonodomainModel, ...
+
+def _unit_cube(n: int) -> dolfinx.mesh.Mesh:
+    return dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, n, n, n)
 
 
-def test_coupled_smoke_test():
-    """
-    Integration test to ensure the EP solver, Mechanics solver, and
-    Transfer Operators can step through time together without crashing.
-    """
-    comm = MPI.COMM_WORLD
-    mesh_mech = dolfinx.mesh.create_unit_cube(comm, 1, 1, 1)
-    mesh_ep = dolfinx.mesh.create_unit_cube(comm, 2, 2, 2)
-
-    geo = pulse.Geometry(mesh=mesh_mech, metadata={"quadrature_degree": 2})
-    f0 = dolfinx.fem.Constant(mesh_mech, np.array([1.0, 0.0, 0.0]))
-    s0 = dolfinx.fem.Constant(mesh_mech, np.array([0.0, 1.0, 0.0]))
-    n0 = dolfinx.fem.Constant(mesh_mech, np.array([0.0, 0.0, 1.0]))
-
-    V_mech_dg = dolfinx.fem.functionspace(mesh_mech, ("DG", 1))
-    XS_mech = dolfinx.fem.Function(V_mech_dg)
-    XW_mech = dolfinx.fem.Function(V_mech_dg)
-
-    active_model = ZetaSplitUFL(f0=f0, s0=s0, n0=n0, XS=XS_mech, XW=XW_mech, mesh=mesh_mech)
-    material_params = pulse.HolzapfelOgden.transversely_isotropic_parameters()
-    material = pulse.HolzapfelOgden(f0=f0, s0=s0, **material_params)
-
-    cardiac_model = pulse.CardiacModel(
-        material=material,
-        active=active_model,
-        compressibility=pulse.Incompressible(),
+def test_quadrature_degree_mismatch_raises(split_modules, make_ep_solver, make_mechanics):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    problem, backend = make_mechanics(
+        modules.mechanics,
+        _unit_cube(1),
+        quadrature_degree=2,
+        backend_quadrature_degree=4,
     )
+    with pytest.raises(ValueError, match="4.*2|2.*4"):
+        SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)
 
-    # Roller boundaries
-    def dirichlet_bc(V):
-        V0, _ = V.sub(0).collapse()
-        zero = dolfinx.fem.Function(V0)
-        zero.x.array[:] = 0.0
-        fdim = mesh_mech.topology.dim - 1
-        x0_facets = dolfinx.mesh.locate_entities_boundary(
-            mesh_mech,
-            fdim,
-            lambda x: np.isclose(x[0], 0.0),
-        )
-        y0_facets = dolfinx.mesh.locate_entities_boundary(
-            mesh_mech,
-            fdim,
-            lambda x: np.isclose(x[1], 0.0),
-        )
-        z0_facets = dolfinx.mesh.locate_entities_boundary(
-            mesh_mech,
-            fdim,
-            lambda x: np.isclose(x[2], 0.0),
-        )
-        return [
-            dolfinx.fem.dirichletbc(
-                zero,
-                dolfinx.fem.locate_dofs_topological((V.sub(0), V0), fdim, x0_facets),
-                V.sub(0),
-            ),
-            dolfinx.fem.dirichletbc(
-                zero,
-                dolfinx.fem.locate_dofs_topological((V.sub(1), V0), fdim, y0_facets),
-                V.sub(1),
-            ),
-            dolfinx.fem.dirichletbc(
-                zero,
-                dolfinx.fem.locate_dofs_topological((V.sub(2), V0), fdim, z0_facets),
-                V.sub(2),
-            ),
-        ]
 
-    bcs = pulse.BoundaryConditions(dirichlet=[dirichlet_bc])
-    mech_problem = pulse.StaticProblem(
-        model=cardiac_model,
-        geometry=geo,
-        bcs=bcs,
-        parameters={"base_bc": pulse.problem.BaseBC.free},
+def test_backend_must_be_the_one_in_the_problem(split_modules, make_ep_solver, make_mechanics):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    mesh = _unit_cube(1)
+    problem, backend = make_mechanics(modules.mechanics, mesh)
+    other = GeneratedActivation(
+        modules.mechanics,
+        mesh,
+        backend.f0,
+        quadrature_degree=backend.quadrature_degree,
     )
+    with pytest.raises(ValueError, match="model.active"):
+        SimulationController(problem, ep_solver, other, modules, 1.0, 0.1)
 
-    class DummyEPSolver:
-        def __init__(self):
-            self.V = dolfinx.fem.functionspace(mesh_ep, ("DG", 1))
-            self.state_function = dolfinx.fem.Function(self.V)
 
-            class MockODE:
-                def __init__(self, state):
-                    self._values = state.x.array
-                    self.parameters = None
+@pytest.mark.parametrize("dt_mech, dt_ep", [(1.0, 0.3), (0.05, 0.1)])
+def test_dt_mech_must_be_a_multiple_of_dt_ep(
+    split_modules,
+    make_ep_solver,
+    make_mechanics,
+    dt_mech,
+    dt_ep,
+):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    problem, backend = make_mechanics(modules.mechanics, _unit_cube(1))
+    with pytest.raises(ValueError, match="multiple"):
+        SimulationController(problem, ep_solver, backend, modules, dt_mech, dt_ep)
 
-            self.ode = MockODE(self.state_function)
 
-        def step(self, t_span):
-            self.state_function.x.array[:] += 0.05
+def test_dt_mech_a_multiple_of_dt_ep_up_to_round_off_is_accepted(
+    split_modules,
+    make_ep_solver,
+    make_mechanics,
+):
+    """0.7 / 0.1 is 6.999... and 0.7 % 0.1 is 0.0999... in floating point; 0.7 is
+    still seven steps of 0.1, and the check must say so."""
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    problem, backend = make_mechanics(modules.mechanics, _unit_cube(1))
+    controller = SimulationController(problem, ep_solver, backend, modules, 0.7, 0.1)
+    assert controller.ep_steps_per_mech == 7
 
-    ep_solver = DummyEPSolver()
 
-    # Create a lightweight Mock ODE Model to satisfy the SimulationController API
-    class MockODEModel:
-        def __init__(self):
-            class MissingMech:
-                def interpolate_ep_to_mechanics(self):
-                    # Simulate the TransferOperator moving EP state to Mechanics XS
-                    XS_mech.x.array[:] = ep_solver.state_function.x.array[: len(XS_mech.x.array)]
-
-                def mechanics_function_to_values(self):
-                    pass
-
-            self.missing_mech = MissingMech()
-            self.missing_ep = None
-
-        def update_ep_missing_values(self, t, vals, params):
-            pass
-
-        def update_prev_missing_mech(self):
-            pass
-
-    ode_model = MockODEModel()
-
-    controller = SimulationController(
-        mechanics_problem=mech_problem,
-        ep_solver=ep_solver,
-        ode_model=ode_model,
-        dt_mech=1.0,
-        dt_ep=0.1,
-    )
-
-    for step in range(3):
-        controller.step()
-
-    assert np.max(XS_mech.x.array) > 0.0, "EP state failed to transfer to mechanics"
-    disp = np.linalg.norm(mech_problem.u.x.array)
-    assert disp > 0.0, "Mechanics mesh did not deform"
+def test_ep_ode_solver_must_be_a_dolfin_ode_solver(split_modules, make_ep_solver, make_mechanics):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    ep_solver.ode = object()
+    problem, backend = make_mechanics(modules.mechanics, _unit_cube(1))
+    with pytest.raises(TypeError, match="DolfinODESolver"):
+        SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)

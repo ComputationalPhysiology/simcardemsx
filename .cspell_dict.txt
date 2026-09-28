@@ -21,6 +21,8 @@ argmin
 assp
 atleast
 atol
+averager
+averagers
 axlast
 axpy
 Axrf
@@ -63,6 +65,7 @@ Cécile
 cellmodel
 cellmodels
 celltype
+cellwise
 Clbk
 cmax
 cmdnmax
@@ -109,6 +112,7 @@ dnca
 docname
 docnames
 dofmap
+dofmaps
 dofs
 dolfin
 dolfinx
@@ -123,6 +127,7 @@ Elsevier
 emcoupling
 endo
 eP
+errstate
 Esac
 Esac_ns
 etal
@@ -323,6 +328,7 @@ nass
 nca
 nconv
 ndarray
+neighbouring
 nestedkey
 neumann
 Neumann
@@ -336,6 +342,7 @@ ntrpn
 numpyfy
 odefile
 odefiles
+odesolver
 onlylastbeat
 opencarp
 opencmiss
@@ -354,6 +361,7 @@ perc
 permodel
 petsc
 phi
+physcardems
 Piola
 PKNa
 plotly
@@ -370,6 +378,7 @@ pycode
 pypi
 pyplot
 pytest
+pytestmark
 qca
 qna
 Quarteroni
@@ -463,6 +472,7 @@ tauh
 tauj
 taujp
 taum
+tdim
 testgroup
 tfcaf
 tfcafp

@@ -283,8 +283,13 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         r"""Active second Piola-Kirchhoff stress,
         :math:`\mathbf{S}_a = (T_a + K_a\Delta\lambda)\, f_0 \otimes f_0 / \lambda`
         -- R&Q Eq. (19) in the reference configuration.
+
+        ``dev`` is accepted for protocol compatibility and ignored: pulse's
+        ``StabilizedActiveStress.S`` (unlike ``HyperElasticMaterial.S``) has no
+        ``dev`` argument, since active tension along a fiber is not split into
+        deviatoric/volumetric parts (pulse commit 87b973e).
         """
-        return self._active.S(C, dev=dev)
+        return self._active.S(C)
 
     def P(self, F: ufl.core.expr.Expr, dev: bool = False) -> ufl.core.expr.Expr:
         return F * self.S(F.T * F, dev=dev)

@@ -1,13 +1,9 @@
 # tests/test_isolated_ep.py
 
 
-from mpi4py import MPI
-
-import basix.ufl
-import dolfinx
 import numpy as np
 
-from simcardemsx.ode_model import RuntimeODEModel, load_ode_modules
+from simcardemsx.ode_model import load_ode_modules
 
 
 def test_mechano_electric_feedback(tmp_path):
@@ -35,22 +31,8 @@ def test_mechano_electric_feedback(tmp_path):
     modules = load_ode_modules(ode_file, tmp_path)
     ep_module = modules.ep
 
-    # 3. Setup FEniCSx spaces
-    comm = MPI.COMM_WORLD
-    mesh = dolfinx.mesh.create_unit_cube(comm, 1, 1, 1)
-    element = basix.ufl.element(basix.ElementFamily.P, mesh.basix_cell(), 1)
-    V = dolfinx.fem.functionspace(mesh, element)
-
-    # 4. Initialize RuntimeODEModel
-    model = RuntimeODEModel(
-        ep_module_dict=ep_module.__dict__,
-        mech_module_dict=modules.mechanics.__dict__,
-        mech_ode_space=V,
-        ep_ode_space=V,
-    )
-
-    # 5. Extract initial states and parameters
-    num_dofs = V.dofmap.index_map.size_local
+    # 3. Extract initial states and parameters, at the 8 vertices of a unit cube
+    num_dofs = 8
     state_baseline = np.zeros((1, num_dofs))
     state_stretched = np.zeros((1, num_dofs))
 
@@ -66,7 +48,7 @@ def test_mechano_electric_feedback(tmp_path):
     baseline_lambda = np.ones((1, num_dofs)) * 1.0
 
     # Capture the returned updated states!
-    state_baseline = model.fgr(
+    state_baseline = ep_module.generalized_rush_larsen(
         states=state_baseline,
         t=0.0,
         parameters=params,
@@ -78,7 +60,7 @@ def test_mechano_electric_feedback(tmp_path):
     stretched_lambda = np.ones((1, num_dofs)) * 1.2
 
     # Capture the returned updated states!
-    state_stretched = model.fgr(
+    state_stretched = ep_module.generalized_rush_larsen(
         states=state_stretched,
         t=0.0,
         parameters=params,

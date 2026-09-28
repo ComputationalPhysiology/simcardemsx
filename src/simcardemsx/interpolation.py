@@ -1,21 +1,5 @@
-import logging
-from dataclasses import dataclass
-
 import dolfinx
 import numpy as np
-import ufl
-
-logger = logging.getLogger(__name__)
-
-
-def _num_dofs(V: dolfinx.fem.FunctionSpace) -> int:
-    """Local dof count of ``V``, including ghosts.
-
-    Equal to ``dolfinx.fem.Function(V).x.array.size``, but available without
-    allocating a Function.
-    """
-    index_map = V.dofmap.index_map
-    return (index_map.size_local + index_map.num_ghosts) * V.dofmap.index_map_bs
 
 
 class TransferOperator:
@@ -24,6 +8,17 @@ class TransferOperator:
     """
 
     def __init__(self, V_source: dolfinx.fem.FunctionSpace, V_target: dolfinx.fem.FunctionSpace):
+        # dolfinx does not support interpolating *from* a quadrature space -- it
+        # segfaults/aborts the whole process instead of raising, so this must be
+        # caught before anything else here (create_interpolation_data included) runs.
+        if V_source.ufl_element().family_name == "quadrature":
+            raise ValueError(
+                "TransferOperator cannot use a quadrature space as its source "
+                f"(V_source has family {V_source.ufl_element().family_name!r}); "
+                "quadrature values only exist at that element's own points and "
+                "cannot be interpolated from.",
+            )
+
         self.V_source = V_source
         self.V_target = V_target
 
@@ -44,75 +39,3 @@ class TransferOperator:
         """Interpolates the source function into the target function in-place."""
         u_target.interpolate_nonmatching(u_source, self.cells_target, self.interpolation_data)
         u_target.x.scatter_forward()
-
-
-@dataclass
-class MissingValue:
-    element: ufl.finiteelement.AbstractFiniteElement
-    interpolation_element: ufl.finiteelement.AbstractFiniteElement
-    mechanics_mesh: dolfinx.mesh.Mesh
-    ep_mesh: dolfinx.mesh.Mesh
-    num_values: int
-
-    def __post_init__(self):
-        self.V_ep = dolfinx.fem.functionspace(self.ep_mesh, self.element)
-        self.V_mechanics = dolfinx.fem.functionspace(self.mechanics_mesh, self.element)
-
-        self.V_ep_int = dolfinx.fem.functionspace(self.ep_mesh, self.interpolation_element)
-        self.V_mechanics_int = dolfinx.fem.functionspace(
-            self.mechanics_mesh,
-            self.interpolation_element,
-        )
-
-        self.u_ep = [dolfinx.fem.Function(self.V_ep) for _ in range(self.num_values)]
-        self.u_mechanics = [dolfinx.fem.Function(self.V_mechanics) for _ in range(self.num_values)]
-
-        self.u_ep_int = [dolfinx.fem.Function(self.V_ep_int) for _ in range(self.num_values)]
-        self.u_mechanics_int = [
-            dolfinx.fem.Function(self.V_mechanics_int) for _ in range(self.num_values)
-        ]
-
-        # Sized from the function spaces rather than from u_ep[0], so that
-        # num_values == 0 is representable. That case is real: gotranx omits a
-        # side's `missing` entry entirely when it needs nothing from the other,
-        # as in the CaTrpn split where EP needs nothing back from mechanics.
-        self.values_ep = np.zeros((self.num_values, _num_dofs(self.V_ep)))
-        self.values_mechanics = np.zeros((self.num_values, _num_dofs(self.V_mechanics)))
-
-        # Setup Transfer Operators instead of manual interpolation data
-        self.transfer_ep2mech = TransferOperator(V_source=self.V_ep_int, V_target=self.V_mechanics)
-        self.transfer_mech2ep = TransferOperator(V_source=self.V_mechanics_int, V_target=self.V_ep)
-
-    @property
-    def domain_mechanics(self):
-        return self.mechanics_mesh
-
-    @property
-    def domain_ep(self):
-        return self.ep_mesh
-
-    def ep_values_to_function(self) -> None:
-        for i in range(self.num_values):
-            self.u_ep[i].x.array[:] = self.values_ep[i]
-
-    def ep_function_to_values(self) -> None:
-        for i in range(self.num_values):
-            self.values_ep[i, :] = self.u_ep[i].x.array[:]
-
-    def mechanics_values_to_function(self) -> None:
-        for i in range(self.num_values):
-            self.u_mechanics[i].x.array[:] = self.values_mechanics[i]
-
-    def mechanics_function_to_values(self) -> None:
-        for i in range(self.num_values):
-            self.values_mechanics[i, :] = self.u_mechanics[i].x.array[:]
-
-    def interpolate_ep_to_mechanics(self) -> None:
-        logger.debug("Interpolate ep to mechanics")
-        for i in range(self.num_values):
-            self.transfer_ep2mech.interpolate(self.u_ep_int[i], self.u_mechanics[i])
-
-    def interpolate_mechanics_to_ep(self) -> None:
-        logger.debug("Interpolate mechanics to ep")
-        for i in range(self.num_values):
-            self.transfer_mech2ep.interpolate(self.u_mechanics_int[i], self.u_ep[i])

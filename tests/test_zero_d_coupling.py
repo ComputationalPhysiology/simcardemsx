@@ -140,10 +140,13 @@ def test_stabilized_scheme_converges_at_first_order():
     previous test a statement about the scheme rather than about the problem.
     """
     dts = (4e-3, 2e-3, 1e-3, 5e-4)
-    errors = [
-        zero_d.compare(tissue=UNSTABLE, dt=dt, T=T_END).error_against_monolithic("stabilized")
-        for dt in dts
-    ]
+    # compare() also runs the naive scheme, whose documented blow-up (module
+    # docstring) drives strain past e <= -1 at the finest dt, hitting log1p(nan).
+    with np.errstate(invalid="ignore"):
+        errors = [
+            zero_d.compare(tissue=UNSTABLE, dt=dt, T=T_END).error_against_monolithic("stabilized")
+            for dt in dts
+        ]
 
     assert all(b < a for a, b in zip(errors, errors[1:])), f"error did not decrease: {errors}"
 

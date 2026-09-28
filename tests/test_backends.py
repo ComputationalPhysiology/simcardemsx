@@ -24,6 +24,15 @@ import ufl
 
 from simcardemsx.backends import Transfer, ZetaSplitUFL
 
+# ZetaSplitUFL emits a DeprecationWarning at construction (it is being
+# replaced by GeneratedActivation); this file constructs it constantly on
+# purpose, so silence that one specific warning rather than the noise it
+# would otherwise leave in every run's summary. `test_zeta_split_ufl_warns_deprecated`
+# below still asserts it, inside a `pytest.warns` block that overrides this filter.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:simcardemsx.backends.ZetaSplitUFL is deprecated:DeprecationWarning",
+)
+
 
 @pytest.fixture
 def mesh():
@@ -137,6 +146,23 @@ def test_stretch_formulation_differs_by_the_stretch(mesh, dirs):
     lmbda = ufl.sqrt(ufl.inner(C * f0, f0))
     resid = invariant.S(C) - lmbda * stretch.S(C)
     assert _integrate(ufl.inner(resid, resid), mesh) < 1e-20
+
+
+def test_zeta_states_see_the_current_stretch(mesh, dirs):
+    """The form is built while t == t_prev, as pulse does. After the clock
+    moves, the compiled zeta states must depend on the current stretch.
+    On main they do not: dt == 0 at build time bakes in Zetas_prev."""
+    model = _backend(mesh, dirs)  # built at t = t_prev = 0
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("P", 2, (3,))))
+    F = ufl.grad(u) + ufl.Identity(3)
+    lmbda = ufl.sqrt(ufl.inner(F.T * F * model.f0, model.f0))
+    form = dolfinx.fem.form(model.Zetas(lmbda) * ufl.dx(domain=mesh))  # compiled now
+    model.t.value = 1.0  # one ms step, after compilation
+    u.interpolate(lambda x: np.zeros_like(x))
+    z_rest = dolfinx.fem.assemble_scalar(form)
+    u.interpolate(lambda x: np.vstack([-0.05 * x[0], 0 * x[1], 0 * x[2]]))
+    z_short = dolfinx.fem.assemble_scalar(form)
+    assert abs(z_short - z_rest) > 1e-6
 
 
 def test_first_piola_is_normalized_under_stretch_formulation(mesh, dirs):
@@ -318,11 +344,10 @@ def test_post_solve_advances_the_zeta_states(mesh, dirs):
     np.testing.assert_allclose(float(backend._t_prev.value), 2.0)
 
 
-def test_land_alias_still_works_but_warns(mesh, dirs):
-    """Existing code importing LandModel keeps working, loudly."""
-    from simcardemsx.land import LandModel
-
+def test_zeta_split_ufl_warns_deprecated(mesh, dirs):
+    """ZetaSplitUFL is being replaced by the generated backend; it must say so
+    at construction, loudly enough that a caller notices before porting more
+    code onto a class that is going away."""
     f0, s0, n0 = dirs
-    with pytest.warns(DeprecationWarning, match="ZetaSplitUFL"):
-        model = LandModel(f0=f0, s0=s0, n0=n0, mesh=mesh)
-    assert isinstance(model, ZetaSplitUFL)
+    with pytest.warns(DeprecationWarning, match="GeneratedActivation"):
+        ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh)

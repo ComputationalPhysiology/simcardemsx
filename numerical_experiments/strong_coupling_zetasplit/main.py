@@ -1,6 +1,20 @@
+"""The worked example: EP and mechanics coupled on a slab, for any split of an ``.ode`` file.
+
+EP (fenicsx-beat, monodomain) and mechanics (fenicsx-pulse, quasistatic) are coupled
+through :class:`~simcardemsx.controller.SimulationController`, with the ``mechanics``
+component of ``--odefile`` stepped inside the mechanics Newton iteration by
+:class:`~simcardemsx.backends.GeneratedActivation`. Output goes to
+``output/<odefile stem>/``, including ``timings.json``: the wall time spent in the EP
+ODE step, the EP PDE step and the mechanics solve.
+"""
+
+import argparse
+import functools
+import json
 import logging
+import time
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from mpi4py import MPI
 
@@ -11,13 +25,16 @@ import pulse
 import ufl
 
 import cardiac_geometries
-from simcardemsx.backends import ZetaSplitUFL
+from simcardemsx.averaging import make_averager
+from simcardemsx.backends import GeneratedActivation
 from simcardemsx.controller import SimulationController
 from simcardemsx.datacollector import DataCollector
-from simcardemsx.ode_model import RuntimeODEModel, load_ode_modules
+from simcardemsx.ode_model import load_ode_modules
 
 logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
+DEFAULT_ODEFILE = Path("../odefiles/ToRORd_dynCl_endo_zetasplit.ode")
+SLAB_DX = 0.5  # Resolution of the slab mesh
 
 
 def default_config():
@@ -68,7 +85,6 @@ def default_config():
             "modelfile": "../odefiles/ToRORd_dynCl_endo_zetasplit.ode",
             "outdir": "output",
             "sim_dur": 40,
-            "split_scheme": "cai",
             "save_frequency_ep": 20,
             "save_frequency_mech": 1,
         },
@@ -152,19 +168,50 @@ def create_stim_tags(mesh, stim_marker=1, stimx=1.5, stimy=1.5, stimz=1.5):
     return stim_tags
 
 
-def main():
+def accumulate_time(fn: Callable, totals: dict[str, float], key: str) -> Callable:
+    """Wrap ``fn`` so that the wall time spent in it is added to ``totals[key]``."""
+
+    @functools.wraps(fn)
+    def timed(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            totals[key] += time.perf_counter() - start
+
+    return timed
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--odefile",
+        type=Path,
+        default=DEFAULT_ODEFILE,
+        help="gotranx .ode file with a 'mechanics' component (default: %(default)s). "
+        "Output goes to output/<odefile stem>/.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None):
+    start_total = time.perf_counter()
+    args = parse_args(argv)
+
     logging.basicConfig(level=logging.DEBUG)
     disable_logger()
     dolfinx.log.set_log_level(dolfinx.log.LogLevel.DEBUG)
 
     comm = MPI.COMM_WORLD
     config = default_config()
+    odefile = args.odefile
+    config["sim"]["modelfile"] = str(odefile)
+    config["sim"]["outdir"] = str(Path("output") / odefile.stem)
 
     # ---------------------------------------------------------
     # 1. Pre-processing: Generate ODE Code
     # ---------------------------------------------------------
-    odefile = Path(config["sim"]["modelfile"])
-    out_dir = Path("generated_odes")
+    out_dir = Path("generated_odes") / odefile.stem
 
     logger.info(f"Generating ODE modules from {odefile}")
     modules = load_ode_modules(odefile, out_dir)
@@ -173,14 +220,16 @@ def main():
     # ---------------------------------------------------------
     # 2. Setup Meshes & Geometries
     # ---------------------------------------------------------
-    geodir = Path("meshes")
+    # One directory per resolution: the mesh is only generated when its directory is
+    # missing, so a single directory would silently reuse a slab of another resolution.
+    geodir = Path("meshes") / f"slab_dx{SLAB_DX}"
     if not geodir.is_dir():
         cardiac_geometries.mesh.slab(
             outdir=geodir,
             lx=2.0,
             ly=1.0,
             lz=0.5,
-            dx=0.5,
+            dx=SLAB_DX,
             create_fibers=True,
             fiber_angle_endo=0,
             fiber_angle_epi=0,
@@ -200,25 +249,12 @@ def main():
     mesh = mech_geo.mesh
     ep_mesh = ep_geo.mesh
 
-    ode_space = "DG_1"
-    family = ode_space.split("_")[0]
-    degree = int(ode_space.split("_")[1])
-
-    mech_ode_space = dolfinx.fem.functionspace(mesh, (family, degree))
-    ep_ode_space = dolfinx.fem.functionspace(ep_mesh, (family, degree))
+    # P1: values going back to EP are averaged onto the EP ODE space, which the
+    # transfer plan supports for P1 and DG0 only.
+    ep_ode_space = dolfinx.fem.functionspace(ep_mesh, ("P", 1))
 
     # ---------------------------------------------------------
-    # 3. Initialize Runtime ODE Model
-    # ---------------------------------------------------------
-    ode_model = RuntimeODEModel(
-        ep_module_dict=ep_module.__dict__,
-        mech_module_dict=modules.mechanics.__dict__,
-        mech_ode_space=mech_ode_space,
-        ep_ode_space=ep_ode_space,
-    )
-
-    # ---------------------------------------------------------
-    # 4. Setup EP Solver (fenicsx-beat)
+    # 3. Setup EP Solver (fenicsx-beat)
     # ---------------------------------------------------------
     mesh_unit = "mm"
     chi = config["ep"]["chi"] * beat.units.ureg("mm**-1")
@@ -233,12 +269,12 @@ def main():
         g_et=config["ep"]["conductivities"]["sigma_et"] * beat.units.ureg("S/m"),
     )
 
-    time = dolfinx.fem.Constant(ep_mesh, 0.0)
+    time_ep = dolfinx.fem.Constant(ep_mesh, 0.0)
 
     I_s = beat.stimulation.define_stimulus(
         mesh=ep_mesh,
         chi=chi,
-        time=time,
+        time=time_ep,
         subdomain_data=stim_tags,
         marker=stim_marker,
         mesh_unit=mesh_unit,
@@ -246,7 +282,7 @@ def main():
     )
 
     pde = beat.MonodomainModel(
-        time=time,
+        time=time_ep,
         mesh=ep_mesh,
         M=M,
         I_s=I_s,
@@ -255,52 +291,51 @@ def main():
     )
 
     v_ode = dolfinx.fem.Function(ep_ode_space)
-    num_points_ep = (
-        ep_ode_space.dofmap.index_map.size_local + ep_ode_space.dofmap.index_map.num_ghosts
+    num_points_ep = v_ode.x.array.size
+
+    # One column per point, for states, parameters and missing variables alike: the
+    # transfer plan writes lambda and the values EP needs back into these arrays in
+    # place, and they differ between points.
+    y_ep = np.tile(ep_module.init_state_values()[:, None], (1, num_points_ep))
+    p_ep = np.tile(
+        ep_module.init_parameter_values(i_Stim_Amplitude=0.0)[:, None],
+        (1, num_points_ep),
     )
-
-    y_ep_ = ode_model.y()
-    p_ep_ = ode_model.p(i_Stim_Amplitude=0.0)
-
-    y_ep = np.zeros((len(y_ep_), num_points_ep))
-    y_ep.T[:] = y_ep_
-    p_ep = np.zeros((len(p_ep_), num_points_ep))
-    p_ep.T[:] = p_ep_
+    ep_missing = getattr(ep_module, "missing", {})
 
     ode = beat.odesolver.DolfinODESolver(
         v_ode=v_ode,
         v_pde=pde.state,
-        fun=ode_model.fgr,
+        fun=ep_module.generalized_rush_larsen,
         init_states=y_ep,
         parameters=p_ep,
         num_states=len(y_ep),
-        v_index=ode_model.ep_module_dict["state_index"]("v"),
-        missing_variables=ode_model.missing_ep.values_ep,
-        num_missing_variables=ode_model.missing_ep.num_values,
+        v_index=ep_module.state_index("v"),
+        missing_variables=np.zeros((len(ep_missing), num_points_ep)) if ep_missing else None,
+        num_missing_variables=len(ep_missing),
     )
 
     ep_solver = beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=1)
 
     # ---------------------------------------------------------
-    # 5. Setup Mechanics Solver (fenicsx-pulse)
+    # 4. Setup Mechanics Solver (fenicsx-pulse)
     # ---------------------------------------------------------
     material_params = pulse.HolzapfelOgden.transversely_isotropic_parameters()
     material = pulse.HolzapfelOgden(f0=mech_geo.f0, s0=mech_geo.s0, **material_params)
     comp_model = pulse.compressibility.Incompressible()
 
-    # Pass the EP variables directly via missing_mech u_mechanics functions
-    active_model = ZetaSplitUFL(
-        f0=mech_geo.f0,
-        s0=mech_geo.s0,
-        n0=mech_geo.n0,
-        XS=ode_model.missing_mech.u_mechanics[0],
-        XW=ode_model.missing_mech.u_mechanics[1],
-        mesh=mech_geo.mesh,
+    # The contraction model, stepped inside Newton. Its states live on a quadrature
+    # space of the same degree as the mechanics form (the controller checks this).
+    backend = GeneratedActivation(
+        modules.mechanics,
+        mesh,
+        mech_geo.f0,
+        quadrature_degree=QUAD_DEGREE,
     )
 
     model = pulse.CardiacModel(
         material=material,
-        active=active_model,
+        active=backend,
         compressibility=comp_model,
     )
 
@@ -308,21 +343,24 @@ def main():
         V0, _ = V.sub(0).collapse()
         zero = dolfinx.fem.Function(V0)
         zero.x.array[:] = 0.0
+        # The slab is always written with facet markers; ffun is optional only in general.
+        ffun = mech_geo.ffun
+        assert ffun is not None
 
         x0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(0), V0),
-            mech_geo.ffun.dim,
-            mech_geo.ffun.find(mech_geo.markers["X0"][0]),
+            ffun.dim,
+            ffun.find(mech_geo.markers["X0"][0]),
         )
         y0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(1), V0),
-            mech_geo.ffun.dim,
-            mech_geo.ffun.find(mech_geo.markers["Y0"][0]),
+            ffun.dim,
+            ffun.find(mech_geo.markers["Y0"][0]),
         )
         z0_dofs = dolfinx.fem.locate_dofs_topological(
             (V.sub(2), V0),
-            mech_geo.ffun.dim,
-            mech_geo.ffun.find(mech_geo.markers["Z0"][0]),
+            ffun.dim,
+            ffun.find(mech_geo.markers["Z0"][0]),
         )
 
         return [
@@ -333,17 +371,27 @@ def main():
 
     bcs = pulse.BoundaryConditions(dirichlet=(dirichlet_bc,))
 
+    geometry = pulse.Geometry.from_cardiac_geometries(
+        mech_geo,
+        metadata={"quadrature_degree": QUAD_DEGREE},
+    )
+    petsc_options = pulse.StaticProblem.default_parameters()["petsc_options"]
+    # Absolute tolerance, tightened from pulse's default 1e-6: at resting calcium the
+    # first residual is already ~1e-9-1e-8 and stalls at round-off, which a pure
+    # relative tolerance cannot converge (the line search then reports failure
+    # although the state is converged).
+    petsc_options["snes_atol"] = 1e-9
+
     # Important: BaseBC must be free since we manually constrain X, Y, Z boundaries
     problem = pulse.StaticProblem(
         model=model,
-        geometry=mech_geo,
+        geometry=geometry,
         bcs=bcs,
-        parameters={"base_bc": pulse.problem.BaseBC.free},
+        parameters={"base_bc": pulse.problem.BaseBC.free, "petsc_options": petsc_options},
     )
-    problem.solve()
 
     # ---------------------------------------------------------
-    # 6. Initialize Coupling Controller & DataCollector
+    # 5. Initialize Coupling Controller & DataCollector
     # ---------------------------------------------------------
     dt_ep = config["sim"]["dt"]
     N_steps = config["sim"]["N"]
@@ -352,20 +400,32 @@ def main():
     controller = SimulationController(
         mechanics_problem=problem,
         ep_solver=ep_solver,
-        ode_model=ode_model,
+        backend=backend,
+        ode_modules=modules,
         dt_mech=dt_mech,
         dt_ep=dt_ep,
     )
 
-    mech_variables = {
-        "Ta": active_model.Ta_current,
-        "Zetas": active_model._Zetas,
-        "Zetaw": active_model._Zetaw,
-        "lambda": active_model.lmbda,
-        "XS": ode_model.missing_mech.u_mechanics[0],
-        "XW": ode_model.missing_mech.u_mechanics[1],
-        "dLambda": active_model._dLambda,
-    }
+    # Timing baseline: wall time spent in the EP ODE step, the EP PDE step and the
+    # mechanics solve, accumulated over the run. Replacing the methods on these objects
+    # is deliberate: beat's splitting solver and the controller call them through
+    # these attributes, which is what mypy's method-assign objects to.
+    timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0, "mech_s": 0.0}
+    ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
+    ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
+    problem.solve = accumulate_time(problem.solve, timings, "mech_s")  # type: ignore[method-assign]
+
+    # Ta is backend.active_tension, in kPa (ZetaSplitUFL's Ta_current was in Pa).
+    # The backend's outputs live on a quadrature space, which cannot be evaluated at
+    # a point, so each is recorded through a P1 copy refreshed after every step.
+    # "lmbda" keeps its old output name, "lambda".
+    P1 = dolfinx.fem.functionspace(mesh, ("P", 1))
+    mech_variables = {"Ta": backend.active_tension}
+    averagers = []
+    for name, output in backend.outputs.items():
+        out_name = "lambda" if name == "lmbda" else name
+        mech_variables[out_name] = dolfinx.fem.Function(P1, name=out_name)
+        averagers.append(make_averager(output, mech_variables[out_name]))
 
     collector = DataCollector(
         problem=problem,
@@ -374,27 +434,43 @@ def main():
         mech_variables=mech_variables,
     )
 
+    # Mesh mean of the fibre stretch at the quadrature points, per mechanics step.
+    volume = comm.allreduce(
+        dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * geometry.dx)),
+        op=MPI.SUM,
+    )
+    lmbda_integral = dolfinx.fem.form(backend.lmbda_prev * geometry.dx)
+    lmbda_mean: list[tuple[float, float]] = []
+
     # ---------------------------------------------------------
-    # 7. Define Callbacks & Run Simulation
+    # 6. Define Callbacks & Run Simulation
     # ---------------------------------------------------------
     inds = []  # To track mechanics steps for the collector finalize
 
+    # The controller counts steps from 1; DataCollector indexes its arrays from 0.
     def on_ep_step(current_t, ep_step_idx):
         # Update EP functions for saving
         for out_ep_var in collector.out_ep_names:
-            state_idx = ode_model.ep_module_dict["state_index"](out_ep_var)
-            collector.out_ep_funcs[out_ep_var].x.array[:] = ode._values[state_idx]
+            state_idx = ep_module.state_index(out_ep_var)
+            collector.out_ep_funcs[out_ep_var].x.array[:] = ode.values[state_idx]
 
-        if ep_step_idx % config["sim"]["save_frequency_ep"] == 0:
+        i = ep_step_idx - 1
+        if i % config["sim"]["save_frequency_ep"] == 0:
             collector.write_ep(current_t)
-            collector.write_node_data_ep(ep_step_idx)
+            collector.write_node_data_ep(i)
 
     def on_mech_step(current_t, mech_step_idx, newton_iters):
-        inds.append(mech_step_idx * N_steps)
+        i = mech_step_idx - 1
+        inds.append(i * N_steps)
         collector.timers.no_of_newton_iterations.append(newton_iters)
 
-        if mech_step_idx % config["sim"]["save_frequency_mech"] == 0:
-            collector.write_node_data_mech(mech_step_idx)
+        integral = dolfinx.fem.assemble_scalar(lmbda_integral)
+        lmbda_mean.append((current_t, comm.allreduce(integral, op=MPI.SUM) / volume))
+        for average in averagers:
+            average()
+
+        if i % config["sim"]["save_frequency_mech"] == 0:
+            collector.write_node_data_mech(i)
             collector.write_disp(current_t)
 
     # Calculate total mechanics steps needed
@@ -402,6 +478,7 @@ def main():
     total_mech_steps = int(np.ceil(total_duration / dt_mech))
 
     # --- THE MAIN LOOP ---
+    start_loop = time.perf_counter()
     for _ in range(total_mech_steps):
         collector.timers.start_single_loop()
 
@@ -409,8 +486,19 @@ def main():
         controller.step(ep_callback=on_ep_step, mech_callback=on_mech_step)
 
         collector.timers.stop_single_loop()
+    timings["loop_s"] = time.perf_counter() - start_loop
 
     collector.finalize(inds)
+    np.savetxt(
+        collector.outdir / "lmbda_prev_mean.txt",
+        np.array(lmbda_mean),
+        header="t (ms), mesh mean of backend.lmbda_prev",
+    )
+
+    timings["total_s"] = time.perf_counter() - start_total
+    if comm.rank == 0:
+        (collector.outdir / "timings.json").write_text(json.dumps(timings, indent=4))
+    logger.info(f"Timings: {timings}")
 
 
 if __name__ == "__main__":
