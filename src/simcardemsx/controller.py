@@ -86,7 +86,10 @@ class SimulationController:
                     f"The backend stores its states at quadrature degree "
                     f"{backend.quadrature_degree}, but the mechanics form integrates at "
                     f"geometry.metadata['quadrature_degree'] = {geometry_degree}. They must "
-                    "be equal, so that the stored states are those the residual used.",
+                    "be equal: FFCx evaluates the whole integrand at a quadrature-element "
+                    "coefficient's own degree and ignores the measure's quadrature_degree, so "
+                    "a mismatch would silently change the quadrature of the whole momentum "
+                    "integral, not just which states are looked up.",
                 )
 
         self.mechanics_problem = mechanics_problem

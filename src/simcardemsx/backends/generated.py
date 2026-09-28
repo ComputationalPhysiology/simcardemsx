@@ -76,8 +76,11 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         Fibre direction (any UFL vector).
     quadrature_degree:
         Degree of the quadrature space the states live in by default. It must equal
-        the quadrature degree of the mechanics form, so that the stored states are
-        exactly the states the residual used.
+        the quadrature degree of the mechanics form: FFCx evaluates an entire
+        integral at a quadrature-element coefficient's own degree and ignores the
+        measure's ``metadata={"quadrature_degree": ...}``, so a mismatch would
+        silently change the quadrature of the whole momentum integral rather than
+        just which states are looked up.
     element:
         A ``(family, degree)`` to store the states in instead of quadrature, e.g.
         ``("DG", 1)`` for comparison with physcardems.
