@@ -17,11 +17,11 @@ readme = "README.md"
 requires-python = ">=3.10.0"
 dependencies = [
     "fenics-dolfinx",
-    "fenicsx-pulse",
-    "fenicsx-beat",
+    "fenicsx-pulse>=0.9.1",
+    "fenicsx-beat>=0.6.4",
     # crossbridge backs the Ca_i-split activation backend and is imported at
     # package import time via simcardemsx.backends
-    "crossbridge",
+    "crossbridge>=0.3.1",
     # scipy is used by simcardemsx.zero_d for the monolithic reference solve
     "scipy",
     "gotranx>=1.8",
@@ -100,12 +100,6 @@ testpaths = [
 ]
 markers = ["slow: takes more than a few seconds"]
 
-
-[[tool.mypy.overrides]]
-# Their current releases ship no py.typed marker, so mypy refuses to analyse them. Once the
-# minimum versions required above ship one, this does nothing and can be removed.
-module = ["beat", "beat.*", "crossbridge", "crossbridge.*", "pulse", "pulse.*"]
-ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # scipy ships no types of its own. scipy-stubs would supply them, but it installs optype, and
