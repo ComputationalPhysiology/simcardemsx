@@ -147,7 +147,9 @@ class Timers:
         ]:
             try:
                 reps, wall = dolfinx.common.timing(task_name)
-            except RuntimeError:  # no timings registered under that name
+            # No timings registered under that name: dolfinx 0.11 raises RuntimeError,
+            # dolfinx nightly IndexError.
+            except (RuntimeError, IndexError):
                 continue
             timings[task_name] = Timing(reps, wall.total_seconds())
 
