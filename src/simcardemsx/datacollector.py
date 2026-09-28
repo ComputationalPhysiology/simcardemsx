@@ -31,22 +31,15 @@ def compute_function_average_over_mesh(func, mesh):
 
 
 class Timing(typing.NamedTuple):
+    """A dolfinx timer's total, as ``dolfinx.common.timing`` reports it (dolfinx >= 0.11:
+    repetitions and wall time only)."""
+
     reps: int
     wall_tot: float
-    usr_tot: float
-    sys_tot: float
 
     @property
     def wall_avg(self):
         return self.wall_tot / self.reps
-
-    @property
-    def usr_avg(self):
-        return self.usr_tot / self.reps
-
-    @property
-    def sys_avg(self):
-        return self.sys_tot / self.reps
 
 
 @dataclass
@@ -153,18 +146,10 @@ class Timers:
             "Total time",
         ]:
             try:
-                # FIXME: this call cannot succeed. Timing has four fields
-                # (reps, wall_tot, usr_tot, sys_tot) but dolfinx.common.timing
-                # returns a 2-tuple (reps, wall_time) as of dolfinx 0.11, so
-                # this raises TypeError -- which the except clause below does
-                # not catch either. Pre-existing; surfaced here only because
-                # mypy now runs on this file. Fixing it means deciding what the
-                # timing summary should report, which is a separate change.
-                timings[task_name] = Timing(  # type: ignore[call-arg]
-                    *dolfinx.common.timing(task_name),  # type: ignore[arg-type]
-                )
-            except RuntimeError:
+                reps, wall = dolfinx.common.timing(task_name)
+            except RuntimeError:  # no timings registered under that name
                 continue
+            timings[task_name] = Timing(reps, wall.total_seconds())
 
         (outdir / "solve_timings.json").write_text(
             json.dumps(

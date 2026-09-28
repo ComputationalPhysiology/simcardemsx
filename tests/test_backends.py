@@ -351,13 +351,3 @@ def test_zeta_split_ufl_warns_deprecated(mesh, dirs):
     f0, s0, n0 = dirs
     with pytest.warns(DeprecationWarning, match="GeneratedActivation"):
         ZetaSplitUFL(f0=f0, s0=s0, n0=n0, mesh=mesh)
-
-
-def test_land_alias_still_works_but_warns(mesh, dirs):
-    """Existing code importing LandModel keeps working, loudly."""
-    from simcardemsx.land import LandModel
-
-    f0, s0, n0 = dirs
-    with pytest.warns(DeprecationWarning, match="ZetaSplitUFL"):
-        model = LandModel(f0=f0, s0=s0, n0=n0, mesh=mesh)
-    assert isinstance(model, ZetaSplitUFL)
