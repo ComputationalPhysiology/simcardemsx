@@ -339,6 +339,7 @@ nonconvergence
 nonmatching
 ntm
 ntrpn
+nullspace
 numpyfy
 odefile
 odefiles

@@ -7,6 +7,8 @@ That values actually cross through the controller is gate 5, in
 from mpi4py import MPI
 
 import dolfinx
+import numpy as np
+import pulse
 import pytest
 
 from simcardemsx.backends import GeneratedActivation
@@ -81,3 +83,56 @@ def test_ep_ode_solver_must_be_a_dolfin_ode_solver(split_modules, make_ep_solver
     problem, backend = make_mechanics(modules.mechanics, _unit_cube(1))
     with pytest.raises(TypeError, match="DolfinODESolver"):
         SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)
+
+
+def _dynamic_mechanics(mech_module, mesh, dt: pulse.Variable, *, quadrature_degree: int = 2):
+    """A one-element ``pulse.DynamicProblem`` with ``parameters["dt"]`` set to ``dt``.
+
+    Like ``_mechanics`` in ``tests/conftest.py``, minus boundary conditions: this is
+    only ever constructed, never solved, so the rigid-body nullspace they would pin
+    down does not matter here.
+    """
+    geometry = pulse.Geometry(mesh=mesh, metadata={"quadrature_degree": quadrature_degree})
+    f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+    s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
+    backend = GeneratedActivation(mech_module, mesh, f0, quadrature_degree=quadrature_degree)
+    material = pulse.HolzapfelOgden(
+        f0=f0,
+        s0=s0,
+        **pulse.HolzapfelOgden.transversely_isotropic_parameters(),
+    )
+    model = pulse.CardiacModel(
+        material=material,
+        active=backend,
+        compressibility=pulse.Incompressible(),
+    )
+    problem = pulse.DynamicProblem(
+        model=model,
+        geometry=geometry,
+        parameters={"dt": dt},
+    )
+    return problem, backend
+
+
+def test_dynamic_problem_dt_must_equal_dt_mech(split_modules, make_ep_solver):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    problem, backend = _dynamic_mechanics(
+        modules.mechanics,
+        _unit_cube(1),
+        pulse.Variable(2e-3, "s"),
+    )
+    with pytest.raises(ValueError, match="2.*1|1.*2"):
+        SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)
+
+
+def test_dynamic_problem_dt_matching_dt_mech_is_accepted(split_modules, make_ep_solver):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    problem, backend = _dynamic_mechanics(
+        modules.mechanics,
+        _unit_cube(1),
+        pulse.Variable(1e-3, "s"),
+    )
+    controller = SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)
+    assert controller.mechanics.problem is problem
