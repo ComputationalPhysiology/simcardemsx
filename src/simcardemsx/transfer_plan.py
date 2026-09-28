@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Callable, Mapping, NamedTuple
 import dolfinx
 import numpy as np
 
-from .averaging import make_averager
+from .averaging import family_name, make_averager
 from .interpolation import TransferOperator
 
 if TYPE_CHECKING:
@@ -129,8 +129,7 @@ _AVERAGING_ELEMENT: dict[str, tuple[str, int]] = {"P1": ("P", 1), "DG0": ("DG", 
 def _space_name(V: dolfinx.fem.FunctionSpace) -> str:
     """``"P1"``, ``"DG0"``, ``"DG1"``, ``"quadrature2"``, ...: the family and degree of ``V``."""
     element = V.ufl_element()
-    family = "DG" if element.discontinuous else element.family_name
-    return f"{family}{element.degree}"
+    return f"{family_name(element)}{element.degree}"
 
 
 def _require_shape(what: str, array, expected: tuple[int, int], why: str) -> None:

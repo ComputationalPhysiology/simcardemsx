@@ -20,6 +20,16 @@ import dolfinx
 import ufl
 
 
+def family_name(element) -> str:
+    """The element's family name, normalizing a discontinuous element to ``"DG"``.
+
+    dolfinx reports a discontinuous Lagrange element's own ``family_name`` as
+    ``"P"`` (with ``discontinuous=True``); callers building a label like
+    ``"DG0"`` need ``"DG"`` instead.
+    """
+    return "DG" if element.discontinuous else element.family_name
+
+
 def make_averager(
     source: dolfinx.fem.Function,
     target: dolfinx.fem.Function,
@@ -64,7 +74,7 @@ def make_averager(
     """
     V_target = target.function_space
     target_element = V_target.ufl_element()
-    family = "DG" if target_element.discontinuous else target_element.family_name
+    family = family_name(target_element)
     degree = target_element.degree
 
     is_p1 = family == "P" and degree == 1

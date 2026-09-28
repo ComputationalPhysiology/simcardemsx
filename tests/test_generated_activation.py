@@ -23,16 +23,11 @@ import numpy as np
 import pulse
 import pytest
 import ufl
+from conftest import calcium
 
 from simcardemsx.backends import GeneratedActivation
 
 ODEFILES_DIR = Path(__file__).parent.parent / "numerical_experiments" / "odefiles"
-
-
-def calcium(t: float) -> float:
-    """Prescribed Ca_i transient in mM: 1e-4 at rest, peaking at 1e-3 at t = 25 ms."""
-    tau = max(t - 5.0, 0.0)
-    return 1e-4 + 9e-4 * (tau / 20.0) * np.exp(1.0 - tau / 20.0)
 
 
 @cache
@@ -194,6 +189,63 @@ def test_form_sees_dt_set_after_construction(split_modules):
     assert not np.isclose(val_dt1, val_dt05)
 
 
+@pytest.mark.parametrize(
+    "formulation, divide_by_lmbda",
+    [
+        (pulse.ActiveStressFormulation.stretch, True),
+        (pulse.ActiveStressFormulation.invariant, False),
+    ],
+)
+def test_S_matches_the_numpy_reference(split_modules, formulation, divide_by_lmbda):
+    """Gate: pins the value of ``S``, not just that it changes with ``dt`` (above).
+
+    λ = 0.95 is prescribed exactly (``_prescribed``); ``lmbda_prev`` is left at its
+    default 1.0, so dLambda = (0.95 - 1) / dt = -0.1. The form is compiled while
+    dt == 0, like ``test_form_sees_dt_set_after_construction``, then assembled after
+    dt/t/inputs are set -- so the compiled form must actually see them.
+
+    ``∫ S(C)[0, 0] dx / |Ω|`` is compared against the numpy GRL reference's ``Ta``,
+    converted from kPa to Pa (``TENSION_TO_PA["kPa"] == 1000``) and, for the
+    ``stretch`` formulation only, divided by λ (ADR 0001).
+    """
+    _, mech = split_modules["caisplit"]
+    ref = _numpy_mech("caisplit")
+    mesh = _mesh()
+    stretch, dt, cai = 0.95, 0.5, 1e-3
+
+    u = _prescribed(mesh, stretch)
+    backend = GeneratedActivation(
+        mech,
+        mesh,
+        _f0(mesh),
+        quadrature_degree=2,
+        formulation=formulation,
+    )
+    _activated(backend, mech)
+    backend.inputs["cai"].x.array[:] = cai
+
+    form = _S_ff(backend, u)  # compiled while dt == 0
+    backend.t.value = 0.0
+    backend.dt.value = dt
+    S_ff = dolfinx.fem.assemble_scalar(form)
+    vol = dolfinx.fem.assemble_scalar(
+        dolfinx.fem.form(
+            1.0 * ufl.dx(domain=mesh, metadata={"quadrature_degree": backend.quadrature_degree}),
+        ),
+    )
+
+    y0 = ref.init_state_values()
+    y0[ref.state["XS"]] = 0.1
+    y0[ref.state["XW"]] = 0.1
+    params = ref.init_parameter_values(lmbda=stretch, dLambda=(stretch - 1.0) / dt)
+    missing = np.array([cai])
+    states = ref.generalized_rush_larsen(y0, 0.0, dt, params, missing)
+    Ta_numpy = ref.monitor_values(0.0, states, params, missing)[ref.monitor["Ta"]]
+
+    expected = 1000.0 * Ta_numpy / stretch if divide_by_lmbda else 1000.0 * Ta_numpy
+    np.testing.assert_allclose(S_ff / vol, expected, rtol=1e-10)
+
+
 def test_solve_before_first_step_is_finite(split_modules):
     """With ``dt`` left at 0 the step is the identity and ``dLambda`` is 0.
 
@@ -311,7 +363,7 @@ def test_unknown_tension_or_parameter_raises(split_modules):
     f0 = _f0(mesh)
     with pytest.raises(KeyError, match="Ta"):
         GeneratedActivation(mech, mesh, f0, quadrature_degree=2, tension="Tension")
-    with pytest.raises(KeyError, match="Tref"):
+    with pytest.raises(KeyError, match="Available"):
         GeneratedActivation(mech, mesh, f0, quadrature_degree=2, parameters={"Tref_typo": 1.0})
     # lmbda and dLambda come from the displacement; an override would be ignored.
     with pytest.raises(KeyError, match="displacement"):

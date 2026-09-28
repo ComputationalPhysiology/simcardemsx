@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import ModuleType
+from typing import Literal
 
 import beat
 import dolfinx
@@ -14,10 +15,19 @@ ODEFILES_DIR = Path(__file__).parent.parent / "numerical_experiments" / "odefile
 
 SPLITS = ("caisplit", "zetasplit", "catrpnsplit")
 
-#: Absolute Newton tolerance for the one-element problems. At resting calcium the
-#: first residual is ~2.5e-9 and stalls at round-off below a pure relative
-#: tolerance; see ``tests/test_monolithic_coupling.py`` for the measurements.
+#: Absolute Newton tolerance for the one-element problems, tightened from pulse's
+#: default 1e-6. A pure relative tolerance cannot be met at rest: the first
+#: residual there is already ~1e-9–1e-8, at round-off, so the line search reports
+#: failure even though the state is converged. 1e-9 is chosen far below the λ
+#: errors the coupling gates measure (as small as ~1.5e-4); see
+#: ``tests/test_monolithic_coupling.py`` for the gates themselves.
 SNES_ATOL = 1e-9
+
+
+def calcium(t: float) -> float:
+    """Prescribed Ca_i transient in mM: 1e-4 at rest, peaking at 1e-3 at t = 25 ms."""
+    tau = max(t - 5.0, 0.0)
+    return 1e-4 + 9e-4 * (tau / 20.0) * np.exp(1.0 - tau / 20.0)
 
 
 @pytest.fixture(scope="session")
@@ -106,8 +116,9 @@ def _mechanics(
     *,
     quadrature_degree: int = 2,
     backend_quadrature_degree: int | None = None,
+    scheme: Literal["monolithic", "segregated"] = "monolithic",
 ) -> tuple[pulse.StaticProblem, GeneratedActivation]:
-    """The one-element setup of ``tests/test_monolithic_coupling.py``, monolithic.
+    """The one-element setup of ``tests/test_monolithic_coupling.py``.
 
     Holzapfel-Ogden (transversely isotropic), incompressible, rollers on the three
     faces through the origin, ``snes_atol`` = :data:`SNES_ATOL`. The backend's
@@ -123,6 +134,7 @@ def _mechanics(
         mesh,
         f0,
         quadrature_degree=backend_quadrature_degree,
+        scheme=scheme,
     )
     material = pulse.HolzapfelOgden(
         f0=f0,

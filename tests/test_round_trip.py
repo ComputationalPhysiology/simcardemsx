@@ -59,6 +59,7 @@ def test_values_return_to_ep_through_the_controller(
 
     if split == "zetasplit":
         assert np.abs(mv[ep.missing["Zetas"]]).max() > 1e-8
+        assert np.abs(mv[ep.missing["Zetaw"]]).max() > 1e-8
         assert parameters[ep.parameter["lmbda"]].min() < 1.0 - 1e-6
     else:
         assert np.abs(mv[ep.missing["J_TRPN"]]).max() > 0.0

@@ -81,7 +81,7 @@ def _ode_with(ep, mesh, parameters, missing_variables) -> beat.odesolver.DolfinO
 def test_unsupported_ep_ode_space_raises(split_modules, make_ep_solver):
     ep, mech = split_modules["zetasplit"]
     ode_on_dg1 = make_ep_solver(ep, _unit_cube(2), ("DG", 1)).ode
-    with pytest.raises(NotImplementedError, match="DG"):
+    with pytest.raises(NotImplementedError, match="DG1"):
         TransferPlan(resolve(ep, mech), ep, ode_on_dg1, _backend(mech, _unit_cube(1)))
 
 
