@@ -85,7 +85,6 @@ def default_config():
             "modelfile": "../odefiles/ToRORd_dynCl_endo_zetasplit.ode",
             "outdir": "output",
             "sim_dur": 40,
-            "split_scheme": "cai",
             "save_frequency_ep": 20,
             "save_frequency_mech": 1,
         },
@@ -374,7 +373,10 @@ def main(argv: list[str] | None = None):
         metadata={"quadrature_degree": QUAD_DEGREE},
     )
     petsc_options = pulse.StaticProblem.default_parameters()["petsc_options"]
-    # The first residual at rest (~2.5e-9) stalls at round-off below a relative tolerance.
+    # Absolute tolerance, tightened from pulse's default 1e-6: at resting calcium the
+    # first residual is already ~1e-9-1e-8 and stalls at round-off, which a pure
+    # relative tolerance cannot converge (the line search then reports failure
+    # although the state is converged).
     petsc_options["snes_atol"] = 1e-9
 
     # Important: BaseBC must be free since we manually constrain X, Y, Z boundaries
