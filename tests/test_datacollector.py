@@ -1,4 +1,4 @@
-"""What :class:`DataCollector` writes.
+"""What :class:`DataCollector` and its :class:`Timers` write.
 
 The collector is wired to :class:`SimulationController`'s callbacks exactly as in
 ``numerical_experiments/strong_coupling_zetasplit/main.py``: the controller counts
@@ -6,13 +6,15 @@ steps from 1, and the collector is handed ``step_idx - 1`` whenever that index i
 multiple of the save frequency.
 """
 
+import json
+
 from mpi4py import MPI
 
 import dolfinx
 import numpy as np
 
 from simcardemsx.controller import SimulationController
-from simcardemsx.datacollector import DataCollector
+from simcardemsx.datacollector import DataCollector, Timers
 
 # Binary fractions, so the times below are exact.
 DT_EP = 0.125
@@ -90,3 +92,17 @@ def test_time_axes_are_the_times_the_samples_were_taken(
 
     written = {name: np.loadtxt(tmp_path / f"{name}.txt").tolist() for name in ("t_ep", "t_mech")}
     assert written == {"t_ep": expected_ep, "t_mech": expected_mech}
+
+
+def test_timers_finalize_reports_the_timers_dolfinx_registered(tmp_path):
+    # dolfinx registers this one itself, and it is among the names finalize reports.
+    _unit_cube(1)
+    Timers().finalize(MPI.COMM_WORLD, tmp_path)
+
+    timings = json.loads((tmp_path / "solve_timings.json").read_text())["timings"]
+    # dolfinx's timer registry is global to the process: other tests add repetitions.
+    reps, wall_seconds = timings["Build BoxMesh (tetrahedra)"]
+    assert reps >= 1
+    assert wall_seconds >= 0.0
+    # Listed among the names to report, but never a dolfinx timer: skipped, not an error.
+    assert "Loop total times" not in timings
