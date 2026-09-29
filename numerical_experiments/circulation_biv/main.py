@@ -45,8 +45,13 @@ Output, in ``--outdir``:
 
 The mesh, the circuit's operating point and the prestressed displacement are cached
 under ``meshes/``; delete that directory to recompute them. Generating the mesh needs
-``ukb-atlas`` (with pyvista, for the clipping) and ``fenicsx-ldrb``; running from a
-cached mesh needs neither.
+``ukb-atlas`` (with pyvista, for the clipping) and ``fenicsx-ldrb``; install them by
+hand when you need them, ``python3 -m pip install ukb-atlas fenicsx-ldrb pyvista``
+(the first two are also in the ``demo`` extra). Mind numpy: ``fenicsx-ldrb`` depends
+on numba, which requires numpy < 2.5 (numba 0.65), so installing it downgrades a
+newer numpy -- in the dev container 2.5.3 became 2.4.6 -- and putting that numpy back
+afterwards leaves numba, and with it ``ldrb``, unimportable. Running from a cached
+mesh needs none of them.
 """
 
 import argparse
