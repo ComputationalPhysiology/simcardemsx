@@ -398,6 +398,7 @@ resid
 rightback
 rightbottom
 rint
+Rodero
 rs
 rtol
 rw
