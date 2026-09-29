@@ -23,7 +23,10 @@ The set-up follows the demo:
 
 EP runs on the same mesh, on P1, with ToR-ORd's own cellular stimulus (every point
 fires at ``t = 0``, period 1000 ms, the circuit's beat). Mechanics steps are 2 ms, EP
-steps 0.05 ms.
+steps 0.05 ms. Land's ``Tref`` is the ``.ode``'s 120 kPa times ``--tref``, by default
+3, physcardems' eLife calibration. At the ``.ode``'s own ``Tref`` (``--tref 1``) the
+LV's isovolumic peak stays about 2 mmHg below aortic pressure and it does not eject
+in the first beat; the RV does.
 
 Output, in ``--outdir``:
 
@@ -45,7 +48,8 @@ Output, in ``--outdir``:
   circuit's smooth-diode flows ``Q_AV``/``Q_PV`` are positive), each with the volume
   ejected over it (``ejected_mL``, the volume actually ejected), and ``ejects``,
   whether any was. Then the largest conservation drift, and the Newton iteration
-  counts with ``failed_at_ms``, the controller's time when the loop raised, if it did.
+  counts with ``failed_at_ms``, the controller's time when the loop raised, if it did,
+  and ``tref_scale``, the ``--tref`` the run used.
 - ``timings.json``: wall time in the EP ODE step, the EP PDE step and the mechanics
   solve (as in ``strong_coupling_zetasplit``), plus the loop and the whole run.
 
@@ -110,6 +114,12 @@ CHAR_LENGTH = 10.0  # mm; the demo's: the atlas is smooth, so a coarse mesh suff
 QUAD_DEGREE = 6
 
 PERIOD = 1000.0  # ms: one beat, the circuit's RR = 1 / HR and ToR-ORd's pacing period
+
+#: The default ``--tref``: physcardems' eLife calibration scales Land's ``Tref`` by 3
+#: (``src/physcardems/parameters.py``, ``LAND_SCALES``). At the ``.ode``'s own ``Tref``
+#: (``--tref 1``) the LV's isovolumic peak stays about 2 mmHg below aortic pressure, so
+#: its aortic valve does not open in the first beat.
+TREF_SCALE = 3.0
 DT_MECH = 2.0  # ms, the demo's
 DT_EP = 0.05  # ms
 
@@ -150,6 +160,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=HERE / "output",
         help="Output directory (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--tref",
+        type=float,
+        default=TREF_SCALE,
+        help="Scale of Land's Tref, the .ode's 120 kPa (default: %(default)s, physcardems' "
+        "eLife calibration). At 1 the LV does not eject in the first beat.",
     )
     return parser.parse_args(argv)
 
@@ -646,12 +663,15 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     # 3. The coupled mechanics problem
     # ---------------------------------------------------------
+    tref = modules.mechanics.init_parameter_values()[modules.mechanics.parameter["Tref"]]
     backend = GeneratedActivation(
         modules.mechanics,
         geometry.mesh,
         f0,
         quadrature_degree=QUAD_DEGREE,
+        parameters={"Tref": args.tref * float(tref)},
     )
+    logger.info(f"Tref = {args.tref} x {float(tref)} kPa")
     circuit = GotranxCirculation(
         ode_file=regazzoni2020.ODE_FILE,
         parameters=circuit_parameters(),
@@ -808,6 +828,7 @@ def main(argv: list[str] | None = None):
         timings["total_s"] = time.perf_counter() - start_total
         columns = {key: np.array([row[key] for row in rows]) for key in rows[0]}
         summary = summarise(columns, failed_at)
+        summary["tref_scale"] = args.tref
         if comm.rank == 0:
             with open(outdir / "log.csv", "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=list(rows[0]))
