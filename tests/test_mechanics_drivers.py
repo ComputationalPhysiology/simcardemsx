@@ -1,6 +1,7 @@
 """Tests for :mod:`simcardemsx.mechanics`: the ``MechanicsDriver`` protocol, the
-plain ``Solve`` driver, ``as_driver``, that :class:`SimulationController`
-advances mechanics through whichever driver it is given rather than calling
+plain ``Solve`` driver, ``as_driver`` (a problem is wrapped by type, a driver passed
+through, anything else refused), that :class:`SimulationController` advances
+mechanics through whichever driver it is given rather than calling
 ``problem.solve()`` itself, and ``Cycle``'s conversion to pulse's SI clock.
 """
 
@@ -16,7 +17,7 @@ import pytest
 from pulse.cycle import CycleController
 
 from simcardemsx.controller import SimulationController
-from simcardemsx.mechanics import Cycle, Solve
+from simcardemsx.mechanics import Cycle, MechanicsDriver, Solve, as_driver
 
 
 def _unit_cube(n: int) -> dolfinx.mesh.Mesh:
@@ -32,6 +33,30 @@ def test_bare_problem_is_wrapped_in_solve(split_modules, make_ep_solver, make_me
 
     assert isinstance(controller.mechanics, Solve)
     assert controller.mechanics.problem is problem
+
+
+def test_problem_is_wrapped_even_if_it_looks_like_a_driver(split_modules, make_mechanics):
+    """``as_driver`` wraps a problem by its type, not by the protocol check: a
+    ``pulse.StaticProblem`` already has a ``problem`` (its ``NonlinearProblem``), so one
+    that also had an ``advance`` would pass that check, and would otherwise be taken for
+    a driver whose ``problem`` is the ``NonlinearProblem``."""
+    problem, _ = make_mechanics(split_modules["caisplit"].mechanics, _unit_cube(1))
+    setattr(problem, "advance", lambda t_n, dt: True)
+    assert isinstance(problem, MechanicsDriver)
+
+    driver = as_driver(problem)
+
+    assert isinstance(driver, Solve)
+    assert driver.problem is problem
+
+
+def test_driver_is_passed_through_and_anything_else_refused(split_modules, make_mechanics):
+    problem, _ = make_mechanics(split_modules["caisplit"].mechanics, _unit_cube(1))
+    driver = Solve(problem)
+
+    assert as_driver(driver) is driver
+    with pytest.raises(TypeError, match="StaticProblem"):
+        as_driver(object())
 
 
 def test_controller_advances_through_the_driver(split_modules, make_ep_solver, make_mechanics):

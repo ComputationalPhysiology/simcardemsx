@@ -344,6 +344,16 @@ def test_post_solve_advances_the_zeta_states(mesh, dirs):
     np.testing.assert_allclose(float(backend._t_prev.value), 2.0)
 
 
+def test_is_evaluated_at_the_end_of_the_step(mesh, dirs):
+    """ZetaSplitUFL's zeta states advance with the stretch *rate* over the step, so
+    ``pulse.DynamicProblem`` must assemble its ``S`` at the true end-of-step
+    displacement, not at the generalized-alpha ``alpha_f`` point. pulse's
+    ``ActiveModel`` defaults the flag to ``False``, and reads it when it compiles the
+    form, so the class itself must set it."""
+    assert ZetaSplitUFL.evaluate_at_end_of_step is True
+    assert _backend(mesh, dirs).evaluate_at_end_of_step is True
+
+
 def test_zeta_split_ufl_warns_deprecated(mesh, dirs):
     """ZetaSplitUFL is being replaced by the generated backend; it must say so
     at construction, loudly enough that a caller notices before porting more

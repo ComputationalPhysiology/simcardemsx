@@ -63,3 +63,38 @@ def test_values_return_to_ep_through_the_controller(
         assert parameters[ep.parameter["lmbda"]].min() < 1.0 - 1e-6
     else:
         assert np.abs(mv[ep.missing["J_TRPN"]]).max() > 0.0
+
+
+@pytest.mark.parametrize("split", ["zetasplit", "caisplit"])
+def test_values_cross_back_after_the_step_is_accepted(
+    split_modules,
+    make_ep_solver,
+    make_mechanics,
+    split,
+):
+    """``step()`` accepts the step (``post_solve``) before moving values back to EP
+    (``backward``), so EP is left holding the accepted step's outputs, and moving them
+    again changes nothing. In the other order EP would get the previous step's
+    outputs, one step late throughout: after the first step, the zeros the backend's
+    outputs start from.
+    """
+    modules = split_modules[split]
+    ep_solver = make_ep_solver(
+        modules.ep,
+        dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 3, 3, 3),
+    )
+    problem, backend = make_mechanics(
+        modules.mechanics,
+        dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1),
+        quadrature_degree=2,
+    )
+    controller = SimulationController(problem, ep_solver, backend, modules, DT_MECH, DT_EP)
+    ode = ep_solver.ode
+
+    controller.step()
+    missing_variables = ode.missing_variables.copy()
+    parameters = ode.parameters.copy()
+    controller.plan.backward()
+
+    np.testing.assert_array_equal(ode.missing_variables, missing_variables)
+    np.testing.assert_array_equal(ode.parameters, parameters)

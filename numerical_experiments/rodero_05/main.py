@@ -678,8 +678,8 @@ def main(argv: list[str] | None = None) -> None:
     switches: list[dict[str, Any]] = []
 
     def record(t: float, during: dict[str, Phase], first_attempt: int, wall: float) -> None:
-        # The quadrature tension active_tension is averaged from, masked, in kPa.
-        Ta = backend._tension_kPa.x.array[in_myocardium]
+        # The quadrature tension, masked and in kPa, before active_tension's P1 average.
+        Ta = backend.tension_kPa.x.array[in_myocardium]
         lmbda = backend.outputs["lmbda"].x.array[in_myocardium]
         J = detF.eval(mesh, cells)
         v = ode.values[v_index]

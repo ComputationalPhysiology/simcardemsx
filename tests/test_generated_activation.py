@@ -26,6 +26,7 @@ import pytest
 import ufl
 from conftest import calcium
 
+from simcardemsx.averaging import make_averager
 from simcardemsx.backends import GeneratedActivation
 
 ODEFILES_DIR = Path(__file__).parent.parent / "numerical_experiments" / "odefiles"
@@ -408,6 +409,30 @@ def test_is_a_pulse_active_model_with_no_potential(split_modules):
         backend.strain_energy(ufl.Identity(3))
 
 
+def test_tension_kPa_is_the_function_post_solve_writes(split_modules):
+    """``tension_kPa`` is the backend's own quadrature tension, which ``post_solve``
+    writes in place and ``active_tension`` is averaged from: not a copy."""
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2)
+    backend.register(_prescribed(mesh, 1.0))
+    tension = backend.tension_kPa
+    assert tension.function_space is backend.space
+
+    _activated(backend, mech)
+    backend.dt.value = 0.5
+    backend.inputs["cai"].x.array[:] = 1e-3
+    backend.post_solve()
+
+    assert backend.tension_kPa is tension
+    assert tension.x.array.min() > 0.0
+    averaged = dolfinx.fem.Function(backend.active_tension.function_space)
+    make_averager(tension, averaged)()
+    np.testing.assert_array_equal(averaged.x.array, backend.active_tension.x.array)
+    with pytest.raises(AttributeError):
+        backend.tension_kPa = tension
+
+
 def _two_tet_mesh() -> dolfinx.mesh.Mesh:
     """Two tetrahedra sharing the face (1,0,0)-(0,1,0)-(0,0,1).
 
@@ -429,12 +454,14 @@ def _two_tet_mesh() -> dolfinx.mesh.Mesh:
 
 
 def test_tension_scale_zeroes_the_masked_cell(split_modules):
-    """``tension_scale`` multiplies ``Ta`` in both ``S`` and ``active_tension``.
+    """``tension_scale`` multiplies ``Ta`` in both ``S`` and ``active_tension``, and
+    nothing else.
 
     A DG0 mask, 0 on cell 0 and 1 (a no-op) on cell 1, is compared against an
     otherwise identical backend with no ``tension_scale`` at all, driven by the
     same Ca_i split and inputs: cell 0's active stress and tension must vanish
-    exactly; cell 1's must be untouched.
+    exactly; cell 1's must be untouched; and every output, i.e. everything that
+    crosses back to EP, must be the unmasked backend's on both cells.
     """
     _, mech = split_modules["caisplit"]
     mesh = _two_tet_mesh()
@@ -489,3 +516,16 @@ def test_tension_scale_zeroes_the_masked_cell(split_modules):
         unmasked.active_tension.x.array[dof_cell1_exclusive],
         rtol=1e-12,
     )
+
+    # What crosses back to EP is not scaled: the masked cell keeps its cellular
+    # dynamics. That means nothing unless the masked cell has something to lose.
+    cell0 = masked.space.dofmap.cell_dofs(0)
+    assert set(masked.outputs) == set(unmasked.outputs) == {*mech.provides, "lmbda"}
+    for name in mech.provides:
+        assert np.all(unmasked.outputs[name].x.array[cell0] != 0.0), name
+    for name in unmasked.outputs:
+        np.testing.assert_array_equal(
+            masked.outputs[name].x.array,
+            unmasked.outputs[name].x.array,
+            err_msg=name,
+        )

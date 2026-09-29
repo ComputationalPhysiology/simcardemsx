@@ -196,10 +196,24 @@ class Cycle:
 def as_driver(mechanics: MechanicsDriver | pulse.StaticProblem) -> MechanicsDriver:
     """Return ``mechanics`` as a :class:`MechanicsDriver`.
 
-    Anything that already looks like a driver (has both ``problem`` and
-    ``advance``) is returned as is; a bare ``pulse.StaticProblem`` (or
-    ``DynamicProblem``) is wrapped in :class:`Solve`.
+    A ``pulse.StaticProblem`` (or ``DynamicProblem``) is wrapped in :class:`Solve`.
+    That is decided by type, first: the protocol check only looks for the two names,
+    and a problem already has a ``problem`` (its ``NonlinearProblem``), so a problem
+    that ever gained an ``advance`` would otherwise pass for a driver. Anything else
+    that has both ``problem`` and ``advance`` is returned as is.
+
+    Raises
+    ------
+    TypeError
+        If ``mechanics`` is neither a ``pulse.StaticProblem`` nor a driver.
     """
+    import pulse  # the rest of this module imports it for type checking only
+
+    if isinstance(mechanics, pulse.StaticProblem):
+        return Solve(mechanics)
     if isinstance(mechanics, MechanicsDriver):
         return mechanics
-    return Solve(mechanics)
+    raise TypeError(
+        "mechanics must be a pulse.StaticProblem (or DynamicProblem) or a mechanics "
+        f"driver with both `problem` and `advance`, got {type(mechanics).__name__}",
+    )

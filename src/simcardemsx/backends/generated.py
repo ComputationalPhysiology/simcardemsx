@@ -145,6 +145,8 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         ``tension`` after the last step, averaged onto P1 on ``mesh``, **in kPa**
         whatever ``tension_unit`` is. (``ZetaSplitUFL`` reports Pa and
         ``CrossbridgeSegregated`` kPa.)
+    tension_kPa:
+        The same tension before that average, on :attr:`space` (read-only).
     """
 
     evaluate_at_end_of_step = True
@@ -254,6 +256,18 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
 
         self.u: dolfinx.fem.Function | None = None
         self._post_solve_expressions: _PostSolveExpressions | None = None
+
+    @property
+    def tension_kPa(self) -> dolfinx.fem.Function:
+        """``tension`` after the last step, in kPa, at the backend's own points.
+
+        The ``Function`` on :attr:`space` (quadrature by default) that :meth:`post_solve`
+        writes and :attr:`active_tension` is averaged from, with ``tension_scale``
+        applied. It is not averaged: where ``tension_scale`` is 0 it is exactly 0,
+        whereas ``active_tension``'s P1 average blends masked and unmasked cells at
+        the nodes they share. Each ``post_solve`` overwrites it in place.
+        """
+        return self._tension_kPa
 
     def _make_parameters(self, overrides: Mapping[str, float]) -> list[dolfinx.fem.Constant]:
         """One Constant per entry of ``init_parameter_values()``, with ``overrides`` applied.
@@ -396,6 +410,9 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         Everything is evaluated before anything is overwritten: the step reads
         ``states_prev``, and ``lmbda_prev`` (monolithic) or the frozen pair
         (segregated).
+
+        At ``dt == 0`` the step is the identity, so a ``post_solve()`` then accepts the
+        current ``u`` as the rest state: the states are kept and ``lmbda_prev := λ(u)``.
         """
         expressions = self._post_solve_expressions
         if expressions is None:
