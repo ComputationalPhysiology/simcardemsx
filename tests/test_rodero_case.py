@@ -38,8 +38,9 @@ PHYSCARDEMS_CASE = ROOT / "third-party" / "physcardems" / "cases" / "rodero_05"
 #: physcardems' reference scaling (``run_rodero_em_tref7.py``, ``REFERENCE_SCALE``).
 REFERENCE_SCALE = 0.9
 
-#: physcardems' cell tags for the LV and RV myocardium; 7-10 are the valve plugs
-#: (``rodero_05_dolfinx_v2/info.json``). The counts are the file's own.
+#: The number of cells tagged LV (1) and RV (2) myocardium, and of all cells; 7-10 are
+#: the valve plugs. The tags are named in ``rodero_05_dolfinx_v2/info.json``; the counts
+#: are read off the mesh's own cell tags (``cfun``), not from that file.
 LV_MYOCARDIUM_CELLS = 13775
 RV_MYOCARDIUM_CELLS = 9252
 NUM_CELLS = 24811

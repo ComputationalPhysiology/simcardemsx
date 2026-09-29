@@ -67,6 +67,7 @@ cellmodel
 cellmodels
 celltype
 cellwise
+cfun
 Clbk
 cmax
 cmdnmax

@@ -178,7 +178,7 @@ def land_parameters(tref_scale: float = TREF_SCALE) -> dict[str, float]:
 def cycle_parameters() -> dict[str, CycleParams]:
     """em_tref7's ``[circulation.lv]`` and ``[circulation.rv]`` in SI.
 
-    Converted with the run script's constants (lines 81-85); the same numbers as its
+    Converted with the run script's constants (lines 83-85); the same numbers as its
     ``lv_params`` and ``rv_params`` (lines 87-104). The beat is :data:`PCL_MS`.
     """
     period = PCL_MS / 1e3

@@ -36,7 +36,7 @@ test = [
     "pytest-cov",
     "cardiac-geometriesx",
     # Regazzoni's closed-loop circuit (its .ode file), for the circulation gates
-    "circulation",
+    "circulation>=0.4.0",
 ]
 dev = [
     "pdbpp",
@@ -53,7 +53,7 @@ demo = [
     "cardiac-geometriesx",
     "fenicsx-ldrb",
     "ukb-atlas",
-    "circulation",
+    "circulation>=0.4.0",
     "gotranx",
     "io4dolfinx",
 ]

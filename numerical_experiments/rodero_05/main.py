@@ -52,14 +52,27 @@ Known differences from physcardems, kept rather than removed:
   accepted like any other (``post_solve``, then lambda back to EP), so the first
   coupled step's stretch rate is ``(lambda_1 - lambda_0) / dt``. physcardems'
   ``ZetaSplitConstDt`` has a fixed 2 ms step, so its unloaded solve already sees a
-  stretch rate from lambda = 1, and the solve is not accepted: its first coupled step
-  again starts from lambda = 1, and EP's lambda stays 1 through it.
+  stretch rate from lambda = 1, and the solve is not accepted by the active model:
+  pulse keeps its u, v and a, but ``zeta.post_solve`` and the transfer back to EP are
+  skipped, so its first coupled step again starts from lambda = 1, and EP's lambda
+  stays 1 through it.
 - The mechanics' initial contraction states are the ``.ode``'s defaults. physcardems
   sets ``Zetas``/``Zetaw`` from the steady states; those are 0.0 for every cell type,
   as ``Cd`` is, the same as the defaults, and :func:`check_mechanics_initial_states`
   stops the run if a case says otherwise.
 - ``log.csv``'s phase columns are the phase each step was solved under;
   physcardems' are the phase after the step's switch, i.e. for the next step.
+- det F is sampled at the degree-4 quadrature points, and ``n_detF_nonpositive``
+  counts the points where it is not positive; physcardems samples each cell's
+  vertices and centroid, and counts cells.
+- ``log.csv`` has no ``J_max`` or ``wall_ep_s`` column, both of which physcardems'
+  has, and physcardems' ``active_stats.csv`` (``Ta`` percentiles, and ``Ta`` and
+  lambda medians per cell type) is not written.
+- physcardems' pulse raised on a solve that did not converge
+  (``snes_error_if_not_converged``), and its cycle controller caught that and
+  retried. P2's ``solve`` returns ``False`` instead, when the SNES converged reason is
+  not positive, and ``pulse.cycle`` retries on that. The behaviour is the same: one
+  retry from the rolled-back state, with a fresh factorization.
 - pulse is 0.9.1 with P1 (active stress at the end of the step) and P2 (controlled
   cavities, ``pulse.cycle``), not physcardems' 0.7+26. ``pulse.cycle`` ports the part
   of physcardems' cycle controller this run uses: not the ``ejection_pressure``
@@ -82,7 +95,12 @@ Output, in ``--output-dir``:
   into IVC and ESV the minimum since; pressures, volumes, ``Ta`` and phases in time.
 - ``summary.json``: EDV, ESV, EF and peak pressure per ventricle; the phase switches;
   the Newton, SNES-reason and retry counts; min det F and min ``Ta``; the Stage B
-  acceptance criteria; where the Land parameters went.
+  acceptance criteria; where the Land parameters went. Among the criteria,
+  ``reached_t_end`` says whether the last row is at ``--t-end``, in whole steps (the
+  summary is also rewritten while the run goes on), and
+  ``newton_converged_every_step`` is false if the run stopped on any exception,
+  ``KeyboardInterrupt`` included, which ``failure`` then names. A step whose retry
+  converged counts as converged; ``newton`` reports the retries.
 - ``timings.json``: wall time in the EP ODE and PDE steps and the mechanics solves, the
   set-up (code generation, loading, form compilation, the unloaded solve), the loop,
   and the whole run.
@@ -486,8 +504,9 @@ def summarise(
     attempts: list[list[dict[str, Any]]],
     failure: str | None,
     land_placement: dict[str, list[str]],
+    t_end_ms: float,
 ) -> dict[str, Any]:
-    """The acceptance numbers of the run so far."""
+    """The acceptance numbers of the run so far; ``t_end_ms`` is where it is to end."""
     summary: dict[str, Any] = {"t_end_ms": float(columns["t_ms"][-1]), "failure": failure}
     five_phases = [p.name for p in Phase]
     for c in CHAMBERS:
@@ -530,6 +549,7 @@ def summarise(
     summary["lmbda_min"] = float(columns["lmbda_min"].min())
     summary["lmbda_max"] = float(columns["lmbda_max"].max())
     summary["criteria"] = {
+        "reached_t_end": bool(np.isclose(columns["t_ms"][-1], t_end_ms)),
         "newton_converged_every_step": failure is None,
         "detF_positive_every_step": bool(np.all(columns["n_detF_nonpositive"] == 0)),
         **{f"{c}_five_phases_in_order": summary[c]["five_phases_in_order"] for c in CHAMBERS},
@@ -609,6 +629,7 @@ def main(argv: list[str] | None = None) -> None:
         raise RuntimeError("rodero_05 runs in serial only, as physcardems' run does")
     outdir: Path = args.output_dir
     outdir.mkdir(parents=True, exist_ok=True)
+    num_steps = round(args.t_end / DT_MECH)
 
     # ---------------------------------------------------------
     # 1. The case, the generated code, and where parameters go
@@ -733,7 +754,14 @@ def main(argv: list[str] | None = None) -> None:
         if not final and len(rows) % WRITE_EVERY != 1:
             return
         columns = {key: np.array([row[key] for row in rows]) for key in rows[0]}
-        summary = summarise(columns, switches, attempts, failure, land_placement)
+        summary = summarise(
+            columns,
+            switches,
+            attempts,
+            failure,
+            land_placement,
+            t_end_ms=num_steps * DT_MECH,
+        )
         (outdir / "summary.json").write_text(json.dumps(summary, indent=2))
         (outdir / "timings.json").write_text(json.dumps(timings, indent=2))
         plot(columns, summary, outdir / "pv_loops.png")
@@ -768,7 +796,6 @@ def main(argv: list[str] | None = None) -> None:
     # ---------------------------------------------------------
     # 5. Run
     # ---------------------------------------------------------
-    num_steps = round(args.t_end / DT_MECH)
     failure: str | None = None
     start_loop = time.perf_counter()
     try:
@@ -795,11 +822,13 @@ def main(argv: list[str] | None = None) -> None:
             timings["mech_s"] = solves.seconds
             timings["loop_s"] = time.perf_counter() - start_loop
             write_outputs(None, final=False)
-    except Exception as error:
-        # The solves of the failed step, which no row records.
+    except BaseException as error:
+        # Any exception, KeyboardInterrupt included: the summary must not report a run
+        # that stopped early as converged. The solves of the step it stopped in, which
+        # no row records.
         unrecorded = solves.attempts[sum(len(a) for a in attempts) :]
         failure = f"{type(error).__name__} at t = {controller.t} ms: {error}; solves {unrecorded}"
-        logger.exception("The run failed")
+        logger.exception("The run stopped before t_end")
         raise
     finally:
         timings["mech_s"] = solves.seconds

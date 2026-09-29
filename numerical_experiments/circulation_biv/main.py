@@ -36,12 +36,21 @@ Output, in ``--outdir``:
   volume mean of the backend's ``active_tension``; ``newton_iterations`` is 0 at
   ``t = 0``, where nothing is solved.
 - ``pv_loops.png``: pressure-volume loops, and pressures, volumes and tension in time.
-- ``summary.json``: EDV, ESV, EF, peak pressure and the intervals in which each
+- ``summary.json``: per ventricle, ``EDV_mL`` and ``ESV_mL``, the largest and
+  smallest ``V`` over the run, with ``V_range_mL``, their difference, and
+  ``V_range_fraction``, that over ``EDV_mL``. These are not a stroke volume and an
+  ejection fraction: the run is not a periodic beat, and ``V`` also changes while the
+  outflow valve is shut. Then the peak pressure, and the intervals in which the
   outflow valve is open (``p_LV > p_AR_SYS``, ``p_RV > p_AR_PUL``: exactly where the
-  circuit's smooth-diode flows ``Q_AV``/``Q_PV`` are positive) with the volume ejected
-  over each; the largest conservation drift; Newton iteration counts.
+  circuit's smooth-diode flows ``Q_AV``/``Q_PV`` are positive), each with the volume
+  ejected over it (``ejected_mL``, the volume actually ejected), and ``ejects``,
+  whether any was. Then the largest conservation drift, and the Newton iteration
+  counts with ``failed_at_ms``, the controller's time when the loop raised, if it did.
 - ``timings.json``: wall time in the EP ODE step, the EP PDE step and the mechanics
   solve (as in ``strong_coupling_zetasplit``), plus the loop and the whole run.
+
+Serial only: the cavity pressures and the circuit's states are read as ``x.array[0]``,
+which assumes one rank holds them.
 
 The mesh, the circuit's operating point and the prestressed displacement are cached
 under ``meshes/``; delete that directory to recompute them. Generating the mesh needs
@@ -511,8 +520,10 @@ def summarise(columns: dict[str, np.ndarray], failed_at: float | None) -> dict[s
         summary[c] = {
             "EDV_mL": EDV,
             "ESV_mL": ESV,
-            "SV_mL": EDV - ESV,
-            "EF": (EDV - ESV) / EDV,
+            # Not a stroke volume and an ejection fraction: the beat is not periodic,
+            # and V also changes while the outflow valve is shut. See ejected_mL.
+            "V_range_mL": EDV - ESV,
+            "V_range_fraction": (EDV - ESV) / EDV,
             "peak_p_mmHg": float(p.max()),
             "t_peak_p_ms": float(t[np.argmax(p)]),
             "outflow_valve_open": intervals,
@@ -580,6 +591,9 @@ def main(argv: list[str] | None = None):
         logging.getLogger(lib).setLevel(logging.WARNING)
 
     comm = MPI.COMM_WORLD
+    if comm.size > 1:
+        # The cavity pressures and the circuit's states are read as x.array[0].
+        raise RuntimeError("circulation_biv runs in serial only")
     outdir = args.outdir
     cachedir = GEODIR / "cache"
     if comm.rank == 0:
@@ -653,9 +667,8 @@ def main(argv: list[str] | None = None):
             robin=robin_bcs(geometry),
             dirichlet=(sliding_base(geometry),),
         ),
-        # No volume: each chamber coupling replaces it with the circuit's volume state,
-        # which pulse's Cavity type does not express.
-        cavities=[pulse.problem.Cavity(marker=c, volume=None) for c in CHAMBERS],  # type: ignore[arg-type]
+        # No volume: each chamber coupling replaces it with the circuit's volume state.
+        cavities=[pulse.problem.Cavity(marker=c, volume=None) for c in CHAMBERS],
         circulation=circuit,
         chambers=[ChamberCoupling(c, f"V_{c}", f"p_{c}") for c in CHAMBERS],
         circulation_missing={"beat_phase": beat_phase},
@@ -786,7 +799,7 @@ def main(argv: list[str] | None = None):
     try:
         for _ in range(num_steps):
             controller.step(mech_callback=on_mech_step)
-    except RuntimeError:
+    except Exception:
         failed_at = controller.t
         logger.exception(f"The coupled step ending at t = {failed_at} ms failed")
         raise
