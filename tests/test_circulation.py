@@ -2,20 +2,22 @@
 
 pulse solves Regazzoni's circuit in the same Newton system as the displacement
 (``pulse.circulation.GotranxCirculation``): the LV's volume is a circuit state tied
-to the deformed cavity, and its pressure is the cavity's Lagrange multiplier. That
-coupling itself -- the cavity volume equal to the circuit's ``V_LV``, the pressure
-handed to the circuit, the Jacobian blocks -- is covered by pulse's own
-``tests/test_circulation_coupling.py`` and is not re-tested here. What is
-simcardemsx's is the circuit's clock (:class:`~simcardemsx.mechanics.CirculationClock`)
-and that the circuit is driven, through :class:`SimulationController`, by the
-tension of the EP-driven backend.
+to the deformed cavity, and its pressure is the cavity's Lagrange multiplier. The
+coupling's rows and Jacobian blocks are covered by pulse's own
+``tests/test_circulation_coupling.py`` and are not re-tested here. What is
+simcardemsx's is the circuit's clock (:class:`~simcardemsx.mechanics.CirculationClock`),
+and that the closed loop -- the 3D LV and the rest of the circuit -- is driven,
+through :class:`SimulationController`, by the tension of the EP-driven backend.
 
 The setup is :func:`conftest._ellipsoid_ep_mechanics`: the zeta split on a coarse LV
 ellipsoid, ToR-ORd firing everywhere at t = 0, the circuit started from the unloaded
 cavity volume, 20 mechanics steps of 2 ms.
 
-- **A1**: the circuit's total blood volume is conserved. It is linear in the circuit
-  states, and backward Euler preserves a linear invariant exactly, so any drift is a
+- **A1**: the total blood volume -- the circuit's compartments plus the *3D* LV's
+  cavity volume -- is conserved. Summed over the circuit's own states it is linear, and
+  backward Euler preserves a linear invariant exactly, so that sum is conserved
+  whatever the mechanics does. With the deformed cavity in place of the circuit's
+  ``V_LV`` state, it is conserved only if the cavity follows the circuit, so drift is a
   coupling error, not discretization.
 - **A2**: the circuit sees the backend. Wherever the backend's mean tension is above
   0.01 kPa, the LV pressure is strictly higher than in the same run with
@@ -23,6 +25,8 @@ cavity volume, 20 mechanics steps of 2 ms.
 """
 
 from dataclasses import dataclass
+
+from mpi4py import MPI
 
 import dolfinx
 import numpy as np
@@ -32,7 +36,7 @@ from conftest import (
     ELLIPSOID_PERIOD_MS,
     _ellipsoid_ep_mechanics,
 )
-from pulse.circulation import GotranxCirculation
+from pulse.circulation import GotranxCirculation, mL
 
 from simcardemsx.controller import SimulationController
 from simcardemsx.mechanics import CirculationClock
@@ -57,11 +61,12 @@ class _Run:
 
 
 def _total_blood_volume(problem) -> float:
-    """Regazzoni's total blood volume, in mL.
+    """The total blood volume of the closed loop, in mL: the 3D LV plus the circuit.
 
-    The circulation package's own definition (``Regazzoni2020.compute_volumes``):
-    the four chamber volumes, plus each vessel compartment's compliance times its
-    pressure. States are in mL and mmHg, compliances in mL/mmHg.
+    The circulation package's definition (``Regazzoni2020.compute_volumes``) -- the
+    four chamber volumes, plus each vessel compartment's compliance times its pressure
+    (states in mL and mmHg, compliances in mL/mmHg) -- with the LV's volume taken from
+    the deformed ENDO cavity, ``V(u)``, instead of the circuit's ``V_LV`` state.
     """
     circuit = problem.circulation
     assert isinstance(circuit, GotranxCirculation)
@@ -71,9 +76,11 @@ def _total_blood_volume(problem) -> float:
         name: float(state.x.array[0])
         for name, state in zip(circuit.state_names, problem.circulation_states)
     }
+    comm = problem.geometry.mesh.comm
+    cavity = comm.allreduce(problem.geometry.volume("ENDO", u=problem.u), op=MPI.SUM) / mL
     return (
         y["V_LA"]
-        + y["V_LV"]
+        + cavity
         + y["V_RA"]
         + y["V_RV"]
         + c["C_AR_SYS"] * y["p_AR_SYS"]
@@ -170,6 +177,11 @@ def test_circulation_clock_units_and_guards(coupled, split_modules, lv_ellipsoid
         CirculationClock(problem, period=800.0)
     with pytest.raises(ValueError, match="'min'"):
         CirculationClock(problem, time_unit="min")
+    # pulse compiled the circuit's form against the Constants in circulation_missing;
+    # any other Constant, even one on the same mesh with the same value, is never read.
+    stray = dolfinx.fem.Constant(lv_ellipsoid.mesh, dolfinx.default_scalar_type(0.0))
+    with pytest.raises(ValueError, match=r"circulation_missing \(keys \['beat_phase'\]\)"):
+        CirculationClock(problem, beat_phase=stray, period=800.0)
 
     modules = split_modules["zetasplit"]
     _, open_problem, _ = _ellipsoid_ep_mechanics(
@@ -184,7 +196,8 @@ def test_circulation_clock_units_and_guards(coupled, split_modules, lv_ellipsoid
 
 @pytest.mark.slow
 def test_closed_loop_conserves_blood_volume(full_tension):
-    """A1: the total blood volume after every step equals its initial value.
+    """A1: the total blood volume, the 3D LV's included, after every step equals its
+    initial value.
 
     ``V_LV`` has to move for this to say anything: the circuit starts at the unloaded
     cavity volume, below its own ``V_LV``, so the LV fills from the atrium.

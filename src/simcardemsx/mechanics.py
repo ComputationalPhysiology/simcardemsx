@@ -92,7 +92,8 @@ class CirculationClock:
         The circuit's own time unit, ``"s"`` (Regazzoni's) or ``"ms"``.
     beat_phase:
         The ``Constant`` the problem's ``circulation_missing`` supplies as the
-        circuit's beat phase, or ``None`` for a circuit that needs none.
+        circuit's beat phase -- that very object, not an equal one -- or ``None`` for
+        a circuit that needs none.
     period:
         The beat length, in ms. Required if and only if ``beat_phase`` is given, and
         it must match the circuit's own (for Regazzoni's, ``RR = 1 / HR``).
@@ -101,7 +102,8 @@ class CirculationClock:
     ------
     ValueError
         If ``problem`` has no circulation, ``time_unit`` is neither ``"s"`` nor
-        ``"ms"``, or only one of ``beat_phase`` and ``period`` is given.
+        ``"ms"``, only one of ``beat_phase`` and ``period`` is given, or ``beat_phase``
+        is not one of the values of ``problem.circulation_missing``.
     """
 
     problem: pulse.StaticProblem
@@ -125,6 +127,17 @@ class CirculationClock:
             raise ValueError(
                 "beat_phase and period must be given together, since the beat phase is "
                 f"t mod period; {missing} is missing.",
+            )
+        supplied = self.problem.circulation_missing
+        if self.beat_phase is not None and not any(
+            self.beat_phase is value for value in supplied.values()
+        ):
+            # pulse compiles the circuit's form against these very objects, so setting
+            # any other Constant, even an equal one, would leave the phase frozen.
+            raise ValueError(
+                "beat_phase must be one of the Constants in problem.circulation_missing "
+                f"(keys {sorted(supplied)}), the objects the circuit's form was compiled "
+                "against; any other Constant is never read.",
             )
 
     def advance(self, t_n: float, dt: float) -> bool:
