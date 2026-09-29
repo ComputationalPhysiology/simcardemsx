@@ -323,12 +323,13 @@ def lv_ellipsoid(tmp_path_factory):
     quadrature at :data:`ELLIPSOID_QUADRATURE_DEGREE`.
 
     The parameters of pulse's own coupling test (``tests/test_circulation_coupling.py``,
-    the ``geo`` fixture), except the fibre space's degree: 6 there would make FFCx
-    evaluate the whole mechanics integrand at degree 6, against the backend's states at
-    the geometry's degree -- the mismatch ``SimulationController``'s quadrature guard
-    exists for. At the geometry's own degree the fibres are computed at exactly the
-    points the backend and the material read them at, so they are unit length there.
-    An interpolated field is not: P1 fibres, unit at the nodes, are 0.32 to 0.95 long
+    the ``geo`` fixture), except the fibre space's degree. The 6 there would not compile
+    next to the backend's states at the geometry's degree: FFCx takes an integral's
+    points from its quadrature-element coefficients and requires them all to agree, so
+    the form fails with a ``ValueError`` (24 degree-6 points against the states' 4).
+    At the geometry's own degree the fibres are computed at exactly the points the
+    backend and the material read them at, so they are unit length there. An
+    interpolated field is not: P1 fibres, unit at the nodes, are 0.32 to 0.95 long
     at those points on this mesh, whose fibre angle turns through 120 degrees across a
     wall about one element thick. The backend's λ then scales with that length, and
     Holzapfel-Ogden's fibre invariant with its square. Module-scoped, so every problem a

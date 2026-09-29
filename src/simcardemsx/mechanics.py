@@ -26,8 +26,8 @@ if TYPE_CHECKING:
     import pulse
     import pulse.cycle
 
-#: The factor converting the controller's ms into each time unit a circuit may be
-#: written in.
+#: The factor converting the controller's ms into another time unit: a circuit's own
+#: (:class:`CirculationClock`), or pulse's SI seconds (:class:`Cycle`).
 _PER_MS = {"s": 1e-3, "ms": 1.0}
 
 

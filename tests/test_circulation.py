@@ -181,6 +181,22 @@ def test_lv_ellipsoid_fibres_are_unit_where_they_are_read(split_modules, lv_elli
 
 
 @pytest.mark.slow
+def test_ellipsoid_builder_refuses_circulation_with_cycle(split_modules, lv_ellipsoid):
+    """The ENDO cavity is either a chamber of the circuit or controlled by the
+    five-phase cycle; ``_ellipsoid_ep_mechanics`` refuses both at once, before it
+    builds anything."""
+    modules = split_modules["zetasplit"]
+    with pytest.raises(ValueError, match="circulation and cycle are exclusive"):
+        _ellipsoid_ep_mechanics(
+            modules.ep,
+            modules.mechanics,
+            lv_ellipsoid,
+            circulation=True,
+            cycle=True,
+        )
+
+
+@pytest.mark.slow
 def test_circulation_clock_units_and_guards(coupled, split_modules, lv_ellipsoid, monkeypatch):
     """The clock sets the circuit's time, step and beat phase in the circuit's own unit
     before it solves, and returns what the solve returns.
