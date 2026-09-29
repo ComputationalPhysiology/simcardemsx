@@ -17,35 +17,52 @@ end-of-step displacement, by ``tests/conftest.py``'s ``_TrueUActive`` --
 physcardems's own pattern for this. If the flag reproduces that by-hand
 construction to round-off, while genuinely differing from the ``alpha_f``
 evaluation, the flag does what it claims.
+
+Gate D2 (below) is a different claim about the same flag: not that it matches
+a by-hand reference, but that, with it set, the zeta split twitches under
+``DynamicProblem`` without the period-2 oscillation gate 4
+(``test_monolithic_coupling.py``) checks under ``StaticProblem``.
 """
+
+from collections.abc import Callable
 
 import numpy as np
 import pytest
-from conftest import calcium
+from conftest import _reversals, _zetasplit_inputs, calcium
 
 DT_MS = 1.0
 T_END = 60.0
 
 
-def _run(make_dynamic_mechanics, mech_module, *, reference: bool, end_of_step: bool) -> np.ndarray:
-    """Drive the pinned D1 element exactly as ``_run`` in
+def _run(
+    make_dynamic_mechanics,
+    mech_module,
+    *,
+    reference: bool,
+    end_of_step: bool,
+    dt_ms: float = DT_MS,
+    t_end: float = T_END,
+    inputs_of_t: Callable[[float], dict[str, float]] = lambda t: {"cai": calcium(t)},
+) -> np.ndarray:
+    """Drive the pinned D1/D2 element exactly as ``_run`` in
     ``test_monolithic_coupling.py`` drives the one-element ``StaticProblem`` gates:
-    set ``t``/``dt``, write the Ca_i input at ``t_{n+1}``, solve, ``post_solve``,
+    set ``t``/``dt``, write the inputs at ``t_{n+1}``, solve, ``post_solve``,
     record ``mean(lmbda_prev)``. Raises if any step fails to converge or leaves a
     non-finite displacement.
     """
     problem, backend = make_dynamic_mechanics(
         mech_module,
-        dt_ms=DT_MS,
+        dt_ms=dt_ms,
         reference=reference,
         end_of_step=end_of_step,
     )
     trace = []
-    for n in range(round(T_END / DT_MS)):
-        t_n, t_next = n * DT_MS, (n + 1) * DT_MS
+    for n in range(round(t_end / dt_ms)):
+        t_n, t_next = n * dt_ms, (n + 1) * dt_ms
         backend.t.value = t_n
-        backend.dt.value = DT_MS
-        backend.inputs["cai"].x.array[:] = calcium(t_next)
+        backend.dt.value = dt_ms
+        for name, value in inputs_of_t(t_next).items():
+            backend.inputs[name].x.array[:] = value
 
         ok = problem.solve(raise_on_failure=False)
         with np.errstate(over="ignore", invalid="ignore"):
@@ -75,3 +92,29 @@ def test_active_stress_is_evaluated_at_the_end_of_the_step(split_modules, make_d
 
     np.testing.assert_allclose(flagged, reference, rtol=1e-10, atol=0)
     assert np.max(np.abs(flagged - alpha_f)) > 1e-3
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("dt", [2.0, 1.0, 0.5])
+def test_zeta_split_has_no_period_two_oscillation_under_dynamic_problem(
+    split_modules,
+    make_dynamic_mechanics,
+    dt,
+):
+    """Gate D2: the zeta split, under ``DynamicProblem`` with the flag set, gives
+    one clean twitch at every dt -- the ``DynamicProblem`` counterpart of gate 4
+    (``test_monolithic_coupling.py::test_zeta_split_has_no_period_two_oscillation``).
+    """
+    t_end = 150.0
+    _, mech = split_modules["zetasplit"]
+    trace = _run(
+        make_dynamic_mechanics,
+        mech,
+        reference=False,
+        end_of_step=True,
+        dt_ms=dt,
+        t_end=t_end,
+        inputs_of_t=_zetasplit_inputs,
+    )
+    assert trace.size == round(t_end / dt)
+    assert _reversals(trace) <= 2

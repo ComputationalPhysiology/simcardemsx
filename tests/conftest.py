@@ -34,6 +34,28 @@ def calcium(t: float) -> float:
     return 1e-4 + 9e-4 * (tau / 20.0) * np.exp(1.0 - tau / 20.0)
 
 
+#: Differences of λ smaller than this are round-off, not a change of direction.
+_FLAT = 1e-12
+
+
+def _twitch(t: float) -> float:
+    """Unit twitch shape: 0 until t = 5 ms, peaking at 1 at t = 25 ms."""
+    tau = max(t - 5.0, 0.0)
+    return (tau / 20.0) * np.exp(1.0 - tau / 20.0)
+
+
+def _zetasplit_inputs(t: float) -> dict[str, float]:
+    b = _twitch(t)
+    return {"XS": 0.01 * b, "XW": 0.005 * b}
+
+
+def _reversals(trace: np.ndarray) -> int:
+    """Changes of the direction of λ, ignoring differences below round-off."""
+    steps = np.diff(trace)
+    steps = steps[np.abs(steps) >= _FLAT]
+    return int(np.count_nonzero(np.diff(np.sign(steps))))
+
+
 @pytest.fixture(scope="session")
 def split_modules(tmp_path_factory) -> dict[str, ODEModules]:
     """Generate and load the EP/mechanics module pair for each of the three
