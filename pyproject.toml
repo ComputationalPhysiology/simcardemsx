@@ -35,6 +35,8 @@ test = [
     "pytest",
     "pytest-cov",
     "cardiac-geometriesx",
+    # Regazzoni's closed-loop circuit (its .ode file), for the circulation gates
+    "circulation",
 ]
 dev = [
     "pdbpp",
@@ -50,6 +52,7 @@ demo = [
     "matplotlib",
     "cardiac-geometriesx",
     "fenicsx-ldrb",
+    "ukb-atlas",
     "circulation",
     "gotranx",
     "io4dolfinx",
@@ -106,6 +109,11 @@ markers = ["slow: takes more than a few seconds"]
 # pint >= 0.26 imports optype when it is present, which sends mypy <= 2.3.1 into infinite
 # recursion (python/mypy#21985; fixed on mypy master by python/mypy#22036, not yet released).
 module = ["scipy", "scipy.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# circulation (Regazzoni's circuit, for the circulation gates) ships no py.typed marker.
+module = ["circulation", "circulation.*"]
 ignore_missing_imports = true
 
 

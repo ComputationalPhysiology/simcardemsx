@@ -295,3 +295,148 @@ def _dynamic_mechanics(
 def make_dynamic_mechanics():
     """Factory for :func:`_dynamic_mechanics`: ``make_dynamic_mechanics(mech_module, ...)``."""
     return _dynamic_mechanics
+
+
+#: Mechanics time step of :func:`_ellipsoid_ep_mechanics`'s ``DynamicProblem``, in ms.
+ELLIPSOID_DT_MS = 2.0
+
+#: The beat length :func:`_ellipsoid_ep_mechanics` sets the circuit's heart rate from,
+#: in ms. A ``CirculationClock`` driving that circuit must use the same ``period``:
+#: the circuit reads ``beat_phase`` against its own ``RR`` and chamber offsets.
+ELLIPSOID_PERIOD_MS = 1000.0
+
+
+@pytest.fixture(scope="module")
+def lv_ellipsoid(tmp_path_factory):
+    """A coarse LV ellipsoid, in metres, with analytic fibres (-60/60 degrees) in P1.
+
+    The parameters of pulse's own coupling test (``tests/test_circulation_coupling.py``,
+    the ``geo`` fixture), except the fibre space: a ``Quadrature_6`` fibre field would
+    make FFCx evaluate the whole mechanics integrand at degree 6, against the backend's
+    states at the geometry's degree -- the mismatch ``SimulationController``'s
+    quadrature guard exists for. Module-scoped, so every problem a test module builds
+    on it shares one geometry.
+    """
+    import cardiac_geometries
+
+    return cardiac_geometries.mesh.lv_ellipsoid(
+        outdir=tmp_path_factory.mktemp("lv_ellipsoid"),
+        create_fibers=True,
+        fiber_space="P_1",
+        r_short_endo=0.025,
+        r_short_epi=0.035,
+        r_long_endo=0.09,
+        r_long_epi=0.097,
+        psize_ref=0.05,
+        mu_apex_endo=-np.pi,
+        mu_base_endo=-np.arccos(5 / 17),
+        mu_apex_epi=-np.pi,
+        mu_base_epi=-np.arccos(5 / 20),
+        comm=MPI.COMM_WORLD,
+        fiber_angle_epi=-60,
+        fiber_angle_endo=60,
+    )
+
+
+def _ellipsoid_ep_mechanics(
+    ep_module: ModuleType,
+    mech_module: ModuleType,
+    lv_ellipsoid,
+    *,
+    circulation: bool,
+    tension_scale: dolfinx.fem.Function | ufl.core.expr.Expr | None = None,
+    quadrature_degree: int = 2,
+) -> tuple[beat.MonodomainSplittingSolver, pulse.DynamicProblem, GeneratedActivation]:
+    """EP and a ``pulse.DynamicProblem`` on the same LV ellipsoid (:func:`lv_ellipsoid`).
+
+    EP is :func:`_ep_solver` on the ellipsoid's mesh, so ToR-ORd's own cellular
+    stimulus fires everywhere at t = 0. Mechanics: Holzapfel-Ogden (transversely
+    isotropic), ``pulse.Compressible()``, ``pulse.Viscous()``, the base fixed,
+    ``dt`` = :data:`ELLIPSOID_DT_MS`, ``snes_atol`` = :data:`SNES_ATOL`, with the
+    backend's states on quadrature at the geometry's ``quadrature_degree``.
+
+    With ``circulation=True`` the ENDO cavity is Regazzoni's LV, closed by the rest of
+    his circuit (``drop_components=("timing", "LV")``), at the heart rate of
+    :data:`ELLIPSOID_PERIOD_MS`; ``beat_phase`` is ``problem.circulation_missing
+    ["beat_phase"]``, which the caller sets. The circuit's ``V_LV`` starts at the
+    unloaded cavity volume, so the constraint holds at t = 0 without an inflation
+    step, and the difference from the published ``V_LV`` is moved into ``V_LA``, so
+    the total blood volume is the published one. With ``circulation=False`` there is no
+    cavity at all.
+    """
+    mesh = lv_ellipsoid.mesh
+    ep_solver = _ep_solver(ep_module, mesh)
+
+    geometry = pulse.HeartGeometry.from_cardiac_geometries(
+        lv_ellipsoid,
+        metadata={"quadrature_degree": quadrature_degree},
+    )
+    backend = GeneratedActivation(
+        mech_module,
+        mesh,
+        lv_ellipsoid.f0,
+        quadrature_degree=quadrature_degree,
+        tension_scale=tension_scale,
+    )
+    material = pulse.HolzapfelOgden(
+        f0=lv_ellipsoid.f0,
+        s0=lv_ellipsoid.s0,
+        **pulse.HolzapfelOgden.transversely_isotropic_parameters(),
+    )
+    model = pulse.CardiacModel(
+        material=material,
+        active=backend,
+        compressibility=pulse.Compressible(),
+        viscoelasticity=pulse.Viscous(),
+    )
+    petsc_options = pulse.DynamicProblem.default_parameters()["petsc_options"]
+    petsc_options["snes_atol"] = SNES_ATOL
+    parameters = {
+        "base_bc": pulse.problem.BaseBC.fixed,
+        "dt": pulse.Variable(ELLIPSOID_DT_MS * 1e-3, "s"),
+        "petsc_options": petsc_options,
+    }
+
+    if not circulation:
+        problem = pulse.DynamicProblem(model=model, geometry=geometry, parameters=parameters)
+        return ep_solver, problem, backend
+
+    from circulation import base, regazzoni2020
+    from pulse.circulation import ChamberCoupling, GotranxCirculation, mL
+
+    # The heart rate goes in before flattening: flat_ode_parameters derives RR and the
+    # chambers' activation offsets from it, which overriding the flat HR would not.
+    nested = base.remove_units(regazzoni2020.Regazzoni2020.default_parameters())
+    circuit = GotranxCirculation(
+        regazzoni2020.ODE_FILE,
+        parameters=regazzoni2020.flat_ode_parameters(
+            nested | {"HR": 1000.0 / ELLIPSOID_PERIOD_MS},
+        ),
+        drop_components=("timing", "LV"),
+    )
+    problem = pulse.DynamicProblem(
+        model=model,
+        geometry=geometry,
+        parameters=parameters,
+        # No volume: the chamber coupling below replaces it with the circuit's V_LV
+        # during construction, which pulse's Cavity type does not express.
+        cavities=[pulse.problem.Cavity(marker="ENDO", volume=None)],  # type: ignore[arg-type]
+        circulation=circuit,
+        chambers=[ChamberCoupling("ENDO", "V_LV", "p_LV")],
+        circulation_missing={
+            "beat_phase": dolfinx.fem.Constant(mesh, dolfinx.default_scalar_type(0.0)),
+        },
+    )
+
+    unloaded = mesh.comm.allreduce(geometry.volume("ENDO"), op=MPI.SUM) / mL
+    initial = np.asarray(circuit.initial_states, dtype=np.float64)
+    i_LV, i_LA = circuit.state_index("V_LV"), circuit.state_index("V_LA")
+    V_LA = initial[i_LA] + (initial[i_LV] - unloaded)
+    for states in (
+        problem.circulation_states,
+        problem.circulation_states_old,
+        problem.circulation_states_prev,
+    ):
+        states[i_LV].x.array[:] = unloaded
+        states[i_LA].x.array[:] = V_LA
+    return ep_solver, problem, backend

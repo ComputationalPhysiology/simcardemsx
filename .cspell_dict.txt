@@ -16,6 +16,7 @@ Andr
 ap
 apidoc
 arange
+arccos
 Arevalo
 argmin
 assp
