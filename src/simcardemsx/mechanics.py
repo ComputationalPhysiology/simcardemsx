@@ -4,7 +4,11 @@ The controller does not call ``pulse.StaticProblem.solve()`` directly; it calls
 ``advance`` on a *driver* instead. :class:`Solve` is the plain driver -- it just
 calls ``problem.solve()`` -- kept as the default so existing callers see no change
 in behaviour. Other drivers wrap a problem with something more:
-:class:`CirculationClock` sets a closed-loop circuit's clock before solving.
+
+- :class:`CirculationClock` sets a closed-loop circuit's clock before solving;
+- :class:`Cycle` steps a ``pulse.cycle.CycleController``, which switches each
+  controlled cavity's constraint through the five phases of the cardiac cycle.
+
 Whatever a driver does, ``SimulationController`` only ever needs the
 ``pulse.StaticProblem`` underneath it (for its guards, and to read the Newton
 iteration count) and a way to advance it by one mechanics time step.
@@ -20,6 +24,7 @@ import numpy as np
 if TYPE_CHECKING:
     import dolfinx
     import pulse
+    import pulse.cycle
 
 #: The factor converting the controller's ms into each time unit a circuit may be
 #: written in.
@@ -149,6 +154,43 @@ class CirculationClock:
             assert self.period is not None  # guarded in __post_init__
             self.beat_phase.value = np.asarray((t_next % self.period) * scale)
         return self.problem.solve()
+
+
+@dataclass
+class Cycle:
+    """Drive a problem through pulse's five-phase cardiac cycle on the controller's clock.
+
+    ``controller`` owns the problem and switches each of its controlled cavities
+    between a volume, a pressure and a Windkessel constraint, phase by phase.
+    Everything in it is SI, so ``advance(t_n, dt)`` (both in ms, as everywhere in
+    :class:`~simcardemsx.controller.SimulationController`) converts both to seconds
+    and solves the step ending at ``t_{n+1} = t_n + dt``: ``controller.step((t_n +
+    dt) * 1e-3, dt * 1e-3)``.
+
+    ``controller.initialize(t0)`` is the caller's, once, before the first
+    ``advance``, with ``t0`` in s -- the ``SimulationController``'s start time,
+    converted. It reads the cavities' starting volumes and pressures and puts every
+    cavity in PRELOAD; ``controller.step`` raises ``RuntimeError`` if it has not been
+    called.
+
+    After a failed solve, ``controller.step`` rolls the problem back
+    (``problem.reset_states()``) and retries once; if the retry fails too, it rolls
+    back again and returns ``False``, leaving its phases and records as they were.
+    All of this happens inside ``advance``: when it returns ``False`` the mechanics
+    state is the last converged one, and ``SimulationController`` raises without
+    accepting the step in the backend.
+    """
+
+    controller: pulse.cycle.CycleController
+
+    @property
+    def problem(self) -> pulse.StaticProblem:
+        """``controller.problem``."""
+        return self.controller.problem
+
+    def advance(self, t_n: float, dt: float) -> bool:
+        scale = _PER_MS["s"]
+        return self.controller.step((t_n + dt) * scale, dt * scale)
 
 
 def as_driver(mechanics: MechanicsDriver | pulse.StaticProblem) -> MechanicsDriver:

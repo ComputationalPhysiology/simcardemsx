@@ -124,6 +124,7 @@ dvdt
 dxrf
 dxrs
 electrophysiological
+elife
 Elsevier
 emcoupling
 endo
@@ -214,6 +215,7 @@ interp
 iS
 Isac
 isacs
+isovolumic
 iSp
 isscalar
 Istim
@@ -526,6 +528,7 @@ vnsr
 Vpeak
 Wactive
 wca
+Windkessel
 wna
 wnaca
 xdmf

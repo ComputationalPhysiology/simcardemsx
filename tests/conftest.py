@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -309,6 +310,12 @@ ELLIPSOID_QUADRATURE_DEGREE = 2
 #: the circuit reads ``beat_phase`` against its own ``RR`` and chamber offsets.
 ELLIPSOID_PERIOD_MS = 1000.0
 
+#: Newton's iteration budget for :func:`_ellipsoid_ep_mechanics` with ``cycle=True``,
+#: raised from pulse's default of 50. On this ellipsoid, pulse's own cycle gate
+#: measured one isovolumic-relaxation step needing 72 full-Newton iterations after
+#: the switch into a volume constraint. This is a solver budget, not a tolerance.
+CYCLE_SNES_MAX_IT = 150
+
 
 @pytest.fixture(scope="module")
 def lv_ellipsoid(tmp_path_factory):
@@ -354,7 +361,9 @@ def _ellipsoid_ep_mechanics(
     lv_ellipsoid,
     *,
     circulation: bool,
+    cycle: bool = False,
     tension_scale: dolfinx.fem.Function | ufl.core.expr.Expr | None = None,
+    mech_parameters: Mapping[str, float] | None = None,
     quadrature_degree: int = ELLIPSOID_QUADRATURE_DEGREE,
 ) -> tuple[beat.MonodomainSplittingSolver, pulse.DynamicProblem, GeneratedActivation]:
     """EP and a ``pulse.DynamicProblem`` on the same LV ellipsoid (:func:`lv_ellipsoid`).
@@ -363,10 +372,11 @@ def _ellipsoid_ep_mechanics(
     stimulus fires everywhere at t = 0. Mechanics: Holzapfel-Ogden (transversely
     isotropic), ``pulse.Compressible()``, ``pulse.Viscous()``, the base fixed,
     ``dt`` = :data:`ELLIPSOID_DT_MS`, ``snes_atol`` = :data:`SNES_ATOL`, with the
-    backend's states on quadrature at the geometry's ``quadrature_degree``.
-    ``quadrature_degree`` must be :data:`ELLIPSOID_QUADRATURE_DEGREE`, the degree of the
-    fixture's fibre field: a quadrature coefficient only has values at its own
-    element's points.
+    backend's states on quadrature at the geometry's ``quadrature_degree``, and its
+    parameters overridden by ``mech_parameters`` (``GeneratedActivation``'s
+    ``parameters``). ``quadrature_degree`` must be :data:`ELLIPSOID_QUADRATURE_DEGREE`,
+    the degree of the fixture's fibre field: a quadrature coefficient only has values at
+    its own element's points.
 
     With ``circulation=True`` the ENDO cavity is Regazzoni's LV, closed by the rest of
     his circuit (``drop_components=("timing", "LV")``), at the heart rate of
@@ -374,19 +384,31 @@ def _ellipsoid_ep_mechanics(
     ["beat_phase"]``, which the caller sets. The circuit's ``V_LV`` starts at the
     unloaded cavity volume, so the constraint holds at t = 0 without an inflation
     step, and the difference from the published ``V_LV`` is moved into ``V_LA``, so
-    the total blood volume is the published one. With ``circulation=False`` there is no
-    cavity at all.
+    the total blood volume is the published one.
+
+    With ``cycle=True`` the ENDO cavity is instead controlled
+    (``pulse.problem.CavityControl``), with no circulation, for a
+    ``pulse.cycle.CycleController`` to switch between constraints; the caller builds
+    and initializes that controller. Newton's budget is then
+    :data:`CYCLE_SNES_MAX_IT` iterations. With neither, there is no cavity at all.
 
     Raises
     ------
     ValueError
-        If ``quadrature_degree`` is not :data:`ELLIPSOID_QUADRATURE_DEGREE`.
+        If ``quadrature_degree`` is not :data:`ELLIPSOID_QUADRATURE_DEGREE`, or if both
+        ``circulation`` and ``cycle`` are ``True``: the ENDO cavity is either a chamber
+        of the circuit or controlled by the cycle, not both.
     """
     if quadrature_degree != ELLIPSOID_QUADRATURE_DEGREE:
         raise ValueError(
             f"quadrature_degree must be {ELLIPSOID_QUADRATURE_DEGREE}, the degree of the "
             f"lv_ellipsoid fixture's quadrature fibres, got {quadrature_degree}: the "
             "fibres have values only at their own element's points.",
+        )
+    if circulation and cycle:
+        raise ValueError(
+            "circulation and cycle are exclusive: the ENDO cavity is either a chamber "
+            "of the closed-loop circuit or controlled by the five-phase cycle.",
         )
     mesh = lv_ellipsoid.mesh
     ep_solver = _ep_solver(ep_module, mesh)
@@ -400,6 +422,7 @@ def _ellipsoid_ep_mechanics(
         mesh,
         lv_ellipsoid.f0,
         quadrature_degree=quadrature_degree,
+        parameters=mech_parameters,
         tension_scale=tension_scale,
     )
     material = pulse.HolzapfelOgden(
@@ -415,11 +438,24 @@ def _ellipsoid_ep_mechanics(
     )
     petsc_options = pulse.DynamicProblem.default_parameters()["petsc_options"]
     petsc_options["snes_atol"] = SNES_ATOL
+    if cycle:
+        petsc_options["snes_max_it"] = CYCLE_SNES_MAX_IT
     parameters = {
         "base_bc": pulse.problem.BaseBC.fixed,
         "dt": pulse.Variable(ELLIPSOID_DT_MS * 1e-3, "s"),
         "petsc_options": petsc_options,
     }
+
+    if cycle:
+        # A controlled cavity needs the mesh in metres, pulse's default mesh_unit.
+        control = pulse.problem.CavityControl(mesh)
+        problem = pulse.DynamicProblem(
+            model=model,
+            geometry=geometry,
+            parameters=parameters,
+            cavities=[pulse.problem.Cavity(marker="ENDO", control=control)],
+        )
+        return ep_solver, problem, backend
 
     if not circulation:
         problem = pulse.DynamicProblem(model=model, geometry=geometry, parameters=parameters)
@@ -442,9 +478,9 @@ def _ellipsoid_ep_mechanics(
         model=model,
         geometry=geometry,
         parameters=parameters,
-        # No volume: the chamber coupling below replaces it with the circuit's V_LV
-        # during construction, which pulse's Cavity type does not express.
-        cavities=[pulse.problem.Cavity(marker="ENDO", volume=None)],  # type: ignore[arg-type]
+        # No volume: the chamber coupling below points it at the circuit's V_LV
+        # during construction.
+        cavities=[pulse.problem.Cavity(marker="ENDO", volume=None)],
         circulation=circuit,
         chambers=[ChamberCoupling("ENDO", "V_LV", "p_LV")],
         circulation_missing={
