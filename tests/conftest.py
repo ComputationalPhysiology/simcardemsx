@@ -300,6 +300,10 @@ def make_dynamic_mechanics():
 #: Mechanics time step of :func:`_ellipsoid_ep_mechanics`'s ``DynamicProblem``, in ms.
 ELLIPSOID_DT_MS = 2.0
 
+#: The quadrature degree of :func:`lv_ellipsoid`'s fibre field, and so the only one
+#: :func:`_ellipsoid_ep_mechanics` accepts for its mechanics measure and backend states.
+ELLIPSOID_QUADRATURE_DEGREE = 2
+
 #: The beat length :func:`_ellipsoid_ep_mechanics` sets the circuit's heart rate from,
 #: in ms. A ``CirculationClock`` driving that circuit must use the same ``period``:
 #: the circuit reads ``beat_phase`` against its own ``RR`` and chamber offsets.
@@ -308,21 +312,27 @@ ELLIPSOID_PERIOD_MS = 1000.0
 
 @pytest.fixture(scope="module")
 def lv_ellipsoid(tmp_path_factory):
-    """A coarse LV ellipsoid, in metres, with analytic fibres (-60/60 degrees) in P1.
+    """A coarse LV ellipsoid, in metres, with analytic fibres (-60/60 degrees) on
+    quadrature at :data:`ELLIPSOID_QUADRATURE_DEGREE`.
 
     The parameters of pulse's own coupling test (``tests/test_circulation_coupling.py``,
-    the ``geo`` fixture), except the fibre space: a ``Quadrature_6`` fibre field would
-    make FFCx evaluate the whole mechanics integrand at degree 6, against the backend's
-    states at the geometry's degree -- the mismatch ``SimulationController``'s
-    quadrature guard exists for. Module-scoped, so every problem a test module builds
-    on it shares one geometry.
+    the ``geo`` fixture), except the fibre space's degree: 6 there would make FFCx
+    evaluate the whole mechanics integrand at degree 6, against the backend's states at
+    the geometry's degree -- the mismatch ``SimulationController``'s quadrature guard
+    exists for. At the geometry's own degree the fibres are computed at exactly the
+    points the backend and the material read them at, so they are unit length there.
+    An interpolated field is not: P1 fibres, unit at the nodes, are 0.32 to 0.95 long
+    at those points on this mesh, whose fibre angle turns through 120 degrees across a
+    wall about one element thick. The backend's λ then scales with that length, and
+    Holzapfel-Ogden's fibre invariant with its square. Module-scoped, so every problem a
+    test module builds on it shares one geometry.
     """
     import cardiac_geometries
 
     return cardiac_geometries.mesh.lv_ellipsoid(
         outdir=tmp_path_factory.mktemp("lv_ellipsoid"),
         create_fibers=True,
-        fiber_space="P_1",
+        fiber_space=f"Quadrature_{ELLIPSOID_QUADRATURE_DEGREE}",
         r_short_endo=0.025,
         r_short_epi=0.035,
         r_long_endo=0.09,
@@ -345,7 +355,7 @@ def _ellipsoid_ep_mechanics(
     *,
     circulation: bool,
     tension_scale: dolfinx.fem.Function | ufl.core.expr.Expr | None = None,
-    quadrature_degree: int = 2,
+    quadrature_degree: int = ELLIPSOID_QUADRATURE_DEGREE,
 ) -> tuple[beat.MonodomainSplittingSolver, pulse.DynamicProblem, GeneratedActivation]:
     """EP and a ``pulse.DynamicProblem`` on the same LV ellipsoid (:func:`lv_ellipsoid`).
 
@@ -354,6 +364,9 @@ def _ellipsoid_ep_mechanics(
     isotropic), ``pulse.Compressible()``, ``pulse.Viscous()``, the base fixed,
     ``dt`` = :data:`ELLIPSOID_DT_MS`, ``snes_atol`` = :data:`SNES_ATOL`, with the
     backend's states on quadrature at the geometry's ``quadrature_degree``.
+    ``quadrature_degree`` must be :data:`ELLIPSOID_QUADRATURE_DEGREE`, the degree of the
+    fixture's fibre field: a quadrature coefficient only has values at its own
+    element's points.
 
     With ``circulation=True`` the ENDO cavity is Regazzoni's LV, closed by the rest of
     his circuit (``drop_components=("timing", "LV")``), at the heart rate of
@@ -363,7 +376,18 @@ def _ellipsoid_ep_mechanics(
     step, and the difference from the published ``V_LV`` is moved into ``V_LA``, so
     the total blood volume is the published one. With ``circulation=False`` there is no
     cavity at all.
+
+    Raises
+    ------
+    ValueError
+        If ``quadrature_degree`` is not :data:`ELLIPSOID_QUADRATURE_DEGREE`.
     """
+    if quadrature_degree != ELLIPSOID_QUADRATURE_DEGREE:
+        raise ValueError(
+            f"quadrature_degree must be {ELLIPSOID_QUADRATURE_DEGREE}, the degree of the "
+            f"lv_ellipsoid fixture's quadrature fibres, got {quadrature_degree}: the "
+            "fibres have values only at their own element's points.",
+        )
     mesh = lv_ellipsoid.mesh
     ep_solver = _ep_solver(ep_module, mesh)
 

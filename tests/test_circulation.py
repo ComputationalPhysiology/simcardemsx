@@ -22,18 +22,24 @@ cavity volume, 20 mechanics steps of 2 ms.
 - **A2**: the circuit sees the backend. Wherever the backend's mean tension is above
   0.01 kPa, the LV pressure is strictly higher than in the same run with
   ``tension_scale = 0``.
+
+The ellipsoid's own fibres are checked first: they must have unit length at the points
+the backend and the material read them at, or λ is not the fibre stretch.
 """
 
 from dataclasses import dataclass
 
 from mpi4py import MPI
 
+import basix.ufl
 import dolfinx
 import numpy as np
 import pytest
+import ufl
 from conftest import (
     ELLIPSOID_DT_MS,
     ELLIPSOID_PERIOD_MS,
+    ELLIPSOID_QUADRATURE_DEGREE,
     _ellipsoid_ep_mechanics,
 )
 from pulse.circulation import GotranxCirculation, mL
@@ -132,6 +138,46 @@ def coupled(split_modules, lv_ellipsoid):
 def full_tension(split_modules, coupled) -> _Run:
     """The run with the backend's own tension, shared by A1 and (as its first run) A2."""
     return _run(split_modules["zetasplit"], *coupled)
+
+
+@pytest.mark.slow
+def test_lv_ellipsoid_fibres_are_unit_where_they_are_read(split_modules, lv_ellipsoid):
+    """The fixture's fibre field has unit length at the backend's quadrature points.
+
+    ``GeneratedActivation``'s λ = sqrt(f0 · C f0) is the fibre stretch only for a unit
+    f0, and Holzapfel-Ogden's fibre term is off while f0 · C f0 < 1. A field that is unit
+    at mesh nodes need not be between them: P1 fibres on this ellipsoid, whose fibre
+    angle turns through 120 degrees across a wall about one element thick, are 0.32 to
+    0.95 long at these points.
+
+    Since the fibres live on those points, ``_ellipsoid_ep_mechanics`` refuses any other
+    quadrature degree.
+    """
+    mesh = lv_ellipsoid.mesh
+    Q = dolfinx.fem.functionspace(
+        mesh,
+        basix.ufl.quadrature_element(
+            mesh.basix_cell(),
+            value_shape=(),
+            degree=ELLIPSOID_QUADRATURE_DEGREE,
+        ),
+    )
+    length = dolfinx.fem.Function(Q)
+    f0 = lv_ellipsoid.f0
+    length.interpolate(
+        dolfinx.fem.Expression(ufl.sqrt(ufl.inner(f0, f0)), Q.element.interpolation_points),
+    )
+    np.testing.assert_allclose(length.x.array, 1.0, rtol=1e-12, atol=0)
+
+    modules = split_modules["zetasplit"]
+    with pytest.raises(ValueError, match="quadrature_degree"):
+        _ellipsoid_ep_mechanics(
+            modules.ep,
+            modules.mechanics,
+            lv_ellipsoid,
+            circulation=False,
+            quadrature_degree=ELLIPSOID_QUADRATURE_DEGREE + 1,
+        )
 
 
 @pytest.mark.slow
