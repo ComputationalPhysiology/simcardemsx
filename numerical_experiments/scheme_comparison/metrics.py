@@ -34,8 +34,8 @@ def onset_index(
     threshold: float = 0.5,
     consecutive: int = 3,
 ) -> int | None:
-    """First index starting ``consecutive`` steps in a row at or above ``threshold``."""
-    above = [f >= threshold for f in fractions]
+    """First index starting ``consecutive`` steps in a row strictly above ``threshold``."""
+    above = [f > threshold for f in fractions]
     for i in range(len(above) - consecutive + 1):
         if all(above[i : i + consecutive]):
             return i
@@ -51,14 +51,22 @@ def self_convergence_order(
 
     ``diff_coarse`` is the difference between the solutions at ``dts[0]`` and
     ``dts[1]``, ``diff_fine`` between those at ``dts[1]`` and ``dts[2]``.
+
+    Returns ``nan`` when there is no order to report: ``diff_fine`` is zero, either
+    difference is not finite, or no root lies in [0.05, 5].
     """
     d0, d1, d2 = dts
+    if not (np.isfinite(diff_coarse) and np.isfinite(diff_fine)) or diff_fine == 0:
+        return float("nan")
     target = diff_coarse / diff_fine
 
     def residual(p: float) -> float:
         return (d0**p - d1**p) / (d1**p - d2**p) - target
 
-    return float(scipy.optimize.brentq(residual, 0.05, 5.0))
+    try:
+        return float(scipy.optimize.brentq(residual, 0.05, 5.0))
+    except ValueError:
+        return float("nan")
 
 
 def reference_orders(dts: Sequence[float], errors: Sequence[float]) -> list[float]:

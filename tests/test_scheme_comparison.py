@@ -63,6 +63,8 @@ def test_reversal_fraction_counts_sign_changes_above_the_floor(metrics):
 def test_onset_ignores_a_single_turning_step(metrics):
     assert metrics.onset_index([0, 0, 1, 0, 0]) is None
     assert metrics.onset_index([0, 1, 1, 1, 0]) == 1
+    # "Above 0.5" is strict.
+    assert metrics.onset_index([0.5, 0.5, 0.5]) is None
 
 
 def test_self_convergence_order_recovers_the_order(metrics):
@@ -73,6 +75,15 @@ def test_self_convergence_order_recovers_the_order(metrics):
         assert got == pytest.approx(p, abs=1e-8)
     got = metrics.self_convergence_order((2.0, 1.0, 0.5), 6.0, 1.5)
     assert got == pytest.approx(np.log2(4.0), abs=1e-8)
+
+
+def test_self_convergence_order_is_nan_without_an_order(metrics):
+    dts = (1.0, 0.5, 0.25)
+    assert np.isnan(metrics.self_convergence_order(dts, 1.0, 0.0))
+    assert np.isnan(metrics.self_convergence_order(dts, float("nan"), 1.0))
+    assert np.isnan(metrics.self_convergence_order(dts, 1.0, float("inf")))
+    # A ratio of 1e6 needs an order far above 5.
+    assert np.isnan(metrics.self_convergence_order(dts, 1e6, 1.0))
 
 
 def test_reference_orders_and_richardson(metrics):
@@ -102,7 +113,7 @@ def _run_info(t_end: float) -> dict:
         "scheme": "monolithic",
         "dt_mech_ms": 0.5,
         "t_end_ms": t_end,
-        "regime": REGIME,
+        "regime": dict(REGIME),
     }
 
 
@@ -158,6 +169,10 @@ def test_recorder_writes_steps_snapshots_and_run_info(record, metrics, split_mod
     assert "reversal_fraction_1e-06" in rows[0]
     assert "reversal_fraction_0" in rows[0]
     assert float(rows[0]["KaDl_max_kPa"]) == 0.0
+    # A shortening step with active stiffness: a magnitude, so positive.
+    assert max(float(r["Ka_max_kPa"]) for r in rows) > 0
+    assert all(float(r["KaDl_max_kPa"]) >= 0 for r in rows)
+    assert any(float(r["KaDl_max_kPa"]) > 0 for r in rows[1:])
     assert float(rows[2]["lmbda_mean"]) == pytest.approx(0.98)
     # Monotone shortening: no reversals.
     assert all(float(r["reversal_fraction_0"]) == 0.0 for r in rows)
@@ -205,3 +220,43 @@ def test_recorder_refuses_a_non_quadrature_backend(record, split_modules, tmp_pa
     )
     with pytest.raises(ValueError, match="quadrature"):
         record.Recorder(backend, tmp_path, run_info=_run_info(1.0))
+
+
+def test_recorder_reports_reversals(record, split_modules, tmp_path):
+    """Stretch alternating 1 -> 1 - a -> 1 ..., a = 1e-5, dt = 0.5 ms.
+
+    |dλ|/dt = 2e-5 per ms: above the floors 0, 1e-7, 1e-6, 1e-5 and below 1e-4.
+    """
+    from test_generated_activation import _set_stretch
+
+    a, dt = 1e-5, 0.5
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(3.0))
+    for k in range(6):
+        backend.t.value = k * dt
+        backend.dt.value = dt
+        backend.inputs["cai"].x.array[:] = calcium((k + 1) * dt)
+        _set_stretch(u, 1.0 - a * ((k + 1) % 2))
+        backend.post_solve()
+        rec.step((k + 1) * dt, 2)
+    rec.finish(failure=None, t_fail_ms=None, timings={})
+    with open(tmp_path / "steps.csv") as f:
+        rows = list(csv.DictReader(f))
+    # Row 0 is the initial state and row 1 the first step, which has no previous increment.
+    assert float(rows[1]["reversal_fraction_0"]) == 0.0
+    for r in rows[2:]:
+        assert float(r["reversal_fraction_0"]) == 1.0
+        assert float(r["reversal_fraction_1e-05"]) == 1.0
+        assert float(r["reversal_fraction_0.0001"]) == 0.0
+
+
+def test_recorder_refuses_incomplete_run_info(record, split_modules, tmp_path):
+    backend, _ = _backend(split_modules)
+    info = _run_info(1.0)
+    del info["geometry"], info["regime"]["h_m"], info["regime"]["Kp_kPa"]
+    with pytest.raises(ValueError, match=r"geometry.*regime\.Kp_kPa.*regime\.h_m"):
+        record.Recorder(backend, tmp_path, run_info=info)
+    info = _run_info(1.0)
+    del info["regime"]
+    with pytest.raises(ValueError, match="regime"):
+        record.Recorder(backend, tmp_path, run_info=info)

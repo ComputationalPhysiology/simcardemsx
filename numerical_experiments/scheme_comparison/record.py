@@ -46,7 +46,22 @@ def _git_commit() -> str | None:
     return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
 
 
+REQUIRED_RUN_INFO = ("geometry", "split", "scheme", "dt_mech_ms", "t_end_ms", "regime")
+REQUIRED_REGIME = ("Kp_kPa", "eta_Pa_s", "rho_kg_m3", "h_m")
+
+
+def _check_run_info(run_info: Mapping[str, Any]) -> None:
+    """Refuse a ``run_info`` that ``finish`` could not write, before the run starts."""
+    missing = [k for k in REQUIRED_RUN_INFO if k not in run_info]
+    if "regime" in run_info:
+        missing += [f"regime.{k}" for k in REQUIRED_REGIME if k not in run_info["regime"]]
+    if missing:
+        raise ValueError(f"run_info is missing {', '.join(missing)}")
+
+
 class Recorder:
+    """Records one run. ``KaDl_max_kPa`` is a magnitude, ``max |Ka (λ_{n+1} − λ_n)|``."""
+
     def __init__(
         self,
         backend,
@@ -55,6 +70,7 @@ class Recorder:
         run_info: Mapping[str, Any],
         snapshot_every_ms: float | None = None,
     ):
+        _check_run_info(run_info)
         if backend.space.ufl_element().family_name != "quadrature":
             raise ValueError(
                 "Recorder needs a backend with states on a quadrature space "
@@ -123,7 +139,7 @@ class Recorder:
                 metrics.reversal_fraction(self._d_prev, d_curr, self.weights, f * dt)
                 for f in metrics.FLOORS_PER_MS
             ]
-        KaDl = float(np.max(b.stiffness_kPa.x.array * d_curr))
+        KaDl = float(np.max(np.abs(b.stiffness_kPa.x.array * d_curr)))
         self.rows.append(self._row(t_ms, newton_iterations, KaDl, reversals))
         self.newton.append(int(newton_iterations))
         self._maybe_snapshot(t_ms)
