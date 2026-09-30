@@ -184,29 +184,46 @@ def discover(root: Path) -> Ladders:
 # --------------------------------------------------------------------------------------
 
 
+def _empty() -> np.ndarray:
+    return np.empty(0)
+
+
 @dataclass
 class Series:
-    """A run's fields on its snapshot times (or its mean λ on its step times)."""
+    """A run's volume means on its step times, and its fields on its snapshot times.
 
-    t: np.ndarray
-    lmean: np.ndarray
-    lam: np.ndarray | None = None
-    ta: np.ndarray | None = None
-    w: np.ndarray | None = None
+    The means come from ``steps.csv``, one row per step, so that a peak between two
+    snapshots is not missed: ``lmbda_mean`` and ``Ta_mean_kPa``, the weighted means of
+    ``lmbda_prev`` and ``tension_kPa`` over the quadrature points. The fields come from
+    ``snapshots.npz``. Either part can be empty.
+    """
+
+    t: np.ndarray = field(default_factory=_empty)  # step times (ms)
+    lmean: np.ndarray = field(default_factory=_empty)  # volume-mean λ per step
+    tamean: np.ndarray | None = None  # volume-mean Ta per step (kPa)
+    ts: np.ndarray = field(default_factory=_empty)  # snapshot times (ms)
+    lam: np.ndarray | None = None  # λ at the points, one row per snapshot
+    ta: np.ndarray | None = None  # Ta at the points, one row per snapshot (kPa)
+    w: np.ndarray | None = None  # the points' quadrature weights
+
+    @property
+    def empty(self) -> bool:
+        return len(self.t) == 0 and self.lam is None
 
 
 def series_of(run: RunData) -> Series | None:
-    s = run.snaps
-    if s and {"t_ms", "weights", "lmbda"} <= s.keys():
-        w = s["weights"]
-        lam = s["lmbda"]
-        lmean = np.array([metrics.weighted_mean(row, w) for row in lam])
-        ta = s.get("tension_kPa")
-        return Series(np.asarray(s["t_ms"], float), lmean, lam, ta, w)
+    """The run's means (``steps.csv``) and fields (``snapshots.npz``); None if it has neither."""
+    out = Series()
     st = run.steps
     if "t_ms" in st and "lmbda_mean" in st:
-        return Series(st["t_ms"], st["lmbda_mean"])
-    return None
+        out.t, out.lmean = st["t_ms"], st["lmbda_mean"]
+        out.tamean = st.get("Ta_mean_kPa")
+    s = run.snaps
+    if {"t_ms", "weights", "lmbda"} <= s.keys():
+        out.ts = np.asarray(s["t_ms"], float)
+        out.lam, out.w = s["lmbda"], s["weights"]
+        out.ta = s.get("tension_kPa")
+    return None if out.empty else out
 
 
 def _common(ta: np.ndarray, tb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -223,10 +240,21 @@ def _finite_rows(*arrays: np.ndarray) -> np.ndarray:
 
 @dataclass
 class Err:
-    lam_rms: float = float("nan")
-    ta_rms: float = float("nan")  # not normalized
-    lam_mean: float = float("nan")
-    n_common: int = 0
+    """Max over the common grid of the differences between two runs; nan where undefined."""
+
+    lam_rms: float = float("nan")  # RMS of λ over Ω
+    ta_rms: float = float("nan")  # RMS of Ta over Ω, kPa (not normalized)
+    lam_mean: float = float("nan")  # abs difference of the volume means of λ
+    ta_mean: float = float("nan")  # abs difference of the volume means of Ta, kPa
+
+
+#: The ``Err`` fields, in table order, with their labels.
+QUANTITIES: tuple[tuple[str, str], ...] = (
+    ("lam_rms", "RMS λ"),
+    ("ta_rms", "RMS Ta"),
+    ("lam_mean", "mean λ"),
+    ("ta_mean", "mean Ta"),
+)
 
 
 def on_grid(t: np.ndarray, grid: float | None) -> np.ndarray:
@@ -237,45 +265,68 @@ def on_grid(t: np.ndarray, grid: float | None) -> np.ndarray:
     return np.abs(r - np.round(r)) < 1e-6
 
 
+def _grid_pairs(
+    ta: np.ndarray,
+    tb: np.ndarray,
+    grid: float | None,
+    *finite: tuple[np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Indices of the times common to ``ta`` and ``tb`` on the grid, where every pair of
+    ``finite`` arrays is finite on both sides."""
+    ia, ib = _common(ta, tb)
+    keep = on_grid(ta[ia], grid)
+    ia, ib = ia[keep], ib[keep]
+    if len(ia) == 0:
+        return ia, ib
+    ok = _finite_rows(*(x[ia] for x, _ in finite), *(y[ib] for _, y in finite))
+    return ia[ok], ib[ok]
+
+
 def compare(a: Series, b: Series, grid: float | None = None) -> Err:
-    """Max over the common times of the RMS and mean differences of ``a`` from ``b``.
+    """Max over the common times of the differences of ``a`` from ``b``.
 
     The times are those of both series that are multiples of ``grid``: one grid for a whole
     group, so every error and order in it covers the same instants (a failed run covers its
-    own truncated part of it). Times at which either side is not finite (a failed run's last
-    iterate) are left out.
+    own truncated part of it). The volume means are compared at the step times on it, the
+    RMS of the fields at the snapshot times on it. Times at which either side is not
+    finite (a failed run's last iterate) are left out.
     """
-    ia, ib = _common(a.t, b.t)
-    keep = on_grid(a.t[ia], grid)
-    ia, ib = ia[keep], ib[keep]
-    if len(ia) == 0:
-        return Err()
-    ok = _finite_rows(a.lmean[ia], b.lmean[ib])
-    ia, ib = ia[ok], ib[ok]
-    if len(ia) == 0:
-        return Err()
-    e = Err(n_common=len(ia))
-    e.lam_mean = float(np.max(np.abs(a.lmean[ia] - b.lmean[ib])))
-    if a.lam is not None and b.lam is not None and a.lam.shape[1] == b.lam.shape[1]:
-        assert a.w is not None
+    e = Err()
+    means = [(a.lmean, b.lmean)]
+    if a.tamean is not None and b.tamean is not None:
+        means.append((a.tamean, b.tamean))
+    ia, ib = _grid_pairs(a.t, b.t, grid, *means)
+    if len(ia):
+        e.lam_mean = float(np.max(np.abs(a.lmean[ia] - b.lmean[ib])))
+        if a.tamean is not None and b.tamean is not None:
+            e.ta_mean = float(np.max(np.abs(a.tamean[ia] - b.tamean[ib])))
+    if a.lam is None or b.lam is None or a.lam.shape[1:] != b.lam.shape[1:]:
+        return e
+    assert a.w is not None
+    fields = [(a.lam, b.lam)]
+    if a.ta is not None and b.ta is not None:
+        fields.append((a.ta, b.ta))
+    ja, jb = _grid_pairs(a.ts, b.ts, grid, *fields)
+    if len(ja):
         e.lam_rms = float(
-            max(metrics.weighted_rms(a.lam[i] - b.lam[j], a.w) for i, j in zip(ia, ib)),
+            max(metrics.weighted_rms(a.lam[i] - b.lam[j], a.w) for i, j in zip(ja, jb)),
         )
         if a.ta is not None and b.ta is not None:
             e.ta_rms = float(
-                max(metrics.weighted_rms(a.ta[i] - b.ta[j], a.w) for i, j in zip(ia, ib)),
+                max(metrics.weighted_rms(a.ta[i] - b.ta[j], a.w) for i, j in zip(ja, jb)),
             )
     return e
 
 
 def ta_norm(ref: Series, grid: float | None = None) -> float:
-    """The reference's max over time of the RMS of ``Ta``: what ``Ta`` errors divide by.
+    """The reference's max over time of the RMS of ``Ta`` (kPa): what ``Ta`` errors divide by.
 
-    nan when there is no ``Ta`` or it is zero throughout, so a division shows "—".
+    Over its snapshot times on the grid. nan when there is no ``Ta`` or it is zero
+    throughout, so a division shows "—".
     """
     if ref.ta is None or ref.w is None:
         return float("nan")
-    rows = ref.ta[on_grid(ref.t, grid)]
+    rows = ref.ta[on_grid(ref.ts, grid)]
     if len(rows) == 0:
         return float("nan")
     v = float(max(metrics.weighted_rms(row, ref.w) for row in rows))
@@ -288,17 +339,27 @@ def safe_div(a: float, b: float) -> float:
 
 
 def richardson_series(fine: Series, coarse: Series, ratio: float) -> Series | None:
+    """The first-order extrapolation of ``fine`` and ``coarse``, at their common times."""
+    out = Series()
     ia, ib = _common(fine.t, coarse.t)
-    if len(ia) == 0:
-        return None
-    lmean = metrics.richardson(fine.lmean[ia], coarse.lmean[ib], ratio)
-    out = Series(fine.t[ia], lmean)
-    if fine.lam is not None and coarse.lam is not None and fine.lam.shape == coarse.lam.shape:
-        out.lam = metrics.richardson(fine.lam[ia], coarse.lam[ib], ratio)
-        out.w = fine.w
-        if fine.ta is not None and coarse.ta is not None:
-            out.ta = metrics.richardson(fine.ta[ia], coarse.ta[ib], ratio)
-    return out
+    if len(ia):
+        out.t = fine.t[ia]
+        out.lmean = metrics.richardson(fine.lmean[ia], coarse.lmean[ib], ratio)
+        if fine.tamean is not None and coarse.tamean is not None:
+            out.tamean = metrics.richardson(fine.tamean[ia], coarse.tamean[ib], ratio)
+    if (
+        fine.lam is not None
+        and coarse.lam is not None
+        and fine.lam.shape[1:] == coarse.lam.shape[1:]
+    ):
+        ja, jb = _common(fine.ts, coarse.ts)
+        if len(ja):
+            out.ts = fine.ts[ja]
+            out.lam = metrics.richardson(fine.lam[ja], coarse.lam[jb], ratio)
+            out.w = fine.w
+            if fine.ta is not None and coarse.ta is not None:
+                out.ta = metrics.richardson(fine.ta[ja], coarse.ta[jb], ratio)
+    return None if out.empty else out
 
 
 @dataclass
@@ -310,16 +371,45 @@ class Reference:
     logs: dict[str, np.ndarray] = field(default_factory=dict)  # BiV log.csv columns
 
 
+def is_reference(run: RunData, ref: Reference) -> bool:
+    return ref.run_dt is not None and run.scheme == "monolithic" and run.dt == ref.run_dt
+
+
+def completed_monolithic(lad: dict[str, dict[float, RunData]]) -> list[RunData]:
+    """The monolithic runs that reached ``t_end`` and have data, finest first.
+
+    Only these can be a reference: a failed run's error would be measured against a
+    truncated, possibly diverging, solution.
+    """
+    mono = lad.get("monolithic", {}).values()
+    done = [r for r in mono if r.reached is True and series_of(r) is not None]
+    return sorted(done, key=lambda r: r.dt)
+
+
 def finest_monolithic(lad: dict[str, dict[float, RunData]]) -> RunData | None:
+    done = completed_monolithic(lad)
+    return done[0] if done else None
+
+
+def no_reference_note(lad: dict[str, dict[float, RunData]]) -> str:
     mono = lad.get("monolithic", {})
-    usable = [r for r in mono.values() if series_of(r) is not None]
-    return min(usable, key=lambda r: r.dt) if usable else None
+    what = (
+        "No monolithic run in this group"
+        if not mono
+        else f"No monolithic run reached t_end ({len(mono)} ran, none completed)"
+    )
+    return (
+        f"{what}, so there is no reference: the errors against it, their orders and the "
+        "normalized Ta are not reported.\n"
+    )
 
 
 LOG_FIELDS = ("V_LV_mL", "V_RV_mL", "p_LV_mmHg", "p_RV_mmHg")
 
 
 def make_references(geometry: str, lad: dict[str, dict[float, RunData]]) -> list[Reference]:
+    """The finest completed monolithic run; for the BiV also the Richardson extrapolation
+    of the two finest completed ones."""
     refs: list[Reference] = []
     fin = finest_monolithic(lad)
     if fin is not None:
@@ -327,10 +417,7 @@ def make_references(geometry: str, lad: dict[str, dict[float, RunData]]) -> list
         assert s is not None
         refs.append(Reference(f"monolithic dt {fin.dt:g} ms", s, fin.dt, fin.dt, dict(fin.log)))
     if geometry == "biv":
-        mono = sorted(
-            (r for r in lad.get("monolithic", {}).values() if series_of(r) is not None),
-            key=lambda r: r.dt,
-        )
+        mono = completed_monolithic(lad)
         if len(mono) >= 2:
             fine, coarse = mono[0], mono[1]
             ratio = coarse.dt / fine.dt
@@ -495,10 +582,61 @@ def grid_of(lad: dict[str, dict[float, RunData]]) -> float | None:
 
 GRID_RULE = (
     "Every maximum and order in this group is taken over one common grid: the multiples of the "
-    "group's coarsest dt ({grid:g} ms), intersected with the snapshot times for the field "
-    "quantities (and with `log.csv`'s rows for V and p). A failed run is compared over its own "
-    "truncated part of that grid.\n"
+    "group's coarsest dt ({grid:g} ms). The volume means of λ and Ta (`steps.csv`'s "
+    "`lmbda_mean` and `Ta_mean_kPa`, the weighted means over the quadrature points) are "
+    "compared at every step on that grid; the RMS of the fields at the snapshot times on it; "
+    "V and p at `log.csv`'s rows on it. A failed run is compared over its own truncated part "
+    "of that grid.\n"
 )
+
+#: Column headers of an error table, in ``_err_cells`` order.
+ERR_HEADER = [
+    "RMS λ",
+    "RMS Ta (kPa)",
+    "RMS Ta / ref max RMS Ta",
+    "max abs Δ mean λ",
+    "max abs Δ mean Ta (kPa)",
+]
+
+
+def _err_cells(e: Err, norm: float) -> list[str]:
+    return [
+        fnum(e.lam_rms),
+        fnum(e.ta_rms),
+        fnum(safe_div(e.ta_rms, norm)),
+        fnum(e.lam_mean),
+        fnum(e.ta_mean),
+    ]
+
+
+def coupling_errors(
+    lad: dict[str, dict[float, RunData]],
+    grid: float | None,
+) -> dict[tuple[str, float], Err]:
+    """Each run that is not monolithic against the monolithic run of its dt."""
+    mono = lad.get("monolithic", {})
+    out: dict[tuple[str, float], Err] = {}
+    for run in sorted_runs(lad):
+        if run.scheme == "monolithic" or run.dt not in mono:
+            continue
+        s, sm = series_of(run), series_of(mono[run.dt])
+        if s is not None and sm is not None:
+            out[(run.scheme, run.dt)] = compare(s, sm, grid)
+    return out
+
+
+def reference_errors(
+    lad: dict[str, dict[float, RunData]],
+    ref: Reference,
+    grid: float | None,
+) -> dict[tuple[str, float], Err]:
+    """Each run against ``ref``; the run that is the reference is left out."""
+    out: dict[tuple[str, float], Err] = {}
+    for run in sorted_runs(lad):
+        s = series_of(run)
+        if s is not None and not is_reference(run, ref):
+            out[(run.scheme, run.dt)] = compare(s, ref.series, grid)
+    return out
 
 
 def accuracy_tables(
@@ -510,62 +648,56 @@ def accuracy_tables(
     md = []
     if grid is not None:
         md.append(GRID_RULE.format(grid=grid))
-    store: dict[tuple[str, float, str], Err] = {}
-    mono = lad.get("monolithic", {})
     runs = sorted_runs(lad)
+    norms = [ta_norm(ref.series, grid) for ref in refs]
     if not refs:
-        md.append(
-            "No monolithic run to serve as reference: the reference-based columns are empty.\n",
+        md.append(no_reference_note(lad))
+
+    cpl = coupling_errors(lad, grid)
+    norm0 = norms[0] if refs else float("nan")
+    rows = []
+    for run in runs:
+        cells = (
+            ["0 (by definition)"] * len(ERR_HEADER)
+            if run.scheme == "monolithic"
+            else _err_cells(cpl.get((run.scheme, run.dt), Err()), norm0)
         )
-    header = [
-        "scheme",
-        "dt (ms)",
-        "coupling: RMS λ",
-        "coupling: RMS Ta / ref max RMS Ta",
-        "coupling: max abs Δ mean λ",
-        "vs ref: RMS λ",
-        "vs ref: RMS Ta / ref max RMS Ta",
-        "vs ref: max abs Δ mean λ",
-    ]
-    for ref_i, ref in enumerate(refs):
-        norm = ta_norm(ref.series, grid)
-        if not np.isfinite(norm):
-            md.append(
-                "The reference's Ta is zero (or absent) throughout: the normalized Ta columns "
-                'show "—".\n',
-            )
+        rows.append([run.scheme, f"{run.dt:g}" + flag(run), *cells])
+    normalized_by = (
+        f"normalized by the max RMS Ta of the reference {refs[0].name}, given with its table"
+        if refs
+        else 'not normalized, since there is no reference ("—")'
+    )
+    md.append(
+        "**Coupling error**: each run against the monolithic run of the same dt, which needs "
+        f"no reference. Ta is {normalized_by}. (`*`: the run failed; the errors cover its "
+        "finite common times only.)\n",
+    )
+    md.append(table(["scheme", "dt (ms)", *ERR_HEADER], rows))
+
+    store: dict[tuple[str, float, str], Err] = {}
+    for ref_i, (ref, norm) in enumerate(zip(refs, norms)):
+        errs = reference_errors(lad, ref, grid)
+        if ref_i == 0:
+            store = {(scheme, dt, "main"): e for (scheme, dt), e in errs.items()}
         rows = []
         for run in runs:
-            s = series_of(run)
-            cpl = Err()
-            if run.scheme != "monolithic" and run.dt in mono and s is not None:
-                sm = series_of(mono[run.dt])
-                if sm is not None:
-                    cpl = compare(s, sm, grid)
-            e = Err()
-            is_ref = ref.run_dt is not None and run.scheme == "monolithic" and run.dt == ref.run_dt
-            if s is not None and not is_ref:
-                e = compare(s, ref.series, grid)
-            if ref_i == 0:
-                store[(run.scheme, run.dt, "main")] = e
-            by_def = run.scheme == "monolithic"
-            rows.append(
-                [
-                    run.scheme,
-                    f"{run.dt:g}" + flag(run),
-                    "0 (by definition)" if by_def else fnum(cpl.lam_rms),
-                    "0 (by definition)" if by_def else fnum(safe_div(cpl.ta_rms, norm)),
-                    "0 (by definition)" if by_def else fnum(cpl.lam_mean),
-                    "0 (is the reference)" if is_ref else fnum(e.lam_rms),
-                    "0 (is the reference)" if is_ref else fnum(safe_div(e.ta_rms, norm)),
-                    "0 (is the reference)" if is_ref else fnum(e.lam_mean),
-                ],
+            cells = (
+                ["0 (is the reference)"] * len(ERR_HEADER)
+                if is_reference(run, ref)
+                else _err_cells(errs.get((run.scheme, run.dt), Err()), norm)
             )
-        md.append(
-            f"**Reference: {ref.name}.** (`*`: the run failed; the errors cover its finite "
-            "common times only.)\n",
+            rows.append([run.scheme, f"{run.dt:g}" + flag(run), *cells])
+        constant = (
+            f"its max over t of the RMS of Ta, {fnum(norm, '.4g')} kPa"
+            if np.isfinite(norm)
+            else 'none: its Ta is zero (or absent) throughout, so the normalized column shows "—"'
         )
-        md.append(table(header, rows))
+        md.append(
+            f"**Error against the reference: {ref.name}.** Ta normalization: {constant}. "
+            "(`*`: the run failed; the errors cover its finite common times only.)\n",
+        )
+        md.append(table(["scheme", "dt (ms)", *ERR_HEADER], rows))
     md.append(orders_tables(lad, refs, grid))
     return "\n".join(md), store
 
@@ -579,15 +711,33 @@ def _order_pairs(dts: list[float], errs: list[float]) -> list[tuple[float, float
     return [(ok[i][0], ok[i + 1][0], p[i]) for i in range(len(ok) - 1)]
 
 
-def orders_tables(
+@dataclass
+class Order:
+    """An observed order of one ``Err`` field over ``dts`` (coarse to fine)."""
+
+    scheme: str
+    dts: tuple[float, ...]
+    quantity: str  # an ``Err`` field, a key of ``QUANTITIES``
+    value: float
+    ref: str = ""  # the reference's name; "" for a self-convergence order
+
+
+def reference_orders(
     lad: dict[str, dict[float, RunData]],
     refs: list[Reference],
     grid: float | None,
-) -> str:
-    md = []
-    rows = []
+) -> tuple[list[Order], list[tuple[str, str, str]]]:
+    """The orders against each reference that is a run, and the ladders too short for one.
+
+    None against an extrapolation (ruling R8): the monolithic order against it is 1 by
+    construction. A ladder is the scheme's dts that reached ``t_end`` and are at least
+    ``MIN_REF_RATIO`` times the reference's; a short one is returned as
+    ``(reference, scheme, why)``.
+    """
+    orders: list[Order] = []
+    short: list[tuple[str, str, str]] = []
     for ref in refs:
-        if ref.run_dt is None:  # an extrapolation: errors only, no orders (it would be circular)
+        if ref.run_dt is None:
             continue
         for scheme in SCHEMES:
             runs = lad.get(scheme, {})
@@ -598,57 +748,75 @@ def orders_tables(
                 reverse=True,
             )
             if len(eligible) < 2:
-                rows.append(
-                    [
-                        ref.name,
-                        scheme,
-                        f"fewer than 2 dts >= {MIN_REF_RATIO:g} x {ref.dt:g} ms that reached t_end",
-                        DASH,
-                        DASH,
-                    ],
-                )
+                why = f"fewer than 2 dts >= {MIN_REF_RATIO:g} x {ref.dt:g} ms that reached t_end"
+                short.append((ref.name, scheme, why))
                 continue
             ec = {}
             for dt in eligible:
                 s = series_of(runs[dt])
                 ec[dt] = compare(s, ref.series, grid) if s is not None else Err()
-            for q, label in (("lam_rms", "RMS λ"), ("ta_rms", "RMS Ta"), ("lam_mean", "mean λ")):
+            for q, _ in QUANTITIES:
                 for a, b, p in _order_pairs(eligible, [getattr(ec[d], q) for d in eligible]):
-                    rows.append([ref.name, scheme, f"{a:g} → {b:g}", label, fnum(p, ".2f")])
-    md.append(
-        "**Orders against the reference.** Computed over the dts that reached `t_end` and are "
-        f'at least {MIN_REF_RATIO:g}× the reference\'s; "—" where fewer than two remain. '
-        "Against a Richardson extrapolation only errors are reported, no orders: the "
-        "monolithic order against it is 1 by construction.\n",
-    )
-    md.append(table(["reference", "scheme", "dt pair (ms)", "quantity", "observed order"], rows))
-    # Self-convergence
-    srows = []
+                    orders.append(Order(scheme, (a, b), q, p, ref.name))
+    return orders, short
+
+
+def self_orders(lad: dict[str, dict[float, RunData]], grid: float | None) -> list[Order]:
+    """Self-convergence orders over each three successive dts; failed runs left out."""
+    out: list[Order] = []
     for scheme in SCHEMES:
         runs = lad.get(scheme, {})
         dts = sorted((d for d in runs if not runs[d].failed), reverse=True)
         for i in range(len(dts) - 2):
-            d0, d1, d2 = dts[i : i + 3]
-            s0, s1, s2 = (series_of(runs[d]) for d in (d0, d1, d2))
+            dd = (dts[i], dts[i + 1], dts[i + 2])
+            s0, s1, s2 = (series_of(runs[d]) for d in dd)
             if s0 is None or s1 is None or s2 is None:
                 continue
             c, f = compare(s0, s1, grid), compare(s1, s2, grid)
-            dd = (d0, d1, d2)
-            srows.append(
-                [
-                    scheme,
-                    f"{d0:g}, {d1:g}, {d2:g}",
-                    fnum(metrics.self_convergence_order(dd, c.lam_rms, f.lam_rms), ".2f"),
-                    fnum(metrics.self_convergence_order(dd, c.ta_rms, f.ta_rms), ".2f"),
-                    fnum(metrics.self_convergence_order(dd, c.lam_mean, f.lam_mean), ".2f"),
-                ],
-            )
+            for q, _ in QUANTITIES:
+                p = metrics.self_convergence_order(dd, getattr(c, q), getattr(f, q))
+                out.append(Order(scheme, dd, q, p))
+    return out
+
+
+def orders_tables(
+    lad: dict[str, dict[float, RunData]],
+    refs: list[Reference],
+    grid: float | None,
+) -> str:
+    label = dict(QUANTITIES)
+    orders, short = reference_orders(lad, refs, grid)
+    rows = []
+    for ref in refs:
+        for scheme in SCHEMES:
+            rows += [[r, s, why, DASH, DASH] for r, s, why in short if (r, s) == (ref.name, scheme)]
+            rows += [
+                [o.ref, o.scheme, " → ".join(f"{d:g}" for d in o.dts), label[o.quantity]]
+                + [fnum(o.value, ".2f")]
+                for o in orders
+                if (o.ref, o.scheme) == (ref.name, scheme)
+            ]
+    md = [
+        "**Orders against the reference.** Computed over the dts that reached `t_end` and are "
+        f'at least {MIN_REF_RATIO:g}× the reference\'s; "—" where fewer than two remain. '
+        "Against a Richardson extrapolation only errors are reported, no orders: the "
+        "monolithic order against it is 1 by construction.\n",
+        table(["reference", "scheme", "dt pair (ms)", "quantity", "observed order"], rows),
+    ]
+    by_ladder: dict[tuple[str, tuple[float, ...]], dict[str, float]] = {}
+    for o in self_orders(lad, grid):
+        by_ladder.setdefault((o.scheme, o.dts), {})[o.quantity] = o.value
+    srows = [
+        [scheme, ", ".join(f"{d:g}" for d in dts)]
+        + [fnum(values.get(q, float("nan")), ".2f") for q, _ in QUANTITIES]
+        for (scheme, dts), values in by_ladder.items()
+    ]
     md.append(
         "**Self-convergence orders** (failed runs left out; from successive differences, "
         'no reference; "—" where undefined).\n',
     )
     md.append(
-        table(["scheme", "dts (ms)", "order, RMS λ", "order, RMS Ta", "order, mean λ"], srows),
+        table(["scheme", "dts (ms)", *(f"order, {lab}" for _, lab in QUANTITIES)], srows),
     )
     return "\n".join(md)
 
@@ -913,11 +1081,6 @@ def biv_tables(
                     ia, ib = _common(lg["t_ms"], ref.logs["t_ms"])
                     keep = on_grid(lg["t_ms"][ia], grid)
                     ia, ib = ia[keep], ib[keep]
-                    is_ref = (
-                        ref.run_dt is not None
-                        and run.scheme == "monolithic"
-                        and run.dt == ref.run_dt
-                    )
 
                     def md_(
                         k: str,
@@ -931,7 +1094,7 @@ def biv_tables(
                         d = d[np.isfinite(d)]
                         return float(np.max(d)) if len(d) else float("nan")
 
-                    dv, dp = (0.0, 0.0) if is_ref else (md_(v_key), md_(p_key))
+                    dv, dp = (0.0, 0.0) if is_reference(run, ref) else (md_(v_key), md_(p_key))
                 rows.append([run.scheme, f"{run.dt:g}" + flag(run), fnum(dv), fnum(dp)])
             md.append(
                 f"**{vent}: max abs V − V_ref and p − p_ref on the common grid, reference: "
@@ -1404,11 +1567,12 @@ def build_report(root: Path, out: Path) -> str:
         "# Scheme comparison report\n",
         f"Root: `{root}`. Generated {datetime.datetime.now(datetime.UTC):%Y-%m-%d %H:%M} UTC.\n",
         "Metrics are those of the spec, §5. Within a group every error and order is taken over one "
-        "common grid (the multiples of the group's coarsest dt, intersected with the snapshot "
-        "times; the BiV's V and p on `log.csv`'s rows). A `*` after a dt marks a run that did "
-        "not reach "
-        '`t_end`. A "—" is a value that does not exist (missing run, reference or file, or '
-        "undefined).\n",
+        "common grid, the multiples of the group's coarsest dt: the volume means of λ and Ta at "
+        "every step of `steps.csv` on it, the RMS of the fields at the snapshot times on it, the "
+        "BiV's V and p at `log.csv`'s rows on it. A reference is a monolithic run that reached "
+        "`t_end` (or, on the BiV, an extrapolation of two). A `*` after a dt marks a run that did "
+        'not reach `t_end`. A "—" is a value that does not exist (missing run, reference or '
+        "file, or undefined).\n",
     ]
     if LOAD_PROBLEMS:
         md.append("## Load problems\n")
