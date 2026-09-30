@@ -17,6 +17,19 @@ rather than ported by hand.
 converged step: the naive segregated scheme, kept as the comparison it is not
 convergent against.
 
+``scheme="stabilized"`` is Regazzoni & Quarteroni's (2021) stabilized segregated
+scheme. It takes the segregated step and stores the same states, but adds the term of
+their Eq. (19) to that step's tension: ``Ta + Ka (λ(u) - λ_n)``, with ``λ_n`` the
+frozen stretch, through ``pulse.StabilizedActiveStress``. ``Ka`` is the UFL derivative
+of the stepped tension with respect to the step's end stretch, taken at the frozen
+point. It runs through both of that stretch's uses, the length dependence and the
+stretch rate, so it includes the rate's ``1/dt``. It is the discrete counterpart of
+their Eq. (44), which adds the length dependence to the rate path ``∂Ṫa/∂λ̇`` of
+their Eq. (42). The term is O(dt), so the scheme stays consistent, and it keeps the
+scheme stable where active stiffness exceeds passive. It is defined in the stretch
+formulation only. ``tension_scale`` multiplies ``Ta`` and ``Ka`` alike, since scaling
+one without the other would break the consistency of the stabilization.
+
 ``t``, ``dt`` and every parameter are ``dolfinx.fem.Constant``, read when the form
 is assembled. That is not a detail: ``pulse`` compiles the form once, while
 ``dt == 0``, and ``ZetaSplitUFL`` branched on a Python-float ``dt`` while building
@@ -64,7 +77,7 @@ class _PostSolveExpressions(NamedTuple):
 
     states: dolfinx.fem.Expression
     lmbda: dolfinx.fem.Expression
-    dLambda: dolfinx.fem.Expression | None  # only the segregated scheme stores the rate
+    dLambda: dolfinx.fem.Expression | None  # only the frozen schemes store the rate
     tension_kPa: dolfinx.fem.Expression
     outputs: dict[str, dolfinx.fem.Expression]
 
@@ -96,6 +109,12 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         ``"monolithic"``: ``lmbda = λ(u)`` and ``dLambda = (λ(u) - lmbda_prev) / dt``, so
         Newton differentiates through the step. ``"segregated"``: ``lmbda`` and
         ``dLambda`` are frozen at the last converged step (the naive scheme).
+        ``"stabilized"``: the segregated step, with Regazzoni & Quarteroni's Eq. (19)
+        term ``Ka (λ(u) - λ_n)`` added to its tension, ``λ_n`` the frozen stretch.
+        ``Ka`` is the derivative of the step's tension with respect to its end
+        stretch, at the frozen point, and so includes the ``1/dt`` of the rate. It
+        requires the ``stretch`` formulation, and ``tension_scale`` multiplies ``Ka``
+        as well as ``Ta``.
     parameters:
         Overrides of the module's parameter values, by name. ``lmbda`` and ``dLambda``
         are computed by the scheme and cannot be overridden.
@@ -110,7 +129,8 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
     tension_scale:
         Optional factor multiplying ``Ta``, applied in both ``S`` (before the
         unit conversion to Pa) and the ``tension`` expression :meth:`post_solve`
-        averages into :attr:`active_tension`. A per-cell ``dolfinx.fem.Function``
+        averages into :attr:`active_tension`; under ``stabilized`` it multiplies
+        ``Ka`` in ``S`` too. A per-cell ``dolfinx.fem.Function``
         (e.g. DG0) masks the active stress out of part of the domain -- 0 there,
         1 elsewhere -- without touching the states themselves; ``None`` (the
         default) leaves ``Ta`` unscaled.
@@ -159,15 +179,26 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         *,
         quadrature_degree: int,
         element: tuple[str, int] | None = None,
-        scheme: Literal["monolithic", "segregated"] = "monolithic",
+        scheme: Literal["monolithic", "segregated", "stabilized"] = "monolithic",
         parameters: Mapping[str, float] | None = None,
         tension: str = "Ta",
         tension_unit: str = "kPa",
         formulation: pulse.ActiveStressFormulation = pulse.ActiveStressFormulation.stretch,
         tension_scale: dolfinx.fem.Function | ufl.core.expr.Expr | None = None,
     ):
-        if scheme not in ("monolithic", "segregated"):
-            raise ValueError(f"scheme must be 'monolithic' or 'segregated', got {scheme!r}")
+        if scheme not in ("monolithic", "segregated", "stabilized"):
+            raise ValueError(
+                f"scheme must be 'monolithic', 'segregated' or 'stabilized', got {scheme!r}",
+            )
+        if (
+            scheme == "stabilized"
+            and pulse.ActiveStressFormulation(formulation) != pulse.ActiveStressFormulation.stretch
+        ):
+            raise ValueError(
+                "scheme='stabilized' requires formulation='stretch': Regazzoni & "
+                "Quarteroni's Eq. (19) is derived in the stretch formulation, and "
+                "pulse.StabilizedActiveStress implements only that.",
+            )
         if tension not in module.monitor:
             raise KeyError(
                 f"tension {tension!r} is not a monitor of the module. "
@@ -241,7 +272,7 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
             for name in (*module.provides, "lmbda")
         }
 
-        # The segregated scheme's lmbda and dLambda, frozen at the last converged step.
+        # The frozen schemes' lmbda and dLambda, fixed at the last converged step.
         self._lmbda_frozen = dolfinx.fem.Function(self.space)
         self._lmbda_frozen.x.array[:] = 1.0
         self._dLambda_frozen = dolfinx.fem.Function(self.space)
@@ -256,6 +287,24 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
 
         self.u: dolfinx.fem.Function | None = None
         self._post_solve_expressions: _PostSolveExpressions | None = None
+
+        # Regazzoni & Quarteroni's Eq. (19) on the segregated step: pulse's stress, with
+        # Ta and Ka taken at the frozen point, where the ODE is advanced.
+        self._stabilized: pulse.StabilizedActiveStress | None = None
+        if scheme == "stabilized":
+            Ta, Ka = self._step_tension_and_stiffness(
+                self._lmbda_frozen,
+                self._dLambda_frozen,
+                self._lmbda_frozen,
+            )
+            if tension_scale is not None:
+                Ta, Ka = tension_scale * Ta, tension_scale * Ka
+            self._stabilized = pulse.StabilizedActiveStress(
+                f0=f0,
+                activation=pulse.Variable(Ta, tension_unit),
+                active_stiffness=pulse.Variable(Ka, tension_unit),
+                lmbda_prev=self._lmbda_frozen,
+            )
 
     @property
     def tension_kPa(self) -> dolfinx.fem.Function:
@@ -324,6 +373,34 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         new = self.module.generalized_rush_larsen(states, self.t, self.dt, p, self._missing)
         return new, p
 
+    def _step_tension_and_stiffness(
+        self,
+        lmbda_end: ufl.core.expr.Expr,
+        rate_base: ufl.core.expr.Expr | float,
+        lmbda_base: ufl.core.expr.Expr,
+    ) -> tuple[ufl.core.expr.Expr, ufl.core.expr.Expr]:
+        """``tension`` after one GRL step from ``states_prev``, and its derivative ``Ka``.
+
+        The step's ``lmbda`` is ``ℓ = lmbda_end`` and its ``dLambda`` is
+        ``rate_base + (ℓ - lmbda_base) / dt``, the increment guarded like
+        :meth:`_rate` (0 when ``dt == 0``). ``Ka`` is ``ufl.diff`` of the tension with
+        respect to ``ℓ``, through both of its uses: the length dependence, and the
+        rate, with its ``1/dt``. Both are in ``tension_unit`` (``Ka`` per unit
+        stretch), without ``tension_scale``.
+        """
+        lmbda = ufl.variable(lmbda_end)
+        p: list[Any] = list(self._parameter_constants)
+        p[self.module.parameter["lmbda"]] = lmbda
+        p[self.module.parameter["dLambda"]] = rate_base + ufl.conditional(
+            ufl.gt(self.dt, 0.0),
+            (lmbda - lmbda_base) / ufl.max_value(self.dt, _DT_FLOOR),
+            0.0,
+        )
+        states = [self.states_prev[i] for i in range(len(self.module.state))]
+        new = self.module.generalized_rush_larsen(states, self.t, self.dt, p, self._missing)
+        tension = self.module.monitor_values(self.t, new, p, self._missing)[self._tension_index]
+        return tension, ufl.diff(tension, lmbda)
+
     def _fibre_stretch(self, C: ufl.core.expr.Expr) -> ufl.core.expr.Expr:
         return ufl.sqrt(ufl.inner(C * self.f0, self.f0))
 
@@ -356,7 +433,7 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
             lmbda=dolfinx.fem.Expression(lmbda, points),
             dLambda=(
                 dolfinx.fem.Expression(self._rate(lmbda), points)
-                if self.scheme == "segregated"
+                if self.scheme != "monolithic"
                 else None
             ),
             tension_kPa=dolfinx.fem.Expression(tension * (self._to_Pa / 1000.0), points),
@@ -382,7 +459,13 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         )
 
     def S(self, C: ufl.core.expr.Expr) -> ufl.core.expr.Expr:
-        """Active second Piola-Kirchhoff stress, in Pa, after one step at the stretch of ``C``."""
+        """Active second Piola-Kirchhoff stress, in Pa, after one step at the stretch of ``C``.
+
+        Under ``stabilized`` it is the ``pulse.StabilizedActiveStress`` built in
+        ``__init__``, whose ``Ta`` and ``Ka`` come from the segregated step.
+        """
+        if self._stabilized is not None:
+            return self._stabilized.S(C)
         lmbda = self._fibre_stretch(C)
         new, p = self._step(lmbda)
         Ta = self.module.monitor_values(self.t, new, p, self._missing)[self._tension_index]
@@ -404,12 +487,12 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         """Accept the step taken with the converged displacement.
 
         Stores the states of the step the residual used, and λ(u), as the new
-        previous values; for ``segregated`` also refreshes the frozen ``lmbda`` and
-        ``dLambda``; refreshes ``outputs`` and ``active_tension``.
+        previous values; for ``segregated`` and ``stabilized`` also refreshes the frozen
+        ``lmbda`` and ``dLambda``; refreshes ``outputs`` and ``active_tension``.
 
         Everything is evaluated before anything is overwritten: the step reads
         ``states_prev``, and ``lmbda_prev`` (monolithic) or the frozen pair
-        (segregated).
+        (segregated, stabilized).
 
         At ``dt == 0`` the step is the identity, so a ``post_solve()`` then accepts the
         current ``u`` as the rest state: the states are kept and ``lmbda_prev := λ(u)``.
@@ -429,7 +512,7 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         lmbda = self.outputs["lmbda"].x.array
         self.states_prev.x.array[:] = self._states_next.x.array
         self.lmbda_prev.x.array[:] = lmbda
-        if self.scheme == "segregated":
+        if self.scheme != "monolithic":
             self._lmbda_frozen.x.array[:] = lmbda
             self._dLambda_frozen.x.array[:] = self._dLambda_next.x.array
 

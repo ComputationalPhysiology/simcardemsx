@@ -10,6 +10,8 @@ convergent. It is the FEM counterpart of ``tests/test_zero_d_coupling.py``.
 - Gate 1: the monolithic scheme converges under time-step refinement against a
   dt = 0.01 ms monolithic reference, while the segregated one gets *worse*: it
   becomes unstable earlier as dt shrinks.
+- S1: the stabilized segregated scheme converges at first order against the same
+  reference, in the same regime.
 - Gate 4: the zeta split, run monolithically, twitches without the period-2
   oscillation the old ``ZetaSplitUFL`` coupling showed.
 """
@@ -22,7 +24,7 @@ from mpi4py import MPI
 import dolfinx
 import numpy as np
 import pytest
-from conftest import _reversals, _zetasplit_inputs, calcium
+from conftest import _mechanics, _reversals, _zetasplit_inputs, calcium
 
 #: Spread of λ over the element's quadrature points above which a run is unstable.
 #: The load and the boundary conditions are uniform, so the solution is uniform: the
@@ -60,7 +62,7 @@ def _run(
     split_modules,
     make_mechanics,
     split: str,
-    scheme: Literal["monolithic", "segregated"],
+    scheme: Literal["monolithic", "segregated", "stabilized"],
     dt: float,
     t_end: float,
     inputs_of_t: Callable[[float], dict[str, float]],
@@ -111,16 +113,30 @@ def _worse(fine: _Run, coarse: _Run) -> bool:
     return fine.t_unstable < coarse.t_unstable
 
 
+@pytest.fixture(scope="module")
+def caisplit_reference(split_modules) -> _Run:
+    """The reference of gate 1 and S1: the Ca_i split, monolithic, at dt 0.01 ms for 40 ms.
+
+    Built with ``conftest._mechanics`` itself, since the ``make_mechanics`` fixture
+    is function-scoped and this one is shared by the module.
+    """
+    return _run(split_modules, _mechanics, "caisplit", "monolithic", 0.01, 40.0, _caisplit_inputs)
+
+
 @pytest.mark.slow
-def test_monolithic_converges_and_segregated_does_not(split_modules, make_mechanics):
+def test_monolithic_converges_and_segregated_does_not(
+    split_modules,
+    make_mechanics,
+    caisplit_reference,
+):
     """Gate 1: monolithic converges under dt refinement; the naive scheme gets worse."""
     t_end = 40.0
     args = (split_modules, make_mechanics, "caisplit")
-    ref = _run(*args, "monolithic", 0.01, t_end, _caisplit_inputs)
+    ref = caisplit_reference
     # The instability criterion must not trip on the monolithic scheme, or it would
     # not tell the two schemes apart.
     assert ref.t_unstable == t_end, (ref.t_fail, ref.spread.max())
-    lmbda_ref = _at_whole_ms(ref.trace, 0.01)
+    lmbda_ref = _at_whole_ms(ref.trace, ref.dt)
 
     e = {}
     for dt in (1.0, 0.25, 0.05):
@@ -135,6 +151,36 @@ def test_monolithic_converges_and_segregated_does_not(split_modules, make_mechan
     summary = {dt: (run.t_unstable, run.t_fail) for dt, run in seg.items()}
     assert _worse(seg[0.25], seg[1.0]), summary
     assert _worse(seg[0.05], seg[0.25]), summary
+
+
+@pytest.mark.slow
+def test_stabilized_converges_at_first_order(split_modules, make_mechanics, caisplit_reference):
+    """S1: the stabilized scheme converges at first order where the naive one does not.
+
+    Gate 1's inputs, regime and reference. Where the naive scheme becomes unstable
+    earlier as dt shrinks, the stabilized one must never trip the instability
+    criterion, and must converge at first order.
+    """
+    t_end = 40.0
+    assert caisplit_reference.t_unstable == t_end
+    lmbda_ref = _at_whole_ms(caisplit_reference.trace, caisplit_reference.dt)
+
+    e = {}
+    for dt in (1.0, 0.25, 0.05):
+        run = _run(
+            split_modules,
+            make_mechanics,
+            "caisplit",
+            "stabilized",
+            dt,
+            t_end,
+            _caisplit_inputs,
+        )
+        assert run.t_unstable == t_end, (dt, run.t_fail, run.spread.max())
+        e[dt] = np.max(np.abs(_at_whole_ms(run.trace, dt) - lmbda_ref))
+
+    assert np.log(e[1.0] / e[0.25]) / np.log(4) >= 0.8, e  # probe: 0.83
+    assert np.log(e[0.25] / e[0.05]) / np.log(5) >= 0.8, e  # probe: 0.97
 
 
 @pytest.mark.slow

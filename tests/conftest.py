@@ -143,7 +143,7 @@ def _mechanics(
     *,
     quadrature_degree: int = 2,
     backend_quadrature_degree: int | None = None,
-    scheme: Literal["monolithic", "segregated"] = "monolithic",
+    scheme: Literal["monolithic", "segregated", "stabilized"] = "monolithic",
 ) -> tuple[pulse.StaticProblem, GeneratedActivation]:
     """The one-element setup of ``tests/test_monolithic_coupling.py``.
 

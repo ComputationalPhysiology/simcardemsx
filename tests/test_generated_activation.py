@@ -248,15 +248,18 @@ def test_S_matches_the_numpy_reference(split_modules, formulation, divide_by_lmb
     np.testing.assert_allclose(S_ff / vol, expected, rtol=1e-10)
 
 
-def test_solve_before_first_step_is_finite(split_modules):
+@pytest.mark.parametrize("scheme", ["monolithic", "segregated", "stabilized"])
+def test_solve_before_first_step_is_finite(split_modules, scheme):
     """With ``dt`` left at 0 the step is the identity and ``dLambda`` is 0.
 
-    ``u`` is shortened, so an unguarded ``(λ - lmbda_prev) / dt`` would be -0.05 / 0.
+    ``u`` is shortened, so an unguarded ``(λ - lmbda_prev) / dt`` would be -0.05 / 0;
+    under ``stabilized`` so would the rate in ``Ka``, the derivative of the step's
+    tension with respect to its end stretch.
     """
     _, mech = split_modules["caisplit"]
     mesh = _mesh()
     u = _prescribed(mesh, 0.95)
-    backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2)
+    backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2, scheme=scheme)
     backend.register(u)
 
     assert np.isfinite(dolfinx.fem.assemble_scalar(_S_ff(backend, u)))
@@ -305,6 +308,67 @@ def test_segregated_is_monolithic_lagged_by_one_step(split_modules):
         np.testing.assert_allclose(seg.lmbda_prev.x.array, stretch_seg, rtol=1e-12)
     # The rate did change the step, so the equality above is not vacuous.
     assert not np.allclose(_states(seg, mech)[:, mech.state["Zetas"]], 0.0)
+
+
+def test_unknown_scheme_lists_all_three(split_modules):
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    with pytest.raises(ValueError, match="'monolithic', 'segregated' or 'stabilized'"):
+        GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2, scheme="staggered")
+
+
+def test_stabilized_requires_the_stretch_formulation(split_modules):
+    """R&Q derive the stabilization term in the stretch formulation, and pulse's
+    ``StabilizedActiveStress`` implements only that."""
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    with pytest.raises(ValueError, match="stretch"):
+        GeneratedActivation(
+            mech,
+            mesh,
+            _f0(mesh),
+            quadrature_degree=2,
+            scheme="stabilized",
+            formulation=pulse.ActiveStressFormulation.invariant,
+        )
+
+
+def test_stabilized_is_segregated_plus_the_stiffness_term(split_modules):
+    """``stabilized`` is the segregated stress plus ``Ka (λ(u) - λ_n)``, with ``Ka > 0``.
+
+    After one accepted step at λ = 0.95, both schemes freeze the next step's stretch
+    at λ_n = 0.95. At λ(u) = λ_n the added term vanishes, so the two stresses agree;
+    shortening past λ_n lowers the stabilized stress below the segregated one, and
+    lengthening raises it.
+    """
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    dt = 0.5
+    u = _prescribed(mesh, 0.95)
+    seg = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2, scheme="segregated")
+    stab = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2, scheme="stabilized")
+    for backend in (seg, stab):
+        backend.register(u)
+        _activated(backend, mech)
+        backend.t.value = 0.0
+        backend.dt.value = dt
+        backend.inputs["cai"].x.array[:] = 1e-3
+        backend.post_solve()
+        backend.t.value = dt
+
+    form_stab, form_seg = _S_ff(stab, u), _S_ff(seg, u)
+
+    def at(stretch: float):
+        _set_stretch(u, stretch)
+        return dolfinx.fem.assemble_scalar(form_stab), dolfinx.fem.assemble_scalar(form_seg)
+
+    stab_value, seg_value = at(0.95)  # Δλ = 0
+    assert seg_value > 0.0  # the equality below is not vacuous
+    np.testing.assert_allclose(stab_value, seg_value, rtol=1e-12)
+    stab_value, seg_value = at(0.90)  # shortening: Ka > 0, Δλ < 0
+    assert stab_value < seg_value
+    stab_value, seg_value = at(1.00)
+    assert stab_value > seg_value
 
 
 def test_outputs_are_missing_values_at_the_new_states(split_modules):
@@ -542,3 +606,49 @@ def test_tension_scale_zeroes_the_masked_cell(split_modules):
             unmasked.outputs[name].x.array,
             err_msg=name,
         )
+
+
+def test_tension_scale_masks_the_stabilization_term(split_modules):
+    """``tension_scale`` multiplies ``Ka`` as well as ``Ta`` under ``stabilized``.
+
+    The set-up of :func:`test_stabilized_is_segregated_plus_the_stiffness_term`
+    (which shows ``Ka > 0`` there), on two tets with the DG0 mask of
+    :func:`test_tension_scale_zeroes_the_masked_cell`. ``S`` is assembled at a
+    stretch other than the frozen one, so ``Ka (λ(u) - λ_n)`` is nonzero: were only
+    ``Ta`` masked, the masked cell would still carry it.
+    """
+    _, mech = split_modules["caisplit"]
+    mesh = _two_tet_mesh()
+    dt = 0.5
+
+    V_dg0 = dolfinx.fem.functionspace(mesh, ("DG", 0))
+    tension_scale = dolfinx.fem.Function(V_dg0)
+    tension_scale.x.array[V_dg0.dofmap.cell_dofs(0)[0]] = 0.0
+    tension_scale.x.array[V_dg0.dofmap.cell_dofs(1)[0]] = 1.0
+
+    u = _prescribed(mesh, 0.95)
+    backend = GeneratedActivation(
+        mech,
+        mesh,
+        _f0(mesh),
+        quadrature_degree=2,
+        scheme="stabilized",
+        tension_scale=tension_scale,
+    )
+    backend.register(u)
+    _activated(backend, mech)
+    backend.dt.value = dt
+    backend.inputs["cai"].x.array[:] = 1e-3
+    backend.post_solve()
+    backend.t.value = dt
+
+    _set_stretch(u, 0.90)  # Δλ = -0.05
+    F = ufl.grad(u) + ufl.Identity(3)
+    dx = ufl.dx(domain=mesh, metadata={"quadrature_degree": backend.quadrature_degree})
+    S_ff = dolfinx.fem.assemble_vector(
+        dolfinx.fem.form(backend.S(F.T * F)[0, 0] * ufl.TestFunction(V_dg0) * dx),
+    ).array
+    masked, unmasked = (S_ff[V_dg0.dofmap.cell_dofs(cell)[0]] for cell in (0, 1))
+
+    np.testing.assert_allclose(masked, 0.0, atol=0)
+    assert unmasked != 0.0
