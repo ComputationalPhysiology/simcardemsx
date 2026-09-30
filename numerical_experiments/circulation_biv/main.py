@@ -731,13 +731,7 @@ def main(argv: list[str] | None = None):
     # The tissue starts at rest at the inflated stretch, not at lambda = 1: without this,
     # the first step would see a stretch rate of (lambda(u_0) - 1) / dt, and the zeta
     # states and EP's troponin would start from the unloaded stretch.
-    F0 = ufl.grad(problem.u) + ufl.Identity(3)
-    lmbda0 = dolfinx.fem.Expression(
-        ufl.sqrt(ufl.inner(F0.T * F0 * f0, f0)),
-        backend.space.element.interpolation_points,
-    )
-    backend.lmbda_prev.interpolate(lmbda0)
-    backend.outputs["lmbda"].interpolate(lmbda0)
+    backend.reset_stretch()
     controller.plan.backward()
 
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0, "mech_s": 0.0}

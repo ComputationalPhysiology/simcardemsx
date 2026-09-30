@@ -517,6 +517,27 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
     # After a converged solve
     # ------------------------------------------------------------------
 
+    def reset_stretch(self) -> None:
+        """Take λ(u) of the registered displacement as the stretch at rest.
+
+        For a problem that starts deformed. ``lmbda_prev``, the frozen ``lmbda`` and
+        ``outputs["lmbda"]`` are set to λ(u), and the frozen ``dLambda`` to 0, so the
+        first step sees no stretch rate under any scheme. The states are untouched and
+        nothing is sent to EP: the caller then calls ``controller.plan.backward()``.
+
+        The other way to start deformed is one accepted solve at ``dt == 0``, where the
+        step is the identity.
+        """
+        expressions = self._post_solve_expressions
+        if expressions is None:
+            raise RuntimeError("register(u) must be called before reset_stretch()")
+
+        self.outputs["lmbda"].interpolate(expressions.lmbda)
+        lmbda = self.outputs["lmbda"].x.array
+        self.lmbda_prev.x.array[:] = lmbda
+        self._lmbda_frozen.x.array[:] = lmbda
+        self._dLambda_frozen.x.array[:] = 0.0
+
     def post_solve(self) -> None:
         """Accept the step taken with the converged displacement.
 

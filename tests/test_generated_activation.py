@@ -747,3 +747,53 @@ def test_tension_scale_masks_the_stabilization_term(split_modules):
 
     np.testing.assert_allclose(masked, 0.0, atol=0)
     assert unmasked != 0.0
+
+
+def _rest_backends(mech, mesh, u, *, reset):
+    """One activated backend per scheme, registered on ``u``, ready for a step of dt 0.5."""
+    backends = {}
+    for scheme in ("monolithic", "segregated", "stabilized"):
+        backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2, scheme=scheme)
+        backend.register(u)
+        _activated(backend, mech)
+        if reset:
+            backend.reset_stretch()
+        backend.t.value = 0.0
+        backend.dt.value = 0.5
+        backend.inputs["cai"].x.array[:] = 1e-3
+        backends[scheme] = backend
+    return backends
+
+
+def test_reset_stretch_makes_the_schemes_agree_at_rest(split_modules):
+    """A problem that starts deformed at λ = 0.9 is at rest there, whatever the scheme.
+
+    ``reset_stretch`` seeds ``lmbda_prev``, the frozen pair and ``outputs["lmbda"]``, so
+    the first step sees a stretch rate of 0 under every scheme. Without it the frozen
+    schemes step from λ = 1 (rate 0, stretch 1) and differ from the monolithic one.
+    """
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    u = _prescribed(mesh, 0.9)
+
+    reset = _rest_backends(mech, mesh, u, reset=True)
+    for backend in reset.values():
+        np.testing.assert_allclose(backend.lmbda_prev.x.array, 0.9, rtol=1e-12)
+        np.testing.assert_allclose(backend.outputs["lmbda"].x.array, 0.9, rtol=1e-12)
+    S = {name: dolfinx.fem.assemble_scalar(_S_ff(b, u)) for name, b in reset.items()}
+    assert S["monolithic"] > 0.0
+    np.testing.assert_allclose(S["segregated"], S["monolithic"], rtol=1e-12)
+    np.testing.assert_allclose(S["stabilized"], S["monolithic"], rtol=1e-12)
+
+    # Not vacuous: without the reset the segregated scheme steps from λ = 1.
+    fresh = _rest_backends(mech, mesh, u, reset=False)
+    S_fresh = dolfinx.fem.assemble_scalar(_S_ff(fresh["segregated"], u))
+    assert not np.isclose(S_fresh, S["monolithic"], rtol=1e-6)
+
+
+def test_reset_stretch_before_register_raises(split_modules):
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2)
+    with pytest.raises(RuntimeError, match="register"):
+        backend.reset_stretch()
