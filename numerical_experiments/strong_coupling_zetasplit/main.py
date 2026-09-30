@@ -5,13 +5,15 @@ through :class:`~simcardemsx.controller.SimulationController`, with the ``mechan
 component of ``--odefile`` stepped inside the mechanics Newton iteration by
 :class:`~simcardemsx.backends.GeneratedActivation`. Output goes to
 ``output/<odefile stem>/``, including ``timings.json``: the wall time spent in the EP
-ODE step, the EP PDE step and the mechanics solve.
+ODE step, the EP PDE step and the mechanics solve. Each run also writes the scheme
+comparison's ``steps.csv`` and ``run.json`` (see ``scheme_comparison/record.py``).
 """
 
 import argparse
 import functools
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -31,10 +33,18 @@ from simcardemsx.controller import SimulationController
 from simcardemsx.datacollector import DataCollector
 from simcardemsx.ode_model import load_ode_modules
 
+HERE = Path(__file__).resolve().parent
+# scheme_comparison sits next to this example, not in the installed package.
+sys.path.insert(0, str(HERE.parent))
+from scheme_comparison.record import Recorder  # noqa: E402
+
 logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
 DEFAULT_ODEFILE = Path("../odefiles/ToRORd_dynCl_endo_zetasplit.ode")
 SLAB_DX = 0.5  # Resolution of the slab mesh
+SCHEMES = ("monolithic", "segregated", "stabilized")
+DT_EP = 0.05  # ms
+T_END = 40.0  # ms
 
 
 def default_config():
@@ -189,7 +199,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_ODEFILE,
         help="gotranx .ode file with a 'mechanics' component (default: %(default)s). "
-        "Output goes to output/<odefile stem>/.",
+        "Output goes to output/<odefile stem>/ unless --output-dir is given.",
+    )
+    parser.add_argument(
+        "--scheme",
+        choices=SCHEMES,
+        default="monolithic",
+        help="Coupling scheme of the mechanics (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--dt-mech",
+        type=float,
+        default=DT_EP,
+        help=f"Mechanics time step in ms, a whole multiple of the {DT_EP} ms EP step "
+        "(default: %(default)s).",
+    )
+    parser.add_argument(
+        "--t-end",
+        type=float,
+        default=T_END,
+        help="End time in ms (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Output directory (default: output/<odefile stem>).",
+    )
+    parser.add_argument(
+        "--snapshot-every",
+        type=float,
+        default=None,
+        help="Save per-point snapshots of the stretch, tension and stiffness every this "
+        "many ms, to snapshots.npz (default: off).",
     )
     return parser.parse_args(argv)
 
@@ -206,7 +248,13 @@ def main(argv: list[str] | None = None):
     config = default_config()
     odefile = args.odefile
     config["sim"]["modelfile"] = str(odefile)
-    config["sim"]["outdir"] = str(Path("output") / odefile.stem)
+    outdir = args.output_dir if args.output_dir is not None else Path("output") / odefile.stem
+    config["sim"]["outdir"] = str(outdir)
+    config["sim"]["dt"] = DT_EP
+    config["sim"]["N"] = round(args.dt_mech / DT_EP)
+    config["sim"]["sim_dur"] = args.t_end
+    if abs(config["sim"]["N"] * DT_EP - args.dt_mech) > 1e-9 * args.dt_mech:
+        raise ValueError(f"--dt-mech {args.dt_mech} is not a whole multiple of {DT_EP} ms")
 
     # ---------------------------------------------------------
     # 1. Pre-processing: Generate ODE Code
@@ -331,6 +379,7 @@ def main(argv: list[str] | None = None):
         mesh,
         mech_geo.f0,
         quadrature_degree=QUAD_DEGREE,
+        scheme=args.scheme,
     )
 
     model = pulse.CardiacModel(
@@ -395,7 +444,7 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     dt_ep = config["sim"]["dt"]
     N_steps = config["sim"]["N"]
-    dt_mech = dt_ep * N_steps
+    dt_mech = args.dt_mech
 
     controller = SimulationController(
         mechanics=problem,
@@ -405,6 +454,28 @@ def main(argv: list[str] | None = None):
         dt_mech=dt_mech,
         dt_ep=dt_ep,
     )
+
+    a = pulse.HolzapfelOgden.transversely_isotropic_parameters()["a"]
+    recorder = Recorder(
+        backend,
+        outdir,
+        snapshot_every_ms=args.snapshot_every,
+        run_info={
+            "geometry": "slab",
+            "split": odefile.stem.rsplit("_", 1)[-1],
+            "scheme": args.scheme,
+            "dt_mech_ms": dt_mech,
+            "t_end_ms": args.t_end,
+            "regime": {
+                # Uniaxial small-strain stiffness 3a of Holzapfel-Ogden's isotropic term.
+                "Kp_kPa": float(3 * a.to_base_units() / 1e3),
+                "eta_Pa_s": 0.0,
+                "rho_kg_m3": 0.0,
+                "h_m": SLAB_DX * 1e-3,
+            },
+        },
+    )
+    newton_its = 0
 
     # Timing baseline: wall time spent in the EP ODE step, the EP PDE step and the
     # mechanics solve, accumulated over the run. Replacing the methods on these objects
@@ -460,9 +531,12 @@ def main(argv: list[str] | None = None):
             collector.write_node_data_ep(i)
 
     def on_mech_step(current_t, mech_step_idx, newton_iters):
+        nonlocal newton_its
         i = mech_step_idx - 1
         inds.append(i * N_steps)
         collector.timers.no_of_newton_iterations.append(newton_iters)
+        newton_its += newton_iters
+        recorder.step(current_t, newton_iters)
 
         integral = dolfinx.fem.assemble_scalar(lmbda_integral)
         lmbda_mean.append((current_t, comm.allreduce(integral, op=MPI.SUM) / volume))
@@ -475,30 +549,44 @@ def main(argv: list[str] | None = None):
 
     # Calculate total mechanics steps needed
     total_duration = config["sim"]["sim_dur"]
-    total_mech_steps = int(np.ceil(total_duration / dt_mech))
+    total_mech_steps = round(total_duration / dt_mech)
 
     # --- THE MAIN LOOP ---
     start_loop = time.perf_counter()
-    for _ in range(total_mech_steps):
-        collector.timers.start_single_loop()
+    timings["setup_s"] = start_loop - start_total
+    failure: str | None = None
+    t_fail: float | None = None
+    try:
+        for _ in range(total_mech_steps):
+            collector.timers.start_single_loop()
 
-        # The controller does all the interpolation, sub-stepping, and solving!
-        controller.step(ep_callback=on_ep_step, mech_callback=on_mech_step)
+            # The controller does all the interpolation, sub-stepping, and solving!
+            controller.step(ep_callback=on_ep_step, mech_callback=on_mech_step)
 
-        collector.timers.stop_single_loop()
-    timings["loop_s"] = time.perf_counter() - start_loop
+            collector.timers.stop_single_loop()
+        timings["loop_s"] = time.perf_counter() - start_loop
 
-    collector.finalize(inds)
-    np.savetxt(
-        collector.outdir / "lmbda_prev_mean.txt",
-        np.array(lmbda_mean),
-        header="t (ms), mesh mean of backend.lmbda_prev",
-    )
-
-    timings["total_s"] = time.perf_counter() - start_total
-    if comm.rank == 0:
-        (collector.outdir / "timings.json").write_text(json.dumps(timings, indent=4))
-    logger.info(f"Timings: {timings}")
+        collector.finalize(inds)
+        np.savetxt(
+            collector.outdir / "lmbda_prev_mean.txt",
+            np.array(lmbda_mean),
+            header="t (ms), mesh mean of backend.lmbda_prev",
+        )
+    except BaseException as e:
+        # BaseException: an interrupt is recorded too. The controller's t is the end of
+        # the step that raised.
+        failure = repr(e)
+        t_fail = controller.t
+        logger.exception(f"The coupled step ending at t = {t_fail} ms failed")
+        raise
+    finally:
+        timings.setdefault("loop_s", time.perf_counter() - start_loop)
+        timings["total_s"] = time.perf_counter() - start_total
+        timings["newton_its"] = newton_its
+        recorder.finish(failure=failure, t_fail_ms=t_fail, timings=timings)
+        if comm.rank == 0:
+            (collector.outdir / "timings.json").write_text(json.dumps(timings, indent=4))
+        logger.info(f"Timings: {timings}")
 
 
 if __name__ == "__main__":

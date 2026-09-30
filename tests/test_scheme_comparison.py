@@ -260,3 +260,25 @@ def test_recorder_refuses_incomplete_run_info(record, split_modules, tmp_path):
     del info["regime"]
     with pytest.raises(ValueError, match="regime"):
         record.Recorder(backend, tmp_path, run_info=info)
+
+
+def test_pending_runs_skips_completed_runs(tmp_path):
+    sys.path.insert(0, str(EXAMPLES))
+    try:
+        run_module = importlib.import_module("scheme_comparison.run")
+    finally:
+        sys.path.remove(str(EXAMPLES))
+    assert len(run_module.MATRIX["slab"]) == 30
+    assert len(run_module.MATRIX["biv"]) == 12
+    assert run_module.MATRIX["slab"][0].scheme == "monolithic"
+    assert run_module.MATRIX["biv"][0].scheme == "monolithic"
+
+    done, partial = run_module.MATRIX["slab"][:2]
+    done_dir = done.outdir(tmp_path)
+    done_dir.mkdir(parents=True)
+    (done_dir / "run.json").write_text("{}")
+    partial_dir = partial.outdir(tmp_path)
+    partial_dir.mkdir(parents=True)
+    (partial_dir / "stdout.log").write_text("")
+    pending = run_module.pending_runs(tmp_path, run_module.MATRIX["slab"][:2])
+    assert pending == [partial]
