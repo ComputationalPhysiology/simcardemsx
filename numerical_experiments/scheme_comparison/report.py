@@ -60,21 +60,45 @@ NEWTON_FLOOR = 1e-12
 # --------------------------------------------------------------------------------------
 
 
+#: Files that exist but could not be parsed, reported in "Load problems". Reset by
+#: ``build_report``.
+LOAD_PROBLEMS: list[str] = []
+
+
+def _problem(path: Path, why: str) -> None:
+    LOAD_PROBLEMS.append(f"`{path}`: {why}")
+
+
 def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
+    """A JSON object; empty when the file is absent, and recorded when it is corrupt."""
+    if not path.exists():
         return {}
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:  # any parse failure is reported, never hidden
+        _problem(path, f"unreadable JSON ({type(exc).__name__}: {exc})")
+        return {}
+    if not isinstance(data, dict):
+        _problem(path, "JSON is not an object")
+        return {}
+    return data
 
 
 def _read_csv(path: Path) -> dict[str, np.ndarray]:
-    """A CSV with a header as a dict of columns; empty when absent or unreadable."""
-    try:
-        data = np.genfromtxt(path, delimiter=",", names=True)
-    except (OSError, ValueError):
+    """A CSV with a header as a dict of columns; empty when absent, recorded when corrupt.
+
+    ``deletechars=""`` keeps '-' and '.' in the names: numpy would otherwise turn
+    ``reversal_fraction_1e-07`` into ``reversal_fraction_1e07``.
+    """
+    if not path.exists():
         return {}
-    data = np.atleast_1d(data)
+    try:
+        data = np.atleast_1d(np.genfromtxt(path, delimiter=",", names=True, deletechars=""))
+    except Exception as exc:  # any parse failure is reported, never hidden
+        _problem(path, f"unreadable CSV ({type(exc).__name__}: {exc})")
+        return {}
     if data.dtype.names is None:
+        _problem(path, "CSV has no header")
         return {}
     return {name: np.asarray(data[name], dtype=float) for name in data.dtype.names}
 
@@ -114,7 +138,8 @@ def load_run(path: Path, geometry: str, group: str, scheme: str) -> RunData:
         try:
             with np.load(path / "snapshots.npz") as z:
                 snaps = {k: np.asarray(z[k]) for k in z.files}
-        except (OSError, ValueError):
+        except Exception as exc:  # any parse failure is reported, never hidden
+            _problem(path / "snapshots.npz", f"unreadable ({type(exc).__name__}: {exc})")
             snaps = {}
     return RunData(
         path=path,
@@ -138,8 +163,15 @@ Ladders = dict[tuple[str, str], dict[str, dict[float, RunData]]]
 def discover(root: Path) -> Ladders:
     """Group the runs by ``(geometry, group)``, then ``scheme``, then dt."""
     out: Ladders = {}
-    for run_json in sorted(root.glob("*/*/*/dt*/run.json")):
-        dt_dir = run_json.parent
+    for dt_dir in sorted(p for p in root.glob("*/*/*/dt*") if p.is_dir()):
+        if not (dt_dir / "run.json").exists():
+            crash = (
+                " (launcher.json present: the run crashed)"
+                if (dt_dir / "launcher.json").exists()
+                else ""
+            )
+            _problem(dt_dir, f"no run.json{crash}")
+            continue
         scheme_dir, group_dir = dt_dir.parent, dt_dir.parent.parent
         geometry = group_dir.parent.name
         run = load_run(dt_dir, geometry, group_dir.name, scheme_dir.name)
@@ -197,12 +229,25 @@ class Err:
     n_common: int = 0
 
 
-def compare(a: Series, b: Series) -> Err:
+def on_grid(t: np.ndarray, grid: float | None) -> np.ndarray:
+    """Mask of the times that are multiples of ``grid`` (all of them when it is None)."""
+    if grid is None:
+        return np.ones(len(t), dtype=bool)
+    r = np.asarray(t, float) / grid
+    return np.abs(r - np.round(r)) < 1e-6
+
+
+def compare(a: Series, b: Series, grid: float | None = None) -> Err:
     """Max over the common times of the RMS and mean differences of ``a`` from ``b``.
 
-    Times at which either side is not finite (a failed run's last iterate) are left out.
+    The times are those of both series that are multiples of ``grid``: one grid for a whole
+    group, so every error and order in it covers the same instants (a failed run covers its
+    own truncated part of it). Times at which either side is not finite (a failed run's last
+    iterate) are left out.
     """
     ia, ib = _common(a.t, b.t)
+    keep = on_grid(a.t[ia], grid)
+    ia, ib = ia[keep], ib[keep]
     if len(ia) == 0:
         return Err()
     ok = _finite_rows(a.lmean[ia], b.lmean[ib])
@@ -223,11 +268,23 @@ def compare(a: Series, b: Series) -> Err:
     return e
 
 
-def ta_norm(ref: Series) -> float:
-    """The reference's max over time of the RMS of ``Ta``: what ``Ta`` errors divide by."""
+def ta_norm(ref: Series, grid: float | None = None) -> float:
+    """The reference's max over time of the RMS of ``Ta``: what ``Ta`` errors divide by.
+
+    nan when there is no ``Ta`` or it is zero throughout, so a division shows "—".
+    """
     if ref.ta is None or ref.w is None:
         return float("nan")
-    return float(max(metrics.weighted_rms(row, ref.w) for row in ref.ta))
+    rows = ref.ta[on_grid(ref.t, grid)]
+    if len(rows) == 0:
+        return float("nan")
+    v = float(max(metrics.weighted_rms(row, ref.w) for row in rows))
+    return v if v > 0 else float("nan")
+
+
+def safe_div(a: float, b: float) -> float:
+    """``a / b``, nan when ``b`` is zero or not finite."""
+    return a / b if b and np.isfinite(b) else float("nan")
 
 
 def richardson_series(fine: Series, coarse: Series, ratio: float) -> Series | None:
@@ -331,9 +388,13 @@ def choose_epsilon(lad: dict[str, dict[float, RunData]]) -> tuple[float | None, 
     mono = [r for r in lad.get("monolithic", {}).values() if r.steps]
     if not mono:
         return None, "no monolithic run, so no floor can be fixed"
+    for r in mono:
+        for eps in metrics.FLOORS_PER_MS:
+            if _floor_col(eps) not in r.steps:
+                raise ValueError(f"{r.path / 'steps.csv'} has no column {_floor_col(eps)!r}")
     for eps in metrics.FLOORS_PER_MS:
         col = _floor_col(eps)
-        if all(col in r.steps and metrics.onset_index(list(r.steps[col])) is None for r in mono):
+        if all(metrics.onset_index(list(r.steps[col])) is None for r in mono):
             return eps, ""
     return None, (
         "even the largest floor "
@@ -362,9 +423,11 @@ def onset_of(run: RunData, kind: str, eps: float | None) -> Onset:
     if kind == "dynamic":
         n = reversals(st["lmbda_mean"])
         return Onset(None, float(n), n > MAX_REVERSALS)
-    col = _floor_col(eps) if eps is not None else ""
-    if eps is None or col not in st:
+    if eps is None:
         return Onset(None, nan, None)
+    col = _floor_col(eps)
+    if col not in st:
+        raise ValueError(f"{run.path / 'steps.csv'} has no column {col!r}")
     frac = st[col]
     i = metrics.onset_index(list(frac))
     return Onset(float(t[i]) if i is not None else None, float(np.nanmax(frac)), True)
@@ -424,12 +487,29 @@ def flag(run: RunData) -> str:
 # --------------------------------------------------------------------------------------
 
 
+def grid_of(lad: dict[str, dict[float, RunData]]) -> float | None:
+    """The group's common grid: its coarsest dt, whose multiples every error is taken over."""
+    dts = [dt for runs in lad.values() for dt in runs if np.isfinite(dt) and dt > 0]
+    return max(dts) if dts else None
+
+
+GRID_RULE = (
+    "Every maximum and order in this group is taken over one common grid: the multiples of the "
+    "group's coarsest dt ({grid:g} ms), intersected with the snapshot times for the field "
+    "quantities (and with `log.csv`'s rows for V and p). A failed run is compared over its own "
+    "truncated part of that grid.\n"
+)
+
+
 def accuracy_tables(
     lad: dict[str, dict[float, RunData]],
     refs: list[Reference],
+    grid: float | None,
 ) -> tuple[str, dict[tuple[str, float, str], Err]]:
     """The accuracy tables, and the errors against the first reference for the figures."""
     md = []
+    if grid is not None:
+        md.append(GRID_RULE.format(grid=grid))
     store: dict[tuple[str, float, str], Err] = {}
     mono = lad.get("monolithic", {})
     runs = sorted_runs(lad)
@@ -447,9 +527,13 @@ def accuracy_tables(
         "vs ref: RMS Ta / ref max RMS Ta",
         "vs ref: max abs Δ mean λ",
     ]
-    norm0 = ta_norm(refs[0].series) if refs else float("nan")
     for ref_i, ref in enumerate(refs):
-        norm = ta_norm(ref.series)
+        norm = ta_norm(ref.series, grid)
+        if not np.isfinite(norm):
+            md.append(
+                "The reference's Ta is zero (or absent) throughout: the normalized Ta columns "
+                'show "—".\n',
+            )
         rows = []
         for run in runs:
             s = series_of(run)
@@ -457,34 +541,32 @@ def accuracy_tables(
             if run.scheme != "monolithic" and run.dt in mono and s is not None:
                 sm = series_of(mono[run.dt])
                 if sm is not None:
-                    cpl = compare(s, sm)
+                    cpl = compare(s, sm, grid)
             e = Err()
             is_ref = ref.run_dt is not None and run.scheme == "monolithic" and run.dt == ref.run_dt
             if s is not None and not is_ref:
-                e = compare(s, ref.series)
+                e = compare(s, ref.series, grid)
             if ref_i == 0:
                 store[(run.scheme, run.dt, "main")] = e
+            by_def = run.scheme == "monolithic"
             rows.append(
                 [
                     run.scheme,
                     f"{run.dt:g}" + flag(run),
-                    fnum(cpl.lam_rms) if run.scheme != "monolithic" else "0 (by definition)",
-                    fnum(cpl.ta_rms / norm) if run.scheme != "monolithic" else "0 (by definition)",
-                    fnum(cpl.lam_mean) if run.scheme != "monolithic" else "0 (by definition)",
+                    "0 (by definition)" if by_def else fnum(cpl.lam_rms),
+                    "0 (by definition)" if by_def else fnum(safe_div(cpl.ta_rms, norm)),
+                    "0 (by definition)" if by_def else fnum(cpl.lam_mean),
                     "0 (is the reference)" if is_ref else fnum(e.lam_rms),
-                    "0 (is the reference)" if is_ref else fnum(e.ta_rms / norm),
+                    "0 (is the reference)" if is_ref else fnum(safe_div(e.ta_rms, norm)),
                     "0 (is the reference)" if is_ref else fnum(e.lam_mean),
                 ],
             )
         md.append(
-            f"**Reference: {ref.name}.** (`*`: the run failed; the errors cover the "
-            "finite common times only.)\n",
+            f"**Reference: {ref.name}.** (`*`: the run failed; the errors cover its finite "
+            "common times only.)\n",
         )
         md.append(table(header, rows))
-    del norm0
-    # Orders
-    if refs:
-        md.append(orders_tables(lad, refs))
+    md.append(orders_tables(lad, refs, grid))
     return "\n".join(md), store
 
 
@@ -497,58 +579,49 @@ def _order_pairs(dts: list[float], errs: list[float]) -> list[tuple[float, float
     return [(ok[i][0], ok[i + 1][0], p[i]) for i in range(len(ok) - 1)]
 
 
-def orders_tables(lad: dict[str, dict[float, RunData]], refs: list[Reference]) -> str:
+def orders_tables(
+    lad: dict[str, dict[float, RunData]],
+    refs: list[Reference],
+    grid: float | None,
+) -> str:
     md = []
     rows = []
     for ref in refs:
+        if ref.run_dt is None:  # an extrapolation: errors only, no orders (it would be circular)
+            continue
         for scheme in SCHEMES:
             runs = lad.get(scheme, {})
-            tested = sorted(
-                (
-                    dt
-                    for dt in runs
-                    if not runs[dt].failed
-                    and not (ref.run_dt is not None and scheme == "monolithic" and dt == ref.run_dt)
-                ),
+            if not runs:
+                continue
+            eligible = sorted(
+                (dt for dt in runs if not runs[dt].failed and dt >= MIN_REF_RATIO * ref.dt - 1e-12),
                 reverse=True,
             )
-            if not tested:
-                continue
-            finest = min(tested)
-            ratio = finest / ref.dt if ref.dt > 0 else float("inf")
-            if ratio < MIN_REF_RATIO:
+            if len(eligible) < 2:
                 rows.append(
                     [
                         ref.name,
                         scheme,
-                        f"finest {finest:g} / ref {ref.dt:g} = {ratio:.3g} < {MIN_REF_RATIO:g}",
-                        DASH,
+                        f"fewer than 2 dts >= {MIN_REF_RATIO:g} x {ref.dt:g} ms that reached t_end",
                         DASH,
                         DASH,
                     ],
                 )
                 continue
-            errs = {dt: (series_of(runs[dt]),) for dt in tested}
-            ec = {
-                dt: compare(s[0], ref.series) if s[0] is not None else Err()
-                for dt, s in errs.items()
-            }
+            ec = {}
+            for dt in eligible:
+                s = series_of(runs[dt])
+                ec[dt] = compare(s, ref.series, grid) if s is not None else Err()
             for q, label in (("lam_rms", "RMS λ"), ("ta_rms", "RMS Ta"), ("lam_mean", "mean λ")):
-                pairs = _order_pairs(tested, [getattr(ec[d], q) for d in tested])
-                for a, b, p in pairs:
-                    rows.append([ref.name, scheme, f"{a:g} → {b:g}", label, fnum(p, ".2f"), ""])
+                for a, b, p in _order_pairs(eligible, [getattr(ec[d], q) for d in eligible]):
+                    rows.append([ref.name, scheme, f"{a:g} → {b:g}", label, fnum(p, ".2f")])
     md.append(
-        "**Orders against the reference.** Failed runs are left out (their errors cover a "
-        "truncated "
-        "window). Reported only where the finest tested dt is at "
-        f"least {MIN_REF_RATIO:g}× the reference's (the extrapolation counts as dt 0).\n",
+        "**Orders against the reference.** Computed over the dts that reached `t_end` and are "
+        f'at least {MIN_REF_RATIO:g}× the reference\'s; "—" where fewer than two remain. '
+        "Against a Richardson extrapolation only errors are reported, no orders: the "
+        "monolithic order against it is 1 by construction.\n",
     )
-    md.append(
-        table(
-            ["reference", "scheme", "dt pair (ms)", "quantity", "observed order"],
-            [r[:5] for r in rows],
-        ),
-    )
+    md.append(table(["reference", "scheme", "dt pair (ms)", "quantity", "observed order"], rows))
     # Self-convergence
     srows = []
     for scheme in SCHEMES:
@@ -559,24 +632,24 @@ def orders_tables(lad: dict[str, dict[float, RunData]], refs: list[Reference]) -
             s0, s1, s2 = (series_of(runs[d]) for d in (d0, d1, d2))
             if s0 is None or s1 is None or s2 is None:
                 continue
-            c, f = compare(s0, s1), compare(s1, s2)
+            c, f = compare(s0, s1, grid), compare(s1, s2, grid)
+            dd = (d0, d1, d2)
             srows.append(
                 [
                     scheme,
                     f"{d0:g}, {d1:g}, {d2:g}",
-                    fnum(metrics.self_convergence_order((d0, d1, d2), c.lam_rms, f.lam_rms), ".2f"),
-                    fnum(
-                        metrics.self_convergence_order((d0, d1, d2), c.lam_mean, f.lam_mean),
-                        ".2f",
-                    ),
+                    fnum(metrics.self_convergence_order(dd, c.lam_rms, f.lam_rms), ".2f"),
+                    fnum(metrics.self_convergence_order(dd, c.ta_rms, f.ta_rms), ".2f"),
+                    fnum(metrics.self_convergence_order(dd, c.lam_mean, f.lam_mean), ".2f"),
                 ],
             )
     md.append(
         "**Self-convergence orders** (failed runs left out; from successive differences, "
-        "no reference; "
-        '"—" where undefined).\n',
+        'no reference; "—" where undefined).\n',
     )
-    md.append(table(["scheme", "dts (ms)", "order, RMS λ", "order, mean λ"], srows))
+    md.append(
+        table(["scheme", "dts (ms)", "order, RMS λ", "order, RMS Ta", "order, mean λ"], srows),
+    )
     return "\n".join(md)
 
 
@@ -657,7 +730,7 @@ def consistency_table(lad: dict[str, dict[float, RunData]]) -> str:
     )
 
 
-def cost_table(lad: dict[str, dict[float, RunData]], geometry: str) -> str:
+def cost_table(lad: dict[str, dict[float, RunData]], geometry: str, group: str) -> str:
     rows = []
     for run in sorted_runs(lad):
         nw = run.meta.get("newton", {}) or {}
@@ -674,25 +747,28 @@ def cost_table(lad: dict[str, dict[float, RunData]], geometry: str) -> str:
                 fnum(nw.get("max"), "g"),
                 fnum(mech, ".3g"),
                 fnum(per, ".3g"),
+                fnum(tm.get("ep_ode_s"), ".3g"),
+                fnum(tm.get("ep_pde_s"), ".3g"),
                 fnum(tm.get("setup_s"), ".3g"),
                 fnum(tm.get("loop_s"), ".3g"),
                 fnum(tm.get("total_s"), ".3g"),
             ],
         )
-    note = (
-        "Wall times are serial. The first run of each (geometry, scheme, dt) is JIT-cold, so "
-        "its `setup_s` includes compilation. "
-    )
-    if geometry == "biv":
+    note = "Wall times are serial, one run at a time. "
+    if kind_of(geometry, group) == "dynamic" or geometry == "biv":
         note += (
-            "Each BiV run compiles its own form, because dt is compiled into the "
-            "`DynamicProblem`, so every `setup_s` here is cold. "
+            "This group is a `DynamicProblem` with dt compiled into its form, so every dt "
+            "compiles its own form. "
         )
     else:
         note += (
-            "The slab and the element share a compiled form per scheme, so only the first "
-            "dt of each scheme pays the compilation. "
+            "This group shares one compiled form per scheme across its dts (dt is not compiled "
+            "in), so the first run of each scheme pays the compilation in `setup_s`. "
         )
+    note += (
+        "`setup_s` is listed per run so that cold outliers are visible; which runs were cold "
+        "is not recorded. `ep_ode_s` and `ep_pde_s` exist for the slab and BiV only. "
+    )
     note += (
         "The segregated schemes evaluate the ODE step at every assembly (spec §3); a "
         "production code would evaluate it once per step.\n"
@@ -709,6 +785,8 @@ def cost_table(lad: dict[str, dict[float, RunData]], geometry: str) -> str:
                 "max",
                 "mech_s",
                 "mech_s / Newton it.",
+                "ep_ode_s",
+                "ep_pde_s",
                 "setup_s",
                 "loop_s",
                 "total_s",
@@ -816,7 +894,11 @@ def newton_order_table(lad: dict[str, dict[float, RunData]]) -> str:
     )
 
 
-def biv_tables(lad: dict[str, dict[float, RunData]], refs: list[Reference]) -> str:
+def biv_tables(
+    lad: dict[str, dict[float, RunData]],
+    refs: list[Reference],
+    grid: float | None,
+) -> str:
     md = []
     runs = sorted_runs(lad)
     for vent in ("LV", "RV"):
@@ -829,6 +911,8 @@ def biv_tables(lad: dict[str, dict[float, RunData]], refs: list[Reference]) -> s
                     dv = dp = float("nan")
                 else:
                     ia, ib = _common(lg["t_ms"], ref.logs["t_ms"])
+                    keep = on_grid(lg["t_ms"][ia], grid)
+                    ia, ib = ia[keep], ib[keep]
                     is_ref = (
                         ref.run_dt is not None
                         and run.scheme == "monolithic"
@@ -850,7 +934,7 @@ def biv_tables(lad: dict[str, dict[float, RunData]], refs: list[Reference]) -> s
                     dv, dp = (0.0, 0.0) if is_ref else (md_(v_key), md_(p_key))
                 rows.append([run.scheme, f"{run.dt:g}" + flag(run), fnum(dv), fnum(dp)])
             md.append(
-                f"**{vent}: max abs V − V_ref and p − p_ref on the log's grid, reference: "
+                f"**{vent}: max abs V − V_ref and p − p_ref on the common grid, reference: "
                 f"{ref.name}.**\n",
             )
             md.append(
@@ -974,47 +1058,95 @@ def fig_timeseries(lad: dict[str, dict[float, RunData]], out: Path, stem: str) -
     return _save(fig, out, f"{stem}_timeseries.png")
 
 
+def _plot_split(
+    ax: Any,
+    scheme: str,
+    ok: list[tuple[float, float]],
+    failed: list[tuple[float, float]],
+) -> bool:
+    """A line of the runs that reached ``t_end``; failed runs as open markers, no line.
+
+    A run that failed early has a small, truncated error: it must not look accurate.
+    """
+    drawn = False
+    if ok:
+        ax.loglog(
+            *zip(*ok),
+            MARKERS[scheme] + "-",
+            color=COLORS[scheme],
+            lw=1.6,
+            ms=6,
+            label=scheme,
+        )
+        drawn = True
+    if failed:
+        ax.loglog(
+            *zip(*failed),
+            MARKERS[scheme],
+            color=COLORS[scheme],
+            markerfacecolor="none",
+            markeredgewidth=1.6,
+            ms=7,
+            linestyle="none",
+            label=None if ok else scheme,
+        )
+        drawn = True
+    return drawn
+
+
+def _failed_note(ax: Any) -> None:
+    ax.plot(
+        [],
+        [],
+        "o",
+        color=INK_2,
+        markerfacecolor="none",
+        markeredgewidth=1.6,
+        linestyle="none",
+        label="open: run failed (truncated)",
+    )
+
+
 def fig_error_dt(
     lad: dict[str, dict[float, RunData]],
     store: dict[tuple[str, float, str], Err],
     refs: list[Reference],
+    grid: float | None,
     out: Path,
     stem: str,
 ) -> str | None:
     if not refs:
         return None
-    norm = ta_norm(refs[0].series)
+    norm = ta_norm(refs[0].series, grid)
     panels: list[tuple[str, Callable[[Err], float]]] = [
         ("RMS λ error", lambda e: e.lam_rms),
-        ("RMS Ta error / ref max RMS Ta", lambda e: e.ta_rms / norm),
+        ("RMS Ta error / ref max RMS Ta", lambda e: safe_div(e.ta_rms, norm)),
         ("max abs Δ mean λ", lambda e: e.lam_mean),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(12, 3.8))
     any_line = False
+    any_failed = False
     for ax, (label, f) in zip(axes, panels):
         for scheme in SCHEMES:
-            pts = sorted(
-                (dt, f(store[(scheme, dt, "main")]))
-                for dt in lad.get(scheme, {})
-                if (scheme, dt, "main") in store
-            )
-            pts = [(d, e) for d, e in pts if np.isfinite(e) and e > 0]
-            if pts:
-                ax.loglog(
-                    *zip(*pts),
-                    MARKERS[scheme] + "-",
-                    color=COLORS[scheme],
-                    lw=1.6,
-                    ms=6,
-                    label=scheme,
-                )
-                any_line = True
+            ok: list[tuple[float, float]] = []
+            bad: list[tuple[float, float]] = []
+            for dt in sorted(lad.get(scheme, {})):
+                if (scheme, dt, "main") not in store:
+                    continue
+                v = f(store[(scheme, dt, "main")])
+                if not (np.isfinite(v) and v > 0):
+                    continue
+                (bad if lad[scheme][dt].failed else ok).append((dt, v))
+            any_failed |= bool(bad)
+            any_line |= _plot_split(ax, scheme, ok, bad)
         xs = ax.get_xlim()
         _style(ax, "dt (ms)", label + " vs " + refs[0].name.split(" dt")[0].lower())
         ax.set_xlim(xs)
     if not any_line:
         plt.close(fig)
         return None
+    if any_failed:
+        _failed_note(axes[0])
     _legend(axes[0])
     return _save(fig, out, f"{stem}_error_vs_dt.png")
 
@@ -1027,25 +1159,21 @@ def fig_work_precision(
 ) -> str | None:
     fig, ax = plt.subplots(figsize=(5.6, 4))
     any_line = False
+    any_failed = False
     for scheme in SCHEMES:
-        pts = []
-        for dt, run in lad.get(scheme, {}).items():
+        ok: list[tuple[float, float]] = []
+        bad: list[tuple[float, float]] = []
+        labelled: list[tuple[float, float, float]] = []
+        for dt, run in sorted(lad.get(scheme, {}).items(), reverse=True):
             e = store.get((scheme, dt, "main"))
             mech = run.timings.get("mech_s")
             if e is not None and mech and np.isfinite(e.lam_rms) and e.lam_rms > 0:
-                pts.append((mech, e.lam_rms, dt))
-        pts.sort(key=lambda p: p[2], reverse=True)
-        if pts:
-            ax.loglog(
-                [p[0] for p in pts],
-                [p[1] for p in pts],
-                MARKERS[scheme] + "-",
-                color=COLORS[scheme],
-                lw=1.6,
-                ms=6,
-                label=scheme,
-            )
-            for mech_t, err_v, dt_p in pts:
+                (bad if run.failed else ok).append((mech, e.lam_rms))
+                labelled.append((mech, e.lam_rms, dt))
+        any_failed |= bool(bad)
+        if _plot_split(ax, scheme, ok, bad):
+            any_line = True
+            for mech_t, err_v, dt_p in labelled:
                 ax.annotate(
                     f"{dt_p:g}",
                     (mech_t, err_v),
@@ -1054,7 +1182,6 @@ def fig_work_precision(
                     fontsize=7,
                     color=INK_2,
                 )
-            any_line = True
     if not any_line:
         plt.close(fig)
         return None
@@ -1064,6 +1191,8 @@ def fig_work_precision(
         "RMS λ error vs reference",
         "Work-precision",
     )
+    if any_failed:
+        _failed_note(ax)
     _legend(ax)
     return _save(fig, out, f"{stem}_work_precision.png")
 
@@ -1118,41 +1247,35 @@ def fig_regime(pts: dict[float, tuple[float, float]], out: Path, stem: str) -> s
     return _save(fig, out, f"{stem}_regime.png")
 
 
-def fig_biv_loops(
+def fig_biv(
     lad: dict[str, dict[float, RunData]],
     out: Path,
     stem: str,
-) -> tuple[str | None, str | None]:
+    kind: str,
+) -> str | None:
+    """``kind`` is ``"pv"`` (PV loops) or ``"pt"`` (pressure in time), at dt 2 and 0.5."""
     dts = [dt for dt in (2.0, 0.5) if any(dt in s and s[dt].log for s in lad.values())]
     if not dts:
-        return None, None
-    names = []
-    for kind in ("pv", "pt"):
-        fig, axes = plt.subplots(len(dts), 2, figsize=(9, 3.4 * len(dts)), squeeze=False)
-        for i, dt in enumerate(dts):
-            for j, vent in enumerate(("LV", "RV")):
-                ax = axes[i][j]
-                for scheme in SCHEMES:
-                    r = lad.get(scheme, {}).get(dt)
-                    if r is None or not r.log:
-                        continue
-                    lg = r.log
-                    vk, pk = f"V_{vent}_mL", f"p_{vent}_mmHg"
-                    if vk not in lg or pk not in lg:
-                        continue
-                    if kind == "pv":
-                        ax.plot(lg[vk], lg[pk], "-", color=COLORS[scheme], lw=1.6, label=scheme)
-                    else:
-                        ax.plot(lg["t_ms"], lg[pk], "-", color=COLORS[scheme], lw=1.6, label=scheme)
-                if kind == "pv":
-                    _style(ax, f"V_{vent} (mL)", f"p_{vent} (mmHg)", f"{vent}, dt {dt:g} ms")
-                else:
-                    _style(ax, "t (ms)", f"p_{vent} (mmHg)", f"{vent}, dt {dt:g} ms")
-                _legend(ax)
-        names.append(
-            _save(fig, out, f"{stem}_{'pv_loops' if kind == 'pv' else 'pressure_time'}.png"),
-        )
-    return names[0], names[1]
+        return None
+    fig, axes = plt.subplots(len(dts), 2, figsize=(9, 3.4 * len(dts)), squeeze=False)
+    for i, dt in enumerate(dts):
+        for j, vent in enumerate(("LV", "RV")):
+            ax = axes[i][j]
+            for scheme in SCHEMES:
+                r = lad.get(scheme, {}).get(dt)
+                if r is None or not r.log:
+                    continue
+                lg = r.log
+                vk, pk = f"V_{vent}_mL", f"p_{vent}_mmHg"
+                if vk not in lg or pk not in lg:
+                    continue
+                x = lg[vk] if kind == "pv" else lg["t_ms"]
+                ax.plot(x, lg[pk], "-", color=COLORS[scheme], lw=1.6, label=scheme)
+            xlabel = f"V_{vent} (mL)" if kind == "pv" else "t (ms)"
+            _style(ax, xlabel, f"p_{vent} (mmHg)", f"{vent}, dt {dt:g} ms")
+            _legend(ax)
+    name = "pv_loops" if kind == "pv" else "pressure_time"
+    return _save(fig, out, f"{stem}_{name}.png")
 
 
 # --------------------------------------------------------------------------------------
@@ -1169,7 +1292,15 @@ def group_section(
     kind = kind_of(geometry, group)
     stem = f"{geometry}_{group}"
     refs = make_references(geometry, lad)
-    eps, eps_note = choose_epsilon(lad) if kind == "3d" else (None, "")
+    grid = grid_of(lad)
+    eps: float | None = None
+    eps_note = ""
+    if kind == "3d":
+        try:
+            eps, eps_note = choose_epsilon(lad)
+        except ValueError as exc:
+            print(f"[{stem}] {exc}", file=sys.stderr)
+            eps_note = f"ERROR, {exc}"
     n = sum(len(v) for v in lad.values())
     md = [
         f"## {geometry} / {group}\n",
@@ -1193,14 +1324,14 @@ def group_section(
     store: dict[tuple[str, float, str], Err] = {}
 
     def acc() -> str:
-        text, st = accuracy_tables(lad, refs)
+        text, st = accuracy_tables(lad, refs, grid)
         store.update(st)
         return text
 
     guarded("Accuracy", acc)
     guarded("Stability", lambda: stability_table(lad, kind, eps, eps_note))
     guarded("Consistency of the stabilization", lambda: consistency_table(lad))
-    guarded("Cost", lambda: cost_table(lad, geometry))
+    guarded("Cost", lambda: cost_table(lad, geometry, group))
     pts_holder: dict[float, tuple[float, float]] = {}
 
     def reg() -> str:
@@ -1212,7 +1343,7 @@ def group_section(
     if kind != "3d":
         guarded("Newton convergence order", lambda: newton_order_table(lad))
     if geometry == "biv":
-        guarded("Ventricles", lambda: biv_tables(lad, refs))
+        guarded("Ventricles", lambda: biv_tables(lad, refs, grid))
 
     figs: list[str] = []
 
@@ -1234,7 +1365,7 @@ def group_section(
     )
     add(
         "error_vs_dt",
-        lambda: fig_error_dt(lad, store, refs, out, stem),
+        lambda: fig_error_dt(lad, store, refs, grid, out, stem),
         "Error against the reference, against dt (log-log), one line per scheme.",
     )
     add(
@@ -1249,21 +1380,15 @@ def group_section(
         "Peak Ka against the naive scheme's threshold, per dt.",
     )
     if geometry == "biv":
-        try:
-            pv, pt = fig_biv_loops(lad, out, stem)
-        except Exception:
-            print(f"[{stem}] BiV figures failed:\n{traceback.format_exc()}", file=sys.stderr)
-            pv = pt = None
-            plt.close("all")
-        figs.append(
-            _img(pv, "PV loops per scheme at dt 2 and 0.5 ms.")
-            if pv
-            else "_Figure `pv_loops`: no data._\n",
+        add(
+            "pv_loops",
+            lambda: fig_biv(lad, out, stem, "pv"),
+            "PV loops per scheme at dt 2 and 0.5 ms.",
         )
-        figs.append(
-            _img(pt, "Ventricular pressure in time per scheme at dt 2 and 0.5 ms.")
-            if pt
-            else "_Figure `pressure_time`: no data._\n",
+        add(
+            "pressure_time",
+            lambda: fig_biv(lad, out, stem, "pt"),
+            "Ventricular pressure in time per scheme at dt 2 and 0.5 ms.",
         )
     md.append("### Figures\n")
     md.extend(figs)
@@ -1272,16 +1397,29 @@ def group_section(
 
 def build_report(root: Path, out: Path) -> str:
     out.mkdir(parents=True, exist_ok=True)
+    LOAD_PROBLEMS.clear()
     ladders = discover(root)
     order = {"element": 0, "slab": 1, "biv": 2}
     md = [
         "# Scheme comparison report\n",
         f"Root: `{root}`. Generated {datetime.datetime.now(datetime.UTC):%Y-%m-%d %H:%M} UTC.\n",
-        "Metrics are those of the spec, §5. Runs are compared at their common snapshot times; the "
-        "BiV's V and p on `log.csv`'s grid. A `*` after a dt marks a run that did not reach "
+        "Metrics are those of the spec, §5. Within a group every error and order is taken over one "
+        "common grid (the multiples of the group's coarsest dt, intersected with the snapshot "
+        "times; the BiV's V and p on `log.csv`'s rows). A `*` after a dt marks a run that did "
+        "not reach "
         '`t_end`. A "—" is a value that does not exist (missing run, reference or file, or '
         "undefined).\n",
     ]
+    if LOAD_PROBLEMS:
+        md.append("## Load problems\n")
+        md.append(
+            "These files exist but could not be used. Whatever depended on them shows as "
+            '"—" or is absent from the tables below; it is not a missing run.\n',
+        )
+        md.extend(f"- {p}" for p in LOAD_PROBLEMS)
+        md.append("")
+    else:
+        md.append("No load problems: every run file present parsed.\n")
     if not ladders:
         md.append(
             f"**No runs found under `{root}`** (expected "
