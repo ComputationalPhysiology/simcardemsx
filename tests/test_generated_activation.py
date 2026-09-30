@@ -436,8 +436,10 @@ def test_tension_kPa_is_the_function_post_solve_writes(split_modules):
 def _two_tet_mesh() -> dolfinx.mesh.Mesh:
     """Two tetrahedra sharing the face (1,0,0)-(0,1,0)-(0,0,1).
 
-    Cell 0 is the reference tet, with the exclusive vertex (0, 0, 0); cell 1
-    shares that face and has the exclusive vertex (1, 1, 1).
+    One is the reference tet, with the exclusive vertex (0, 0, 0); the other shares
+    that face and has the exclusive vertex (1, 1, 1). Which of them is local cell 0
+    is dolfinx's choice (nightly reorders them), so find a cell's own exclusive
+    vertex with :func:`_exclusive_vertex`, never by assuming the input order.
     """
     x = np.array(
         [
@@ -451,6 +453,16 @@ def _two_tet_mesh() -> dolfinx.mesh.Mesh:
     cells = np.array([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=np.int64)
     element = basix.ufl.element("Lagrange", "tetrahedron", 1, shape=(3,))
     return dolfinx.mesh.create_mesh(MPI.COMM_WORLD, cells, ufl.Mesh(element), x)
+
+
+def _exclusive_vertex(mesh: dolfinx.mesh.Mesh, cell: int) -> np.ndarray:
+    """The coordinates of the one vertex of local ``cell`` that the other cell lacks."""
+    x = mesh.geometry.x
+    dofmap = mesh.geometry.dofmap
+    own = {tuple(x[i]) for i in dofmap[cell]}
+    other = {tuple(x[i]) for i in dofmap[1 - cell]}
+    (vertex,) = own - other
+    return np.array(vertex)
 
 
 def test_tension_scale_zeroes_the_masked_cell(split_modules):
@@ -507,8 +519,9 @@ def test_tension_scale_zeroes_the_masked_cell(split_modules):
 
     V_p1 = masked.active_tension.function_space
     coords = V_p1.tabulate_dof_coordinates()
-    dof_cell0_exclusive = int(np.argmin(np.linalg.norm(coords - np.array([0.0, 0.0, 0.0]), axis=1)))
-    dof_cell1_exclusive = int(np.argmin(np.linalg.norm(coords - np.array([1.0, 1.0, 1.0]), axis=1)))
+    vertex0, vertex1 = _exclusive_vertex(mesh, 0), _exclusive_vertex(mesh, 1)
+    dof_cell0_exclusive = int(np.argmin(np.linalg.norm(coords - vertex0, axis=1)))
+    dof_cell1_exclusive = int(np.argmin(np.linalg.norm(coords - vertex1, axis=1)))
 
     assert masked.active_tension.x.array[dof_cell0_exclusive] == 0.0
     np.testing.assert_allclose(

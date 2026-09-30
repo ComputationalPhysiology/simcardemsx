@@ -83,6 +83,7 @@ import beat
 import dolfinx
 import io4dolfinx
 import numpy as np
+import pint
 import pulse
 import ufl
 from circulation import base, regazzoni2020
@@ -450,8 +451,8 @@ def make_ep_solver(
     variables have one column per point: the transfer plan writes ``lmbda`` and the
     backend's outputs back into these arrays in place, and they differ between points.
     """
-    chi = 140.0 * beat.units.ureg("mm**-1")
-    C_m = 0.01 * beat.units.ureg("uF/mm**2")
+    chi: pint.registry.Quantity = 140.0 * beat.units.ureg("mm**-1")
+    C_m: pint.registry.Quantity = 0.01 * beat.units.ureg("uF/mm**2")
     M = beat.conductivities.define_conductivity_tensor(
         chi=chi,
         f0=f0,

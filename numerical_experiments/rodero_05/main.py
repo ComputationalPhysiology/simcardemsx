@@ -335,7 +335,7 @@ def make_ep_solver(
 
     conductivities = beat.conductivities.default_conductivities("Niederer")
     M = beat.conductivities.define_conductivity_tensor(f0=case.f0, **conductivities)
-    C_m = (C_M_UF_PER_CM2 * beat.units.ureg("uF/cm**2")).to("uF/m**2").magnitude
+    C_m: float = (C_M_UF_PER_CM2 * beat.units.ureg("uF/cm**2")).to("uF/m**2").magnitude
     pde = beat.MonodomainModel(
         time=dolfinx.fem.Constant(mesh, dolfinx.default_scalar_type(0.0)),
         mesh=mesh,
