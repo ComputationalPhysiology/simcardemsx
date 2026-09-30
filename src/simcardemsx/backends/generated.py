@@ -22,6 +22,14 @@ is assembled. That is not a detail: ``pulse`` compiles the form once, while
 ``dt == 0``, and ``ZetaSplitUFL`` branched on a Python-float ``dt`` while building
 UFL, so its compiled form never saw the stretch rate. gotranx's UFL printer also
 emits ``ufl.Or(x > a, x < b)``, which fails on a Python-float ``x``.
+
+Under ``pulse.DynamicProblem``, which assembles the material form at the
+generalized-alpha ``alpha_f`` point, this backend sets
+:attr:`evaluate_at_end_of_step`: its ``Ta`` depends on states advanced *over* the
+step, not on the instantaneous deformation, so ``S`` must instead see the true
+end-of-step displacement -- ``C(u_{n+1})``, the same ``u`` :meth:`post_solve` then
+compiles its own expressions against. ``pulse.StaticProblem`` has no ``alpha_f``
+point to differ from, so the flag has no effect there.
 """
 
 from __future__ import annotations
@@ -99,9 +107,22 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         ``stretch`` (the default, ADR 0001): ``S = Ta / λ f0 ⊗ f0``, so that
         ``|P f0| = Ta``. ``invariant``: ``S = Ta f0 ⊗ f0``, larger by a factor of λ,
         kept only to reproduce old results.
+    tension_scale:
+        Optional factor multiplying ``Ta``, applied in both ``S`` (before the
+        unit conversion to Pa) and the ``tension`` expression :meth:`post_solve`
+        averages into :attr:`active_tension`. A per-cell ``dolfinx.fem.Function``
+        (e.g. DG0) masks the active stress out of part of the domain -- 0 there,
+        1 elsewhere -- without touching the states themselves; ``None`` (the
+        default) leaves ``Ta`` unscaled.
 
     Attributes
     ----------
+    evaluate_at_end_of_step:
+        ``True`` (overriding :class:`pulse.active_model.ActiveModel`'s default):
+        ``Ta`` depends on states advanced by one Rush-Larsen step using the
+        stretch *rate* of the displacement, so ``pulse.DynamicProblem`` must
+        assemble ``S`` at the true end-of-step displacement rather than at its
+        usual ``alpha_f`` point. Has no effect under ``pulse.StaticProblem``.
     t, dt:
         Start and length of the current step, in ms. The controller sets both before
         each solve; ``dt`` starts at 0, for which the step is the identity.
@@ -124,7 +145,11 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         ``tension`` after the last step, averaged onto P1 on ``mesh``, **in kPa**
         whatever ``tension_unit`` is. (``ZetaSplitUFL`` reports Pa and
         ``CrossbridgeSegregated`` kPa.)
+    tension_kPa:
+        The same tension before that average, on :attr:`space` (read-only).
     """
+
+    evaluate_at_end_of_step = True
 
     def __init__(
         self,
@@ -139,6 +164,7 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         tension: str = "Ta",
         tension_unit: str = "kPa",
         formulation: pulse.ActiveStressFormulation = pulse.ActiveStressFormulation.stretch,
+        tension_scale: dolfinx.fem.Function | ufl.core.expr.Expr | None = None,
     ):
         if scheme not in ("monolithic", "segregated"):
             raise ValueError(f"scheme must be 'monolithic' or 'segregated', got {scheme!r}")
@@ -166,6 +192,7 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         self.formulation = pulse.ActiveStressFormulation(formulation)
         self.tension = tension
         self.tension_unit = tension_unit
+        self.tension_scale = tension_scale
         self._tension_index = module.monitor[tension]
         self._to_Pa = TENSION_TO_PA[tension_unit]
 
@@ -229,6 +256,18 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
 
         self.u: dolfinx.fem.Function | None = None
         self._post_solve_expressions: _PostSolveExpressions | None = None
+
+    @property
+    def tension_kPa(self) -> dolfinx.fem.Function:
+        """``tension`` after the last step, in kPa, at the backend's own points.
+
+        The ``Function`` on :attr:`space` (quadrature by default) that :meth:`post_solve`
+        writes and :attr:`active_tension` is averaged from, with ``tension_scale``
+        applied. It is not averaged: where ``tension_scale`` is 0 it is exactly 0,
+        whereas ``active_tension``'s P1 average blends masked and unmasked cells at
+        the nodes they share. Each ``post_solve`` overwrites it in place.
+        """
+        return self._tension_kPa
 
     def _make_parameters(self, overrides: Mapping[str, float]) -> list[dolfinx.fem.Constant]:
         """One Constant per entry of ``init_parameter_values()``, with ``overrides`` applied.
@@ -304,6 +343,8 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         # step expression, which keeps their kernels small. The values are the same.
         stored = [self._states_next[i] for i in range(len(self.module.state))]
         tension = self.module.monitor_values(self.t, stored, p, self._missing)[self._tension_index]
+        if self.tension_scale is not None:
+            tension = self.tension_scale * tension
         provided = self.module.missing_values(self.t, stored, p, self._missing)
 
         points = self.space.element.interpolation_points
@@ -345,6 +386,8 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         lmbda = self._fibre_stretch(C)
         new, p = self._step(lmbda)
         Ta = self.module.monitor_values(self.t, new, p, self._missing)[self._tension_index]
+        if self.tension_scale is not None:
+            Ta = self.tension_scale * Ta
         Ta_Pa = self._to_Pa * Ta
         if self.formulation == pulse.ActiveStressFormulation.stretch:
             Ta_Pa = Ta_Pa / lmbda
@@ -367,6 +410,9 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         Everything is evaluated before anything is overwritten: the step reads
         ``states_prev``, and ``lmbda_prev`` (monolithic) or the frozen pair
         (segregated).
+
+        At ``dt == 0`` the step is the identity, so a ``post_solve()`` then accepts the
+        current ``u`` as the rest state: the states are kept and ``lmbda_prev := λ(u)``.
         """
         expressions = self._post_solve_expressions
         if expressions is None:

@@ -105,6 +105,8 @@ class ZetaSplitUFL(pulse.active_model.ActiveModel):
         choice, not a refactor.
     """
 
+    evaluate_at_end_of_step = True
+
     def __init__(
         self,
         f0,

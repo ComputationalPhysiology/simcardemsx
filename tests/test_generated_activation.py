@@ -17,6 +17,7 @@ from pathlib import Path
 
 from mpi4py import MPI
 
+import basix.ufl
 import dolfinx
 import gotranx
 import numpy as np
@@ -25,6 +26,7 @@ import pytest
 import ufl
 from conftest import calcium
 
+from simcardemsx.averaging import make_averager
 from simcardemsx.backends import GeneratedActivation
 
 ODEFILES_DIR = Path(__file__).parent.parent / "numerical_experiments" / "odefiles"
@@ -405,3 +407,138 @@ def test_is_a_pulse_active_model_with_no_potential(split_modules):
     assert isinstance(backend, pulse.active_model.ActiveModel)
     with pytest.raises(NotImplementedError):
         backend.strain_energy(ufl.Identity(3))
+
+
+def test_tension_kPa_is_the_function_post_solve_writes(split_modules):
+    """``tension_kPa`` is the backend's own quadrature tension, which ``post_solve``
+    writes in place and ``active_tension`` is averaged from: not a copy."""
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2)
+    backend.register(_prescribed(mesh, 1.0))
+    tension = backend.tension_kPa
+    assert tension.function_space is backend.space
+
+    _activated(backend, mech)
+    backend.dt.value = 0.5
+    backend.inputs["cai"].x.array[:] = 1e-3
+    backend.post_solve()
+
+    assert backend.tension_kPa is tension
+    assert tension.x.array.min() > 0.0
+    averaged = dolfinx.fem.Function(backend.active_tension.function_space)
+    make_averager(tension, averaged)()
+    np.testing.assert_array_equal(averaged.x.array, backend.active_tension.x.array)
+    with pytest.raises(AttributeError):
+        backend.tension_kPa = tension
+
+
+def _two_tet_mesh() -> dolfinx.mesh.Mesh:
+    """Two tetrahedra sharing the face (1,0,0)-(0,1,0)-(0,0,1).
+
+    One is the reference tet, with the exclusive vertex (0, 0, 0); the other shares
+    that face and has the exclusive vertex (1, 1, 1). Which of them is local cell 0
+    is dolfinx's choice (nightly reorders them), so find a cell's own exclusive
+    vertex with :func:`_exclusive_vertex`, never by assuming the input order.
+    """
+    x = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+    )
+    cells = np.array([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=np.int64)
+    element = basix.ufl.element("Lagrange", "tetrahedron", 1, shape=(3,))
+    return dolfinx.mesh.create_mesh(MPI.COMM_WORLD, cells, ufl.Mesh(element), x)
+
+
+def _exclusive_vertex(mesh: dolfinx.mesh.Mesh, cell: int) -> np.ndarray:
+    """The coordinates of the one vertex of local ``cell`` that the other cell lacks."""
+    x = mesh.geometry.x
+    dofmap = mesh.geometry.dofmap
+    own = {tuple(x[i]) for i in dofmap[cell]}
+    other = {tuple(x[i]) for i in dofmap[1 - cell]}
+    (vertex,) = own - other
+    return np.array(vertex)
+
+
+def test_tension_scale_zeroes_the_masked_cell(split_modules):
+    """``tension_scale`` multiplies ``Ta`` in both ``S`` and ``active_tension``, and
+    nothing else.
+
+    A DG0 mask, 0 on cell 0 and 1 (a no-op) on cell 1, is compared against an
+    otherwise identical backend with no ``tension_scale`` at all, driven by the
+    same Ca_i split and inputs: cell 0's active stress and tension must vanish
+    exactly; cell 1's must be untouched; and every output, i.e. everything that
+    crosses back to EP, must be the unmasked backend's on both cells.
+    """
+    _, mech = split_modules["caisplit"]
+    mesh = _two_tet_mesh()
+    f0 = _f0(mesh)
+    quadrature_degree = 2
+
+    V_dg0 = dolfinx.fem.functionspace(mesh, ("DG", 0))
+    tension_scale = dolfinx.fem.Function(V_dg0)
+    tension_scale.x.array[V_dg0.dofmap.cell_dofs(0)[0]] = 0.0
+    tension_scale.x.array[V_dg0.dofmap.cell_dofs(1)[0]] = 1.0
+
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("P", 2, (3,))))
+    masked = GeneratedActivation(
+        mech,
+        mesh,
+        f0,
+        quadrature_degree=quadrature_degree,
+        tension_scale=tension_scale,
+    )
+    unmasked = GeneratedActivation(mech, mesh, f0, quadrature_degree=quadrature_degree)
+    masked.register(u)
+    unmasked.register(u)
+
+    for n in range(30):
+        for backend in (masked, unmasked):
+            backend.t.value = float(n)
+            backend.dt.value = 1.0
+            backend.inputs["cai"].x.array[:] = 1e-3
+            backend.post_solve()
+
+    # The comparison means nothing unless the unmasked backend actually activated.
+    assert unmasked.active_tension.x.array.max() > 1.0  # kPa
+
+    F = ufl.grad(u) + ufl.Identity(3)
+    C = F.T * F
+    points = masked.space.element.interpolation_points
+    cells = np.array([0, 1], dtype=np.int32)
+    S_masked = dolfinx.fem.Expression(masked.S(C), points).eval(mesh, cells)
+    S_unmasked = dolfinx.fem.Expression(unmasked.S(C), points).eval(mesh, cells)
+
+    np.testing.assert_array_equal(S_masked[0], 0.0)
+    np.testing.assert_allclose(S_masked[1], S_unmasked[1], rtol=1e-12)
+
+    V_p1 = masked.active_tension.function_space
+    coords = V_p1.tabulate_dof_coordinates()
+    vertex0, vertex1 = _exclusive_vertex(mesh, 0), _exclusive_vertex(mesh, 1)
+    dof_cell0_exclusive = int(np.argmin(np.linalg.norm(coords - vertex0, axis=1)))
+    dof_cell1_exclusive = int(np.argmin(np.linalg.norm(coords - vertex1, axis=1)))
+
+    assert masked.active_tension.x.array[dof_cell0_exclusive] == 0.0
+    np.testing.assert_allclose(
+        masked.active_tension.x.array[dof_cell1_exclusive],
+        unmasked.active_tension.x.array[dof_cell1_exclusive],
+        rtol=1e-12,
+    )
+
+    # What crosses back to EP is not scaled: the masked cell keeps its cellular
+    # dynamics. That means nothing unless the masked cell has something to lose.
+    cell0 = masked.space.dofmap.cell_dofs(0)
+    assert set(masked.outputs) == set(unmasked.outputs) == {*mech.provides, "lmbda"}
+    for name in mech.provides:
+        assert np.all(unmasked.outputs[name].x.array[cell0] != 0.0), name
+    for name in unmasked.outputs:
+        np.testing.assert_array_equal(
+            masked.outputs[name].x.array,
+            unmasked.outputs[name].x.array,
+            err_msg=name,
+        )

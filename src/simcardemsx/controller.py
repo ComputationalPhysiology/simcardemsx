@@ -13,13 +13,14 @@ from typing import TYPE_CHECKING, Callable
 
 import beat
 import numpy as np
+import pulse
 
+from .mechanics import as_driver
 from .transfer_plan import TransferPlan, resolve
 
 if TYPE_CHECKING:
-    import pulse
-
     from .backends import GeneratedActivation
+    from .mechanics import MechanicsDriver
     from .ode_model import ODEModules
 
 logger = logging.getLogger(__name__)
@@ -33,14 +34,15 @@ class SimulationController:
 
     Parameters
     ----------
-    mechanics_problem:
-        The mechanics problem. Its solver options are the caller's: the controller
-        only calls ``solve()``.
+    mechanics:
+        The mechanics driver, or a bare ``pulse.StaticProblem``/``DynamicProblem``
+        (wrapped in :class:`~simcardemsx.mechanics.Solve`, so its solver options
+        remain the caller's: the plain driver only calls ``problem.solve()``).
     ep_solver:
         beat's splitting solver; ``ep_solver.ode`` is the ODE solver whose arrays the
         plan reads and writes.
     backend:
-        The activation backend. Must be ``mechanics_problem.model.active``.
+        The activation backend. Must be ``mechanics.problem.model.active``.
     ode_modules:
         The two modules generated from the ``.ode`` file ``ep_solver`` and ``backend``
         were built from.
@@ -52,8 +54,9 @@ class SimulationController:
     ------
     ValueError
         If ``backend`` is not the problem's active model, if ``dt_mech`` is not a
-        multiple of ``dt_ep``, or if the backend stores its states on a quadrature
-        space whose degree differs from the mechanics form's.
+        multiple of ``dt_ep``, if the problem is a ``pulse.DynamicProblem`` whose
+        ``parameters["dt"]`` does not equal ``dt_mech``, or if the backend stores its
+        states on a quadrature space whose degree differs from the mechanics form's.
     TypeError
         If ``ep_solver.ode`` is not a :class:`beat.odesolver.DolfinODESolver`.
     NotImplementedError
@@ -63,17 +66,20 @@ class SimulationController:
 
     def __init__(
         self,
-        mechanics_problem: pulse.StaticProblem,
+        mechanics: MechanicsDriver | pulse.StaticProblem,
         ep_solver: beat.MonodomainSplittingSolver,
         backend: GeneratedActivation,
         ode_modules: ODEModules,
         dt_mech: float,
         dt_ep: float,
     ):
-        if backend is not mechanics_problem.model.active:
+        self.mechanics = as_driver(mechanics)
+        problem = self.mechanics.problem
+
+        if backend is not problem.model.active:
             raise ValueError(
                 "backend must be the active model of the mechanics problem "
-                "(mechanics_problem.model.active): the controller steps the backend and "
+                "(mechanics.problem.model.active): the controller steps the backend and "
                 "the problem solves with its own, so they must be the same object.",
             )
 
@@ -83,10 +89,21 @@ class SimulationController:
                 f"dt_mech ({dt_mech}) must be a whole multiple of dt_ep ({dt_ep})",
             )
 
+        if isinstance(problem, pulse.DynamicProblem):
+            # dt is a pint Variable in s; the controller's clock is in ms throughout.
+            problem_dt_ms = problem.parameters["dt"].to_base_units() * 1e3
+            if abs(problem_dt_ms - dt_mech) > _DT_RTOL * dt_mech:
+                raise ValueError(
+                    f"problem.parameters['dt'] ({problem_dt_ms} ms) must equal dt_mech "
+                    f"({dt_mech} ms): pulse.DynamicProblem's inertia term is assembled "
+                    "against its own dt, so a mismatch would silently step the mechanics "
+                    "clock and the controller's clock apart.",
+                )
+
         if backend.space.ufl_element().family_name == "quadrature":
             # The measure every integral of the pulse form uses, so its metadata is the
             # degree the form asks for.
-            geometry_degree = mechanics_problem.geometry.dx.metadata().get("quadrature_degree")
+            geometry_degree = problem.geometry.dx.metadata().get("quadrature_degree")
             if backend.quadrature_degree != geometry_degree:
                 raise ValueError(
                     f"The backend stores its states at quadrature degree "
@@ -106,7 +123,6 @@ class SimulationController:
                 f"ep_solver.ode must be a beat.odesolver.DolfinODESolver, got {type(ode).__name__}",
             )
 
-        self.mechanics_problem = mechanics_problem
         self.ep_solver = ep_solver
         self.backend = backend
         self.ode_modules = ode_modules
@@ -133,12 +149,12 @@ class SimulationController:
         """Advance the coupled system by one mechanics time step, from ``t`` to ``t + dt_mech``.
 
         In order: the EP micro-steps (``ep_callback(t, ep_step_idx)`` after each); EP
-        values forward into the backend's inputs, at the new ``t``; the mechanics solve,
-        with the backend stepping from the old ``t`` by ``dt_mech``; ``post_solve()``;
-        the backend's outputs back into EP's arrays; ``mech_callback(t, mech_step_idx,
-        newton_iterations)``.
+        values forward into the backend's inputs, at the new ``t``; ``self.mechanics.
+        advance()``, with the backend stepping from the old ``t`` by ``dt_mech``;
+        ``post_solve()``; the backend's outputs back into EP's arrays; ``mech_callback(t,
+        mech_step_idx, newton_iterations)``.
 
-        Raises ``RuntimeError`` if the mechanics solve does not converge.
+        Raises ``RuntimeError`` if the mechanics driver's ``advance`` does not converge.
         """
         t_n = self.t
         logger.info(f"--- Solving coupled step from t = {t_n} ---")
@@ -155,7 +171,7 @@ class SimulationController:
 
         self.backend.t.value = np.asarray(t_n)
         self.backend.dt.value = np.asarray(self.dt_mech)
-        ok = self.mechanics_problem.solve()
+        ok = self.mechanics.advance(t_n, self.dt_mech)
         if not ok:
             raise RuntimeError(
                 f"The mechanics solve did not converge for the step from t = {t_n} to t = {self.t}",
@@ -168,5 +184,5 @@ class SimulationController:
             mech_callback(
                 self.t,
                 self.mech_step_idx,
-                self.mechanics_problem.problem.solver.getIterationNumber(),
+                self.mechanics.problem.problem.solver.getIterationNumber(),
             )

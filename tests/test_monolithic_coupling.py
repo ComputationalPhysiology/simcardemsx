@@ -22,10 +22,7 @@ from mpi4py import MPI
 import dolfinx
 import numpy as np
 import pytest
-from conftest import calcium
-
-#: Differences of λ smaller than this are round-off, not a change of direction.
-_FLAT = 1e-12
+from conftest import _reversals, _zetasplit_inputs, calcium
 
 #: Spread of λ over the element's quadrature points above which a run is unstable.
 #: The load and the boundary conditions are uniform, so the solution is uniform: the
@@ -34,19 +31,8 @@ _FLAT = 1e-12
 _UNSTABLE_SPREAD = 1e-3
 
 
-def _twitch(t: float) -> float:
-    """Unit twitch shape: 0 until t = 5 ms, peaking at 1 at t = 25 ms."""
-    tau = max(t - 5.0, 0.0)
-    return (tau / 20.0) * np.exp(1.0 - tau / 20.0)
-
-
 def _caisplit_inputs(t: float) -> dict[str, float]:
     return {"cai": calcium(t)}
-
-
-def _zetasplit_inputs(t: float) -> dict[str, float]:
-    b = _twitch(t)
-    return {"XS": 0.01 * b, "XW": 0.005 * b}
 
 
 class _Run(NamedTuple):
@@ -118,13 +104,6 @@ def _at_whole_ms(trace: np.ndarray, dt: float) -> np.ndarray:
     """The entries of a trace recorded at t = 1, 2, ... ms."""
     per_ms = round(1.0 / dt)
     return trace[per_ms - 1 :: per_ms]
-
-
-def _reversals(trace: np.ndarray) -> int:
-    """Changes of the direction of λ, ignoring differences below round-off."""
-    steps = np.diff(trace)
-    steps = steps[np.abs(steps) >= _FLAT]
-    return int(np.count_nonzero(np.diff(np.sign(steps))))
 
 
 def _worse(fine: _Run, coarse: _Run) -> bool:

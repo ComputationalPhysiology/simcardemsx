@@ -17,7 +17,7 @@ readme = "README.md"
 requires-python = ">=3.10.0"
 dependencies = [
     "fenics-dolfinx",
-    "fenicsx-pulse>=0.9.1",
+    "fenicsx-pulse>=0.10.0",
     "fenicsx-beat>=0.6.4",
     # crossbridge backs the Ca_i-split activation backend and is imported at
     # package import time via simcardemsx.backends
@@ -35,6 +35,8 @@ test = [
     "pytest",
     "pytest-cov",
     "cardiac-geometriesx",
+    # Regazzoni's closed-loop circuit (its .ode file), for the circulation gates
+    "circulation>=0.4.0",
 ]
 dev = [
     "pdbpp",
@@ -50,7 +52,8 @@ demo = [
     "matplotlib",
     "cardiac-geometriesx",
     "fenicsx-ldrb",
-    "circulation",
+    "ukb-atlas",
+    "circulation>=0.4.0",
     "gotranx",
     "io4dolfinx",
 ]
@@ -106,6 +109,11 @@ markers = ["slow: takes more than a few seconds"]
 # pint >= 0.26 imports optype when it is present, which sends mypy <= 2.3.1 into infinite
 # recursion (python/mypy#21985; fixed on mypy master by python/mypy#22036, not yet released).
 module = ["scipy", "scipy.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# circulation (Regazzoni's circuit, for the circulation gates) ships no py.typed marker.
+module = ["circulation", "circulation.*"]
 ignore_missing_imports = true
 
 

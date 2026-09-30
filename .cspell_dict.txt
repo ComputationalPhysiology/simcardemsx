@@ -16,6 +16,7 @@ Andr
 ap
 apidoc
 arange
+arccos
 Arevalo
 argmin
 assp
@@ -66,6 +67,7 @@ cellmodel
 cellmodels
 celltype
 cellwise
+cfun
 Clbk
 cmax
 cmdnmax
@@ -123,6 +125,7 @@ dvdt
 dxrf
 dxrs
 electrophysiological
+elife
 Elsevier
 emcoupling
 endo
@@ -213,6 +216,7 @@ interp
 iS
 Isac
 isacs
+isovolumic
 iSp
 isscalar
 Istim
@@ -339,6 +343,7 @@ nonconvergence
 nonmatching
 ntm
 ntrpn
+nullspace
 numpyfy
 odefile
 odefiles
@@ -394,6 +399,7 @@ resid
 rightback
 rightbottom
 rint
+Rodero
 rs
 rtol
 rw
@@ -516,6 +522,7 @@ vcell
 Vecs
 vffrt
 vfrt
+viscoelasticity
 vjsr
 Vmin
 vmyo
@@ -523,6 +530,7 @@ vnsr
 Vpeak
 Wactive
 wca
+Windkessel
 wna
 wnaca
 xdmf

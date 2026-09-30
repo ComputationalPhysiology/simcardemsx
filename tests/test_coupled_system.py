@@ -81,3 +81,27 @@ def test_ep_ode_solver_must_be_a_dolfin_ode_solver(split_modules, make_ep_solver
     problem, backend = make_mechanics(modules.mechanics, _unit_cube(1))
     with pytest.raises(TypeError, match="DolfinODESolver"):
         SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)
+
+
+def test_dynamic_problem_dt_must_equal_dt_mech(
+    split_modules,
+    make_ep_solver,
+    make_dynamic_mechanics,
+):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    problem, backend = make_dynamic_mechanics(modules.mechanics, dt_ms=2.0)
+    with pytest.raises(ValueError, match="2.*1|1.*2"):
+        SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)
+
+
+def test_dynamic_problem_dt_matching_dt_mech_is_accepted(
+    split_modules,
+    make_ep_solver,
+    make_dynamic_mechanics,
+):
+    modules = split_modules["caisplit"]
+    ep_solver = make_ep_solver(modules.ep, _unit_cube(1))
+    problem, backend = make_dynamic_mechanics(modules.mechanics, dt_ms=1.0)
+    controller = SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)
+    assert controller.mechanics.problem is problem

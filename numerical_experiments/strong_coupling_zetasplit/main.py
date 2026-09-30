@@ -398,7 +398,7 @@ def main(argv: list[str] | None = None):
     dt_mech = dt_ep * N_steps
 
     controller = SimulationController(
-        mechanics_problem=problem,
+        mechanics=problem,
         ep_solver=ep_solver,
         backend=backend,
         ode_modules=modules,
