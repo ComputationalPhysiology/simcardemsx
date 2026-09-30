@@ -340,6 +340,13 @@ def test_stabilized_is_segregated_plus_the_stiffness_term(split_modules):
     at λ_n = 0.95. At λ(u) = λ_n the added term vanishes, so the two stresses agree;
     shortening past λ_n lowers the stabilized stress below the segregated one, and
     lengthening raises it.
+
+    The difference is then pinned exactly, against ``stiffness_kPa``. ``Ka`` is built
+    twice, once for the residual (in ``__init__``) and once for ``stiffness_kPa`` (in
+    ``register``), and the other gates read only the second. In the stretch
+    formulation ``S = (Ta + Ka Δλ) / λ f0⊗f0``, so at the uniform λ = 0.90, with
+    ``f0 = e_x``, ``∫ S_stab[0, 0] - ∫ S_seg[0, 0] = ∫ 1000 Ka (0.90 - 0.95) / 0.90``
+    (``Ka`` in kPa, ``S`` in Pa).
     """
     _, mech = split_modules["caisplit"]
     mesh = _mesh()
@@ -365,10 +372,26 @@ def test_stabilized_is_segregated_plus_the_stiffness_term(split_modules):
     stab_value, seg_value = at(0.95)  # Δλ = 0
     assert seg_value > 0.0  # the equality below is not vacuous
     np.testing.assert_allclose(stab_value, seg_value, rtol=1e-12)
-    stab_value, seg_value = at(0.90)  # shortening: Ka > 0, Δλ < 0
-    assert stab_value < seg_value
+    stab_short, seg_short = at(0.90)  # shortening: Ka > 0, Δλ < 0
+    assert stab_short < seg_short
     stab_value, seg_value = at(1.00)
     assert stab_value > seg_value
+
+    # Accept the step at the u of the 0.90 evaluation. Under ``stabilized``,
+    # ``stiffness_kPa`` is evaluated at the frozen point (λ_n = 0.95 and the rate of the
+    # first step) whatever u is, from the states the residual stepped from, so it is
+    # the Ka of the 0.90 evaluation above.
+    _set_stretch(u, 0.90)
+    stab.post_solve()
+    Ka = stab.stiffness_kPa.x.array
+    assert Ka.min() > 0.0  # not vacuous
+    dx = ufl.dx(domain=mesh, metadata={"quadrature_degree": stab.quadrature_degree})
+    weights = dolfinx.fem.assemble_vector(
+        dolfinx.fem.form(ufl.TestFunction(stab.space) * dx),
+    ).array
+    assert weights.sum() == pytest.approx(1.0, rel=1e-12)  # |Ω| of the unit cube
+    expected = float(np.sum(weights * 1000.0 * Ka * (0.90 - 0.95) / 0.90))
+    np.testing.assert_allclose(stab_short - seg_short, expected, rtol=1e-12)
 
 
 def test_outputs_are_missing_values_at_the_new_states(split_modules):
@@ -749,44 +772,82 @@ def test_tension_scale_masks_the_stabilization_term(split_modules):
     assert unmasked != 0.0
 
 
+_REST_DT = 0.5
+
+
 def _rest_backends(mech, mesh, u, *, reset):
-    """One activated backend per scheme, registered on ``u``, ready for a step of dt 0.5."""
+    """One activated backend per scheme, registered on ``u``, after one accepted step.
+
+    The step is taken at λ = 1 by the monolithic scheme and at λ = 0.95 by the frozen
+    ones. Both steps are the same step (the frozen schemes advance at the frozen
+    λ = 1, rate 0: segregated is monolithic lagged by one step), so the states agree
+    between the schemes and have moved from where they started, and the frozen schemes
+    leave it with a frozen rate of (0.95 - 1) / dt, not 0.
+
+    ``u`` is then set to λ = 0.9 and, if ``reset``, ``reset_stretch()`` is called. Returns
+    the backends, ready for a second step of dt 0.5, and a copy of each one's
+    ``states_prev`` from just before the reset.
+    """
     backends = {}
     for scheme in ("monolithic", "segregated", "stabilized"):
         backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2, scheme=scheme)
         backend.register(u)
         _activated(backend, mech)
+        backend.t.value = 0.0
+        backend.dt.value = _REST_DT
+        backend.inputs["cai"].x.array[:] = 1e-3
+        _set_stretch(u, 1.0 if scheme == "monolithic" else 0.95)
+        backend.post_solve()
+        backends[scheme] = backend
+
+    _set_stretch(u, 0.9)
+    before = {}
+    for scheme, backend in backends.items():
+        before[scheme] = backend.states_prev.x.array.copy()
         if reset:
             backend.reset_stretch()
-        backend.t.value = 0.0
-        backend.dt.value = 0.5
-        backend.inputs["cai"].x.array[:] = 1e-3
-        backends[scheme] = backend
-    return backends
+        backend.t.value = _REST_DT
+    return backends, before
 
 
 def test_reset_stretch_makes_the_schemes_agree_at_rest(split_modules):
     """A problem that starts deformed at λ = 0.9 is at rest there, whatever the scheme.
 
     ``reset_stretch`` seeds ``lmbda_prev``, the frozen pair and ``outputs["lmbda"]``, so
-    the first step sees a stretch rate of 0 under every scheme. Without it the frozen
-    schemes step from λ = 1 (rate 0, stretch 1) and differ from the monolithic one.
+    the next step sees a stretch rate of 0 under every scheme, and it keeps the states.
+    It is called after a step that left the frozen schemes a nonzero frozen rate, so
+    each of those is checked on values it has to change (or keep). Without the reset
+    the frozen schemes step from λ = 0.95 at that rate and differ from the monolithic
+    one.
     """
     _, mech = split_modules["caisplit"]
     mesh = _mesh()
-    u = _prescribed(mesh, 0.9)
+    u = _prescribed(mesh, 1.0)
 
-    reset = _rest_backends(mech, mesh, u, reset=True)
-    for backend in reset.values():
-        np.testing.assert_allclose(backend.lmbda_prev.x.array, 0.9, rtol=1e-12)
-        np.testing.assert_allclose(backend.outputs["lmbda"].x.array, 0.9, rtol=1e-12)
+    # Not vacuous: before the reset the frozen schemes carry a nonzero frozen rate, and
+    # the step moved the states.
+    fresh, _ = _rest_backends(mech, mesh, u, reset=False)
+    initial = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2)
+    _activated(initial, mech)
+    for scheme in ("segregated", "stabilized"):
+        np.testing.assert_allclose(fresh[scheme]._dLambda_frozen.x.array, -0.05 / _REST_DT)
+    for backend in fresh.values():
+        assert not np.allclose(backend.states_prev.x.array, initial.states_prev.x.array)
+
+    reset, before = _rest_backends(mech, mesh, u, reset=True)
+    for scheme, backend in reset.items():
+        np.testing.assert_array_equal(backend._dLambda_frozen.x.array, 0.0)
+        np.testing.assert_array_equal(backend.states_prev.x.array, before[scheme])
+        lmbda = backend.outputs["lmbda"].x.array
+        np.testing.assert_allclose(lmbda, 0.9, rtol=1e-12)
+        np.testing.assert_array_equal(backend.lmbda_prev.x.array, lmbda)
+        np.testing.assert_array_equal(backend._lmbda_frozen.x.array, lmbda)
     S = {name: dolfinx.fem.assemble_scalar(_S_ff(b, u)) for name, b in reset.items()}
     assert S["monolithic"] > 0.0
     np.testing.assert_allclose(S["segregated"], S["monolithic"], rtol=1e-12)
     np.testing.assert_allclose(S["stabilized"], S["monolithic"], rtol=1e-12)
 
-    # Not vacuous: without the reset the segregated scheme steps from λ = 1.
-    fresh = _rest_backends(mech, mesh, u, reset=False)
+    # Not vacuous: without the reset the segregated scheme steps from λ = 0.95.
     S_fresh = dolfinx.fem.assemble_scalar(_S_ff(fresh["segregated"], u))
     assert not np.isclose(S_fresh, S["monolithic"], rtol=1e-6)
 
