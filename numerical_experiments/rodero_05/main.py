@@ -70,11 +70,11 @@ Known differences from physcardems, kept rather than removed:
   lambda medians per cell type) is not written.
 - physcardems' pulse raised on a solve that did not converge
   (``snes_error_if_not_converged``), and its cycle controller caught that and
-  retried. P2's ``solve`` returns ``False`` instead, when the SNES converged reason is
+  retried. pulse 0.10's ``solve`` returns ``False`` instead, when the SNES converged reason is
   not positive, and ``pulse.cycle`` retries on that. The behaviour is the same: one
   retry from the rolled-back state, with a fresh factorization.
-- pulse is 0.9.1 with P1 (active stress at the end of the step) and P2 (controlled
-  cavities, ``pulse.cycle``), not physcardems' 0.7+26. ``pulse.cycle`` ports the part
+- pulse is 0.10 (active stress at the end of the step, controlled cavities,
+  ``pulse.cycle``), not physcardems' 0.7+26. ``pulse.cycle`` ports the part
   of physcardems' cycle controller this run uses: not the ``ejection_pressure``
   valve override, the legacy filling laws or the FILLING stall counter, none of which
   em_tref7 sets or, with a prescribed inflow, reaches.

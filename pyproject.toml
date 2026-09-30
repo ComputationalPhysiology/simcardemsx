@@ -17,7 +17,7 @@ readme = "README.md"
 requires-python = ">=3.10.0"
 dependencies = [
     "fenics-dolfinx",
-    "fenicsx-pulse>=0.9.1",
+    "fenicsx-pulse>=0.10.0",
     "fenicsx-beat>=0.6.4",
     # crossbridge backs the Ca_i-split activation backend and is imported at
     # package import time via simcardemsx.backends
