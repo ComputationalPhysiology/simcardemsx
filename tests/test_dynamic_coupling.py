@@ -166,12 +166,13 @@ def test_zeta_split_has_no_period_two_oscillation_under_dynamic_problem(
     divergence, no non-finite displacement, and at most 2 reversals of λ, i.e. the
     damping is not lost.
 
-    The regime is chosen so the naive scheme fails here (see
+    The regime is chosen so the naive scheme fails here at dt 2 and 1 ms (see
     :func:`test_naive_scheme_oscillates_in_the_d2_regime`): the inputs are
     ``D2_INPUT_SCALE`` = 10 times gate 4's, which puts the active stiffness
-    ``Ka_max`` at 464-495 kPa, above what the damped element supplies,
-    eta/dt + rho L^2/dt^2 = 75 / 200 / 600 kPa at dt 2 / 1 / 0.5 ms. The probe
-    measured 1 reversal at every dt for both schemes here.
+    ``Ka_max`` at 464-495 kPa. That is above what the element supplies at dt 2 and
+    1 ms, eta/dt + rho L^2/dt^2 = 75 and 200 kPa, but not at dt 0.5 ms, where it
+    supplies 600 kPa: 200 of damping (eta/dt) and 400 of inertia (rho L^2/dt^2). The
+    probe measured 1 reversal at every dt for both schemes here.
     """
     t_end = 150.0
     _, mech = split_modules["zetasplit"]
@@ -198,8 +199,9 @@ def test_naive_scheme_oscillates_in_the_d2_regime(split_modules, make_dynamic_me
     Without it D2 discriminated nothing. At ``D2_INPUT_SCALE`` = 1 (gate 4's inputs)
     every scheme gave 1 reversal at every dt, so the element's damping hid the
     instability. At 10 the probe measured a failure at 34 ms (9 reversals) at dt 2 and
-    29 reversals at dt 1. At dt 0.5 ms the naive scheme is clean (the element's
-    damping, 600 kPa, then exceeds ``Ka_max``): recorded, not asserted.
+    29 reversals at dt 1. At dt 0.5 ms the naive scheme is clean (the element then
+    supplies 600 kPa, 200 of damping and 400 of inertia, above ``Ka_max``): recorded,
+    not asserted.
     """
     _, mech = split_modules["zetasplit"]
     trace, t_fail = _run_until_failure(
