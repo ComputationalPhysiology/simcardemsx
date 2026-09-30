@@ -218,7 +218,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--t-end",
         type=float,
         default=T_END,
-        help="End time in ms (default: %(default)s).",
+        help="End time in ms (default: %(default)s). Make it a whole multiple of --dt-mech: "
+        "the run takes round(t_end / dt_mech) steps, so it otherwise stops at the nearest "
+        "multiple, short of t_end or past it, and run.json records reached_t_end: false.",
     )
     parser.add_argument(
         "--output-dir",
