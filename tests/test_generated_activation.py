@@ -497,6 +497,92 @@ def test_tension_kPa_is_the_function_post_solve_writes(split_modules):
         backend.tension_kPa = tension
 
 
+@pytest.mark.parametrize("scheme", ["monolithic", "segregated", "stabilized"])
+@pytest.mark.parametrize("dt", [2.0, 0.05])
+@pytest.mark.parametrize("s1, s2", [(0.95, 0.93), (0.85, 0.83)])
+def test_stiffness_is_the_derivative_of_the_stepped_tension(split_modules, scheme, dt, s1, s2):
+    """``stiffness_kPa`` is Land's closed-form ``dTa/dλ`` of the step, at the scheme's point.
+
+    The evaluation point is λ(u) for ``monolithic`` and the frozen λ_n (here ``s1``)
+    for the other two. The two stretch pairs lie either side of 0.87, so both branches
+    of the length dependence's slope are exercised.
+    """
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    u = _prescribed(mesh, s1)
+    backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2, scheme=scheme)
+    backend.register(u)
+    _activated(backend, mech)
+    backend.inputs["cai"].x.array[:] = 1e-3
+    backend.t.value = 0.0
+    backend.dt.value = dt
+    backend.post_solve()
+    _set_stretch(u, s2)
+    backend.t.value = dt
+    backend.post_solve()
+
+    lmbda_e = s2 if scheme == "monolithic" else s1
+    kuw, kws, phi, rw, rs, Tot_A, Beta0, Tref = (
+        backend.parameters[k].value
+        for k in ("kuw", "kws", "phi", "rw", "rs", "Tot_A", "Beta0", "Tref")
+    )
+    states = _states(backend, mech)
+    XS, XW = states[:, mech.state["XS"]], states[:, mech.state["XW"]]
+    Zetas, Zetaw = states[:, mech.state["Zetas"]], states[:, mech.state["Zetaw"]]
+
+    cw = kuw * phi * (1 - rw) / rw
+    cs = kws * phi * rw * (1 - rs) / rs
+    A = Tot_A * rs / (rs + rw * (1 - rs))
+
+    def kappa(c):
+        return (1 - np.exp(-c * dt)) / (c * dt)
+
+    l12 = min(lmbda_e, 1.2)
+    hp = 1 + Beta0 * (l12 + min(l12, 0.87) - 1.87)
+    h = max(hp, 0)
+    dh = Beta0 * ((lmbda_e < 1.2) + (l12 < 0.87)) if hp > 0 else 0
+    rate = h * Tref / rs * (A * kappa(cs) * XS + A * kappa(cw) * XW)
+    length = dh * Tref / rs * (XS * (1 + Zetas) + XW * Zetaw)
+    assert rate.min() > 0  # the check is not vacuous
+    np.testing.assert_allclose(backend.stiffness_kPa.x.array, rate + length, rtol=1e-12)
+
+
+def test_stiffness_at_rest_is_the_length_path(split_modules):
+    """At ``dt == 0`` and λ = 1 the rate path is gone: ``Ka = Beta0 Tref XS / rs``."""
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2, scheme="stabilized")
+    backend.register(_prescribed(mesh, 1.0))
+    _activated(backend, mech)
+    backend.dt.value = 0.0
+    backend.post_solve()
+
+    Beta0, Tref, rs = (backend.parameters[k].value for k in ("Beta0", "Tref", "rs"))
+    expected = Beta0 * Tref / rs * 0.1
+    assert expected > 0.0
+    np.testing.assert_allclose(backend.stiffness_kPa.x.array, expected, rtol=1e-12)
+
+
+def test_stiffness_kPa_is_the_function_post_solve_writes(split_modules):
+    """``stiffness_kPa`` is the backend's own quadrature ``Function``, written in place."""
+    _, mech = split_modules["caisplit"]
+    mesh = _mesh()
+    backend = GeneratedActivation(mech, mesh, _f0(mesh), quadrature_degree=2)
+    backend.register(_prescribed(mesh, 1.0))
+    stiffness = backend.stiffness_kPa
+    assert stiffness.function_space is backend.space
+
+    _activated(backend, mech)
+    backend.dt.value = 0.5
+    backend.inputs["cai"].x.array[:] = 1e-3
+    backend.post_solve()
+
+    assert backend.stiffness_kPa is stiffness
+    assert stiffness.x.array.min() > 0.0
+    with pytest.raises(AttributeError):
+        backend.stiffness_kPa = stiffness
+
+
 def _two_tet_mesh() -> dolfinx.mesh.Mesh:
     """Two tetrahedra sharing the face (1,0,0)-(0,1,0)-(0,0,1).
 
@@ -579,6 +665,15 @@ def test_tension_scale_zeroes_the_masked_cell(split_modules):
     S_unmasked = dolfinx.fem.Expression(unmasked.S(C), points).eval(mesh, cells)
 
     np.testing.assert_array_equal(S_masked[0], 0.0)
+    cell0_dofs = masked.space.dofmap.cell_dofs(0)
+    cell1_dofs = masked.space.dofmap.cell_dofs(1)
+    assert unmasked.stiffness_kPa.x.array[cell0_dofs].min() > 0.0  # not vacuous
+    np.testing.assert_array_equal(masked.stiffness_kPa.x.array[cell0_dofs], 0.0)
+    np.testing.assert_allclose(
+        masked.stiffness_kPa.x.array[cell1_dofs],
+        unmasked.stiffness_kPa.x.array[cell1_dofs],
+        rtol=1e-12,
+    )
     np.testing.assert_allclose(S_masked[1], S_unmasked[1], rtol=1e-12)
 
     V_p1 = masked.active_tension.function_space

@@ -79,6 +79,7 @@ class _PostSolveExpressions(NamedTuple):
     lmbda: dolfinx.fem.Expression
     dLambda: dolfinx.fem.Expression | None  # only the frozen schemes store the rate
     tension_kPa: dolfinx.fem.Expression
+    stiffness_kPa: dolfinx.fem.Expression
     outputs: dict[str, dolfinx.fem.Expression]
 
 
@@ -283,6 +284,7 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
             dolfinx.fem.functionspace(mesh, ("P", 1)),
             name="active_tension",
         )
+        self._stiffness_kPa = dolfinx.fem.Function(self.space)
         self._average_tension = make_averager(self._tension_kPa, self.active_tension)
 
         self.u: dolfinx.fem.Function | None = None
@@ -315,8 +317,28 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         applied. It is not averaged: where ``tension_scale`` is 0 it is exactly 0,
         whereas ``active_tension``'s P1 average blends masked and unmasked cells at
         the nodes they share. Each ``post_solve`` overwrites it in place.
+
+        Under ``stabilized`` it is the tension ``Ta_seg`` of the stored states, the
+        monitor of the step, and not ``Ta_seg + Ka Δλ``, the stress the residual saw.
         """
         return self._tension_kPa
+
+    @property
+    def stiffness_kPa(self) -> dolfinx.fem.Function:
+        """``Ka = dTa/dλ`` of the last accepted step, in kPa per unit stretch.
+
+        The ``Function`` on :attr:`space` that :meth:`post_solve` writes in place, with
+        ``tension_scale`` applied, so it is exactly 0 where the mask is 0. ``Ka`` is
+        the derivative of the stepped tension through both the length dependence and
+        the stretch rate (its ``1/dt``), taken at the step's evaluation point, for
+        every scheme:
+
+        - ``monolithic``: the converged λ(u), with the rate measured from ``lmbda_prev``,
+          the λ of the step before;
+        - ``segregated`` and ``stabilized``: the frozen point (λ_n, and the rate of the
+          step before), which is the ``Ka`` the stabilized residual used.
+        """
+        return self._stiffness_kPa
 
     def _make_parameters(self, overrides: Mapping[str, float]) -> list[dolfinx.fem.Constant]:
         """One Constant per entry of ``init_parameter_values()``, with ``overrides`` applied.
@@ -424,6 +446,17 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
             tension = self.tension_scale * tension
         provided = self.module.missing_values(self.t, stored, p, self._missing)
 
+        if self.scheme == "monolithic":
+            _, Ka = self._step_tension_and_stiffness(lmbda, 0.0, self.lmbda_prev)
+        else:
+            _, Ka = self._step_tension_and_stiffness(
+                self._lmbda_frozen,
+                self._dLambda_frozen,
+                self._lmbda_frozen,
+            )
+        if self.tension_scale is not None:
+            Ka = self.tension_scale * Ka
+
         points = self.space.element.interpolation_points
         self._post_solve_expressions = _PostSolveExpressions(
             states=dolfinx.fem.Expression(
@@ -437,6 +470,7 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
                 else None
             ),
             tension_kPa=dolfinx.fem.Expression(tension * (self._to_Pa / 1000.0), points),
+            stiffness_kPa=dolfinx.fem.Expression(Ka * (self._to_Pa / 1000.0), points),
             outputs={
                 name: dolfinx.fem.Expression(provided[index], points)
                 for name, index in self.module.provides.items()
@@ -506,6 +540,7 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         if expressions.dLambda is not None:
             self._dLambda_next.interpolate(expressions.dLambda)
         self._tension_kPa.interpolate(expressions.tension_kPa)
+        self._stiffness_kPa.interpolate(expressions.stiffness_kPa)
         for name, expression in expressions.outputs.items():
             self.outputs[name].interpolate(expression)
 
