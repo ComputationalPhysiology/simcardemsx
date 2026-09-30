@@ -184,15 +184,40 @@ def test_stabilized_converges_at_first_order(split_modules, make_mechanics, cais
 
 
 @pytest.mark.slow
+def test_naive_zeta_split_becomes_unstable_earlier_as_dt_shrinks(split_modules, make_mechanics):
+    """The control for gate 4: the naive segregated scheme, on gate 4's inputs, goes
+    unstable within the run, and earlier the smaller dt is.
+
+    The probe measured onsets of 20 / 15.75 / 7.7 ms at dt 1 / 0.25 / 0.05.
+    """
+    t_end = 80.0
+    onsets = [
+        _run(
+            split_modules,
+            make_mechanics,
+            "zetasplit",
+            "segregated",
+            dt,
+            t_end,
+            _zetasplit_inputs,
+        ).t_unstable
+        for dt in (1.0, 0.25, 0.05)
+    ]
+    assert all(t < t_end for t in onsets), onsets
+    assert onsets[0] > onsets[1] > onsets[2], onsets
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("scheme", ["monolithic", "stabilized"])
 @pytest.mark.parametrize("dt", [1.0, 0.25, 0.05])
-def test_zeta_split_has_no_period_two_oscillation(split_modules, make_mechanics, dt):
-    """Gate 4: the zeta split, monolithic, gives one clean twitch at every dt."""
+def test_zeta_split_has_no_period_two_oscillation(split_modules, make_mechanics, scheme, dt):
+    """Gate 4: the zeta split, monolithic or stabilized, gives one clean twitch at every dt."""
     t_end = 80.0
     run = _run(
         split_modules,
         make_mechanics,
         "zetasplit",
-        "monolithic",
+        scheme,
         dt,
         t_end,
         _zetasplit_inputs,

@@ -25,12 +25,14 @@ NUM_STEPS = 60
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("scheme", ["monolithic", "stabilized"])
 @pytest.mark.parametrize("split", ["zetasplit", "caisplit"])
 def test_values_return_to_ep_through_the_controller(
     split_modules,
     make_ep_solver,
     make_mechanics,
     split,
+    scheme,
 ):
     modules = split_modules[split]
     ep, mech = modules
@@ -39,6 +41,7 @@ def test_values_return_to_ep_through_the_controller(
         mech,
         dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1),
         quadrature_degree=2,
+        scheme=scheme,
     )
     controller = SimulationController(problem, ep_solver, backend, modules, DT_MECH, DT_EP)
     # The arrays beat captured at construction: what EP integrates with.
@@ -65,12 +68,14 @@ def test_values_return_to_ep_through_the_controller(
         assert np.abs(mv[ep.missing["J_TRPN"]]).max() > 0.0
 
 
+@pytest.mark.parametrize("scheme", ["monolithic", "segregated", "stabilized"])
 @pytest.mark.parametrize("split", ["zetasplit", "caisplit"])
 def test_values_cross_back_after_the_step_is_accepted(
     split_modules,
     make_ep_solver,
     make_mechanics,
     split,
+    scheme,
 ):
     """``step()`` accepts the step (``post_solve``) before moving values back to EP
     (``backward``), so EP is left holding the accepted step's outputs, and moving them
@@ -87,6 +92,7 @@ def test_values_cross_back_after_the_step_is_accepted(
         modules.mechanics,
         dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1),
         quadrature_degree=2,
+        scheme=scheme,
     )
     controller = SimulationController(problem, ep_solver, backend, modules, DT_MECH, DT_EP)
     ode = ep_solver.ode
