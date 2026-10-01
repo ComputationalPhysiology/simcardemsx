@@ -3,9 +3,12 @@
 Each run is one invocation of an example's ``main.py`` in a subprocess, written to
 ``<root>/<geometry>/<split>/<scheme>/dt<dt>/``, where the example leaves ``steps.csv``,
 ``run.json`` and, with snapshots, ``snapshots.npz``, and this runner adds ``stdout.log``
-and ``launcher.json`` (``returncode``, ``wall_s``, ``argv``). A run is done once it has
-a ``run.json``, so a re-run skips finished runs and redoes the rest. A non-zero return
-does not stop the batch: the naive scheme is expected to fail.
+and ``launcher.json`` (``returncode``, ``wall_s``, ``argv``). The example writes
+``run.json`` last, so a run is done once it has a ``run.json`` that parses and does not
+record an interrupt (``KeyboardInterrupt`` or ``SystemExit``, anywhere in the recorded
+chain of exceptions). A re-run skips the done runs and redoes the rest; a run that
+failed is done, since its failure is a result. A non-zero return does not stop the
+batch: the naive scheme is expected to fail.
 
 Usage::
 
@@ -16,6 +19,7 @@ Runs are ordered monolithic, stabilized, segregated, coarse time step first. Ser
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -25,7 +29,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 EXAMPLES = HERE.parent
 
-SCHEMES = ("monolithic", "stabilized", "segregated")
+#: The order in which a study's schemes are run (not the canonical scheme list).
+BATCH_ORDER = ("monolithic", "stabilized", "segregated")
+#: A recorded ``failure`` (``record.failure_of``: the ``repr`` of the exception and of each
+#: one behind it) that names one of these is an interrupt, not a result.
+INTERRUPT = re.compile(r"\b(KeyboardInterrupt|SystemExit)\(")
 
 
 @dataclass(frozen=True)
@@ -83,7 +91,7 @@ def _runs(
     return tuple(
         Run(geometry, split, scheme, dt, t_end, snapshot_every)
         for split in splits
-        for scheme in SCHEMES
+        for scheme in BATCH_ORDER
         for dt in dts
     )
 
@@ -94,9 +102,26 @@ MATRIX: dict[str, tuple[Run, ...]] = {
 }
 
 
+def is_done(outdir: Path) -> bool:
+    """Whether the run in ``outdir`` finished: its ``run.json`` parses and records no interrupt.
+
+    A run that failed (a Newton failure, say) is done: the naive scheme is expected to
+    fail, and its failure is a result. An interrupted run is not, even when the interrupt
+    is behind another exception (petsc4py re-raises one in a solve as ``PETSc.Error``),
+    nor is one whose ``run.json`` is missing, cut short or not an object.
+    """
+    try:
+        info = json.loads((outdir / "run.json").read_text())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(info, dict):
+        return False
+    return INTERRUPT.search(str(info.get("failure") or "")) is None
+
+
 def pending_runs(root: Path, runs: tuple[Run, ...] | list[Run]) -> list[Run]:
-    """The runs without a ``run.json``."""
-    return [r for r in runs if not (r.outdir(root) / "run.json").exists()]
+    """The runs that are not done (see :func:`is_done`)."""
+    return [r for r in runs if not is_done(r.outdir(root))]
 
 
 def main(argv: list[str] | None = None) -> None:

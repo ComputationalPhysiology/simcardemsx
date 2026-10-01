@@ -1,16 +1,19 @@
 """A per-run recorder for the scheme comparison.
 
 Call ``Recorder.step(t_ms, newton_iterations)`` after each ``backend.post_solve()`` and
-``finish`` once at the end, whether the run completed or not. Serial only; writes on
-rank 0. Imported as ``from scheme_comparison.record import Recorder`` with
+``finish`` once at the end, whether the run completed or not, after the example's own
+files: ``run.json`` is what ``run.py`` takes as the mark of a finished run, so it is
+written last (:func:`finish_after_artifacts` does both, in that order). Serial only;
+writes on rank 0. Imported as ``from scheme_comparison.record import Recorder`` with
 ``numerical_experiments/`` on ``sys.path``.
 """
 
 import csv
 import datetime
 import json
+import logging
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -33,17 +36,30 @@ COLUMNS = [
 ]
 
 
-def _git_commit() -> str | None:
+logger = logging.getLogger(__name__)
+
+HERE = Path(__file__).resolve().parent
+
+
+def _git(args: list[str], cwd: Path) -> str | None:
+    """``git <args>``'s stdout in ``cwd``, or None if git fails (best effort)."""
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=Path(__file__).parent,
-            capture_output=True,
-            text=True,
-        )
+        out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     except Exception:
         return None
-    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
+    return out.stdout if out.returncode == 0 else None
+
+
+def _git_commit(cwd: Path = HERE) -> str | None:
+    """The commit checked out in ``cwd``, or None."""
+    out = _git(["rev-parse", "HEAD"], cwd)
+    return (out.strip() or None) if out is not None else None
+
+
+def _git_dirty(cwd: Path = HERE) -> bool | None:
+    """Whether a tracked file differs from that commit (untracked files ignored), or None."""
+    out = _git(["status", "--porcelain", "--untracked-files=no"], cwd)
+    return bool(out.strip()) if out is not None else None
 
 
 REQUIRED_RUN_INFO = ("geometry", "split", "scheme", "dt_mech_ms", "t_end_ms", "regime")
@@ -81,6 +97,9 @@ class Recorder:
         self.run_info = dict(run_info)
         self.snapshot_every_ms = snapshot_every_ms
         self.comm = backend.mesh.comm
+        # The run's provenance is the code it starts with.
+        self.git_commit = _git_commit()
+        self.git_dirty = _git_dirty()
         dx = ufl.dx(domain=backend.mesh, metadata={"quadrature_degree": backend.quadrature_degree})
         self.weights = dolfinx.fem.assemble_vector(
             dolfinx.fem.form(ufl.TestFunction(backend.space) * dx),
@@ -181,7 +200,55 @@ class Recorder:
                 "steps": n,
             },
             "timings": dict(timings),
-            "git_commit": _git_commit(),
+            "git_commit": self.git_commit,
+            "git_dirty": self.git_dirty,
             "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         (self.outdir / "run.json").write_text(json.dumps(info, indent=2))
+
+
+def failure_of(exc: BaseException) -> str:
+    """``repr`` of ``exc`` and of each exception behind it, outermost first, joined by " <- ".
+
+    For ``run.json``'s ``failure``. petsc4py turns an exception raised in a SNES callback,
+    a ``KeyboardInterrupt`` among them, into ``PETSc.Error(101)`` whose ``__cause__`` is
+    the original. Without the chain an interrupted solve reads as a solver failure, and
+    ``run.py`` would take the run as done.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(repr(current))
+        current = current.__cause__ or current.__context__
+    return " <- ".join(parts)
+
+
+def finish_after_artifacts(
+    recorder: Recorder,
+    artifacts: Sequence[tuple[str, Callable[[], object]]],
+    *,
+    failure: str | None,
+    t_fail_ms: float | None,
+    timings: Mapping[str, float],
+) -> None:
+    """Write the example's own ``artifacts``, then ``recorder.finish`` (``run.json``) last.
+
+    For the ``finally`` of an example's loop. ``artifacts`` are ``(name, write)`` pairs,
+    written in order. Each is guarded: an ``Exception`` from one is logged, and the rest,
+    and ``run.json``, are still written. If the loop raised (``failure`` is not None), its
+    exception is the one that leaves the ``finally``; otherwise the first artifact's
+    error is raised once ``run.json`` is written. ``finish`` itself is not guarded: if it
+    fails, there is no ``run.json`` and the run is not done.
+    """
+    errors: list[Exception] = []
+    for name, write in artifacts:
+        try:
+            write()
+        except Exception as exc:
+            logger.exception(f"Writing {name} failed")
+            errors.append(exc)
+    recorder.finish(failure=failure, t_fail_ms=t_fail_ms, timings=timings)
+    if errors and failure is None:
+        raise errors[0]

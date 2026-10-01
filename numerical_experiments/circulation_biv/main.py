@@ -107,7 +107,11 @@ logger = logging.getLogger(__name__)
 HERE = Path(__file__).parent
 # scheme_comparison sits next to this example, not in the installed package.
 sys.path.insert(0, str(HERE.parent))
-from scheme_comparison.record import Recorder  # noqa: E402
+from scheme_comparison.record import (  # noqa: E402
+    Recorder,
+    failure_of,
+    finish_after_artifacts,
+)
 
 ODEFILE = HERE.parent / "odefiles" / "ToRORd_dynCl_endo_zetasplit.ode"
 GEODIR = HERE / "meshes" / "ukb_mean_ed_clipped"
@@ -882,27 +886,52 @@ def main(argv: list[str] | None = None):
     except BaseException as e:
         # BaseException: an interrupt is recorded too.
         failed_at = controller.t
-        failure = repr(e)
+        failure = failure_of(e)
         logger.exception(f"The coupled step ending at t = {failed_at} ms failed")
         raise
     finally:
         timings["loop_s"] = time.perf_counter() - start_loop
         timings["total_s"] = time.perf_counter() - start_total
         timings["newton_its"] = newton_its
-        recorder.finish(failure=failure, t_fail_ms=failed_at, timings=timings)
-        columns = {key: np.array([row[key] for row in rows]) for key in rows[0]}
-        summary = summarise(columns, failed_at)
-        summary["tref_scale"] = args.tref
-        if comm.rank == 0:
-            with open(outdir / "log.csv", "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
-            (outdir / "summary.json").write_text(json.dumps(summary, indent=4))
-            (outdir / "timings.json").write_text(json.dumps(timings, indent=4))
-            plot(columns, outdir / "pv_loops.png")
-        logger.info(f"Summary: {json.dumps(summary, indent=2)}")
         logger.info(f"Timings: {timings}")
+        columns = {key: np.array([row[key] for row in rows]) for key in rows[0]}
+
+        def write_log() -> None:
+            if comm.rank == 0:
+                with open(outdir / "log.csv", "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+        def write_summary() -> None:
+            summary = summarise(columns, failed_at)
+            summary["tref_scale"] = args.tref
+            if comm.rank == 0:
+                (outdir / "summary.json").write_text(json.dumps(summary, indent=4))
+            logger.info(f"Summary: {json.dumps(summary, indent=2)}")
+
+        def write_timings() -> None:
+            if comm.rank == 0:
+                (outdir / "timings.json").write_text(json.dumps(timings, indent=4))
+
+        def write_plot() -> None:
+            if comm.rank == 0:
+                plot(columns, outdir / "pv_loops.png")
+
+        # This example's own files first, each guarded, and run.json (the mark of a
+        # finished run, for scheme_comparison/run.py) last.
+        finish_after_artifacts(
+            recorder,
+            [
+                ("log.csv", write_log),
+                ("summary.json", write_summary),
+                ("timings.json", write_timings),
+                ("pv_loops.png", write_plot),
+            ],
+            failure=failure,
+            t_fail_ms=failed_at,
+            timings=timings,
+        )
 
 
 if __name__ == "__main__":

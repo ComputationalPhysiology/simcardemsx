@@ -36,7 +36,11 @@ from simcardemsx.ode_model import load_ode_modules
 HERE = Path(__file__).resolve().parent
 # scheme_comparison sits next to this example, not in the installed package.
 sys.path.insert(0, str(HERE.parent))
-from scheme_comparison.record import Recorder  # noqa: E402
+from scheme_comparison.record import (  # noqa: E402
+    Recorder,
+    failure_of,
+    finish_after_artifacts,
+)
 
 logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
@@ -577,7 +581,7 @@ def main(argv: list[str] | None = None):
     except BaseException as e:
         # BaseException: an interrupt is recorded too. The controller's t is the end of
         # the step that raised.
-        failure = repr(e)
+        failure = failure_of(e)
         t_fail = controller.t
         logger.exception(f"The coupled step ending at t = {t_fail} ms failed")
         raise
@@ -585,10 +589,21 @@ def main(argv: list[str] | None = None):
         timings.setdefault("loop_s", time.perf_counter() - start_loop)
         timings["total_s"] = time.perf_counter() - start_total
         timings["newton_its"] = newton_its
-        recorder.finish(failure=failure, t_fail_ms=t_fail, timings=timings)
-        if comm.rank == 0:
-            (collector.outdir / "timings.json").write_text(json.dumps(timings, indent=4))
         logger.info(f"Timings: {timings}")
+
+        def write_timings() -> None:
+            if comm.rank == 0:
+                (collector.outdir / "timings.json").write_text(json.dumps(timings, indent=4))
+
+        # timings.json first, guarded, and run.json (the mark of a finished run, for
+        # scheme_comparison/run.py) last.
+        finish_after_artifacts(
+            recorder,
+            [("timings.json", write_timings)],
+            failure=failure,
+            t_fail_ms=t_fail,
+            timings=timings,
+        )
 
 
 if __name__ == "__main__":

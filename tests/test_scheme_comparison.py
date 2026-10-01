@@ -262,6 +262,120 @@ def test_recorder_refuses_incomplete_run_info(record, split_modules, tmp_path):
         record.Recorder(backend, tmp_path, run_info=info)
 
 
+def test_recorder_records_the_commit_at_start(record, split_modules, tmp_path, monkeypatch):
+    """A run's provenance is the code it started with, not the code at its end."""
+    backend, u = _backend(split_modules)
+    monkeypatch.setattr(record, "_git_commit", lambda: "commit-at-start")
+    monkeypatch.setattr(record, "_git_dirty", lambda: False)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(1.0))
+    monkeypatch.setattr(record, "_git_commit", lambda: "commit-at-finish")
+    monkeypatch.setattr(record, "_git_dirty", lambda: True)
+    _advance(backend, u, 2, 0.5, rec)
+    rec.finish(failure=None, t_fail_ms=None, timings={})
+    info = json.loads((tmp_path / "run.json").read_text())
+    assert info["git_commit"] == "commit-at-start"
+    assert info["git_dirty"] is False
+
+
+def test_git_provenance_of_a_scratch_repository(record, tmp_path, monkeypatch):
+    """``_git_dirty`` looks at the tracked files only; both are None outside a repository."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    (repo / "tracked.txt").write_text("a\n")
+    git("add", "tracked.txt")
+    git("commit", "-q", "-m", "initial")
+    sha = record._git_commit(repo)
+    assert sha is not None and len(sha) == 40
+    assert record._git_dirty(repo) is False
+    (repo / "untracked.txt").write_text("b\n")
+    assert record._git_dirty(repo) is False
+    (repo / "tracked.txt").write_text("changed\n")
+    assert record._git_dirty(repo) is True
+
+    outside = tmp_path / "not-a-repo"
+    outside.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    assert record._git_commit(outside) is None
+    assert record._git_dirty(outside) is None
+
+
+def test_finish_after_artifacts_writes_run_json_last(record, split_modules, tmp_path):
+    """``run.json`` marks a finished run, so it comes after the example's own files.
+
+    An artifact that fails does not stop the others or ``run.json``; with no exception
+    from the loop, its error is raised after ``run.json`` is written.
+    """
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(1.0))
+    _advance(backend, u, 2, 0.5, rec)
+    written = []
+
+    def artifact(name: str):
+        def write() -> None:
+            assert not (tmp_path / "run.json").exists()
+            (tmp_path / name).write_text(name)
+            written.append(name)
+
+        return write
+
+    def broken() -> None:
+        raise OSError("disk full")
+
+    artifacts = [("a.txt", artifact("a.txt")), ("broken", broken), ("b.txt", artifact("b.txt"))]
+    with pytest.raises(OSError, match="disk full"):
+        record.finish_after_artifacts(
+            rec,
+            artifacts,
+            failure=None,
+            t_fail_ms=None,
+            timings={},
+        )
+    assert written == ["a.txt", "b.txt"]
+    info = json.loads((tmp_path / "run.json").read_text())
+    assert info["reached_t_end"] is True
+
+
+def test_finish_after_artifacts_keeps_the_loop_exception(record, split_modules, tmp_path):
+    """When the loop raised, that exception propagates, not an artifact's."""
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0))
+    _advance(backend, u, 2, 0.5, rec)
+
+    def broken() -> None:
+        raise OSError("disk full")
+
+    failure = None
+    with pytest.raises(RuntimeError, match="Newton failed"):
+        try:
+            raise RuntimeError("Newton failed")
+        except BaseException as exc:
+            failure = repr(exc)
+            raise
+        finally:
+            record.finish_after_artifacts(
+                rec,
+                [("broken", broken)],
+                failure=failure,
+                t_fail_ms=1.5,
+                timings={},
+            )
+    info = json.loads((tmp_path / "run.json").read_text())
+    assert info["failure"] == "RuntimeError('Newton failed')"
+    assert info["reached_t_end"] is False
+
+
 def test_pending_runs_skips_completed_runs(tmp_path):
     sys.path.insert(0, str(EXAMPLES))
     try:
@@ -272,13 +386,46 @@ def test_pending_runs_skips_completed_runs(tmp_path):
     assert len(run_module.MATRIX["biv"]) == 12
     assert run_module.MATRIX["slab"][0].scheme == "monolithic"
     assert run_module.MATRIX["biv"][0].scheme == "monolithic"
+    assert run_module.BATCH_ORDER == ("monolithic", "stabilized", "segregated")
 
-    done, partial = run_module.MATRIX["slab"][:2]
-    done_dir = done.outdir(tmp_path)
-    done_dir.mkdir(parents=True)
-    (done_dir / "run.json").write_text("{}")
-    partial_dir = partial.outdir(tmp_path)
-    partial_dir.mkdir(parents=True)
-    (partial_dir / "stdout.log").write_text("")
-    pending = run_module.pending_runs(tmp_path, run_module.MATRIX["slab"][:2])
-    assert pending == [partial]
+    runs = run_module.MATRIX["slab"][:8]
+    assert len(set(runs)) == len(runs)
+    done, partial, failed, interrupted, exited, truncated, done_empty, in_solve = runs
+    run_json = {
+        done: {"failure": None, "reached_t_end": True},
+        # A failed run is a result (the naive scheme is expected to fail): done.
+        failed: {"failure": "RuntimeError('Newton failed')", "reached_t_end": False},
+        # An interrupted run is not: it is run again.
+        interrupted: {"failure": "KeyboardInterrupt()", "reached_t_end": False},
+        exited: {"failure": "SystemExit(1)", "reached_t_end": False},
+        done_empty: {},
+        # An interrupt inside the SNES solve, as petsc4py re-raises it.
+        in_solve: {"failure": "Error(101) <- KeyboardInterrupt()", "reached_t_end": False},
+    }
+    for run, info in run_json.items():
+        run.outdir(tmp_path).mkdir(parents=True)
+        (run.outdir(tmp_path) / "run.json").write_text(json.dumps(info))
+    partial.outdir(tmp_path).mkdir(parents=True)
+    (partial.outdir(tmp_path) / "stdout.log").write_text("")
+    # A run.json cut short (the process died while writing it) is not a finished run.
+    truncated.outdir(tmp_path).mkdir(parents=True)
+    (truncated.outdir(tmp_path) / "run.json").write_text('{"failure": nu')
+
+    pending = run_module.pending_runs(tmp_path, runs)
+    assert pending == [partial, interrupted, exited, truncated, in_solve]
+
+
+def test_failure_of_keeps_the_interrupt_behind_a_solver_error(record):
+    """petsc4py turns a ``KeyboardInterrupt`` in a callback into ``PETSc.Error(101)``,
+    with the interrupt as its ``__cause__``; the recorded failure must still show it."""
+
+    def solve() -> None:
+        try:
+            raise KeyboardInterrupt
+        except KeyboardInterrupt as exc:
+            raise RuntimeError("error code 101") from exc
+
+    with pytest.raises(RuntimeError) as info:
+        solve()
+    assert record.failure_of(info.value) == "RuntimeError('error code 101') <- KeyboardInterrupt()"
+    assert record.failure_of(ValueError("x")) == "ValueError('x')"
