@@ -51,7 +51,11 @@ Output, in ``--outdir``:
   counts with ``failed_at_ms``, the controller's time when the loop raised, if it did,
   and ``tref_scale``, the ``--tref`` the run used.
 - ``timings.json``: wall time in the EP ODE step, the EP PDE step and the mechanics
-  solve (as in ``strong_coupling_zetasplit``), plus the loop and the whole run.
+  solve (as in ``strong_coupling_zetasplit``), plus the loop and the whole run,
+  ``setup_s`` (the start of ``main`` to the start of the loop) and ``newton_its``, the
+  total of Newton iterations.
+- ``steps.csv``, ``run.json`` and, with ``--snapshot-every``, ``snapshots.npz``: the
+  scheme comparison's record of the run (``scheme_comparison/record.py``).
 
 Serial only: the cavity pressures and the circuit's states are read as ``x.array[0]``,
 which assumes one rank holds them.
@@ -73,6 +77,7 @@ import functools
 import json
 import logging
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -100,6 +105,14 @@ from simcardemsx.ode_model import load_ode_modules
 logger = logging.getLogger(__name__)
 
 HERE = Path(__file__).parent
+# scheme_comparison sits next to this example, not in the installed package.
+sys.path.insert(0, str(HERE.parent))
+from scheme_comparison.record import (  # noqa: E402
+    Recorder,
+    failure_of,
+    finish_after_artifacts,
+)
+
 ODEFILE = HERE.parent / "odefiles" / "ToRORd_dynCl_endo_zetasplit.ode"
 GEODIR = HERE / "meshes" / "ukb_mean_ed_clipped"
 
@@ -121,7 +134,8 @@ PERIOD = 1000.0  # ms: one beat, the circuit's RR = 1 / HR and ToR-ORd's pacing 
 #: (``--tref 1``) the LV's isovolumic peak stays about 2 mmHg below aortic pressure, so
 #: its aortic valve does not open in the first beat.
 TREF_SCALE = 3.0
-DT_MECH = 2.0  # ms, the demo's
+DT_MECH = 2.0  # ms, the demo's; the default of --dt-mech
+SCHEMES = ("monolithic", "segregated", "stabilized")
 DT_EP = 0.05  # ms
 
 #: Absolute Newton tolerance of the coupled problem, tightened from pulse's default
@@ -154,7 +168,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=PERIOD,
         help="End time in ms (default: %(default)s, one beat). "
-        f"Rounded to a whole number of {DT_MECH} ms mechanics steps.",
+        "Rounded to a whole number of mechanics steps.",
+    )
+    parser.add_argument(
+        "--scheme",
+        choices=SCHEMES,
+        default="monolithic",
+        help="Coupling scheme of the mechanics (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--dt-mech",
+        type=float,
+        default=DT_MECH,
+        help="Mechanics time step in ms, a whole multiple of the EP step "
+        f"({DT_EP} ms) (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--snapshot-every",
+        type=float,
+        default=None,
+        help="Save per-point snapshots of the stretch, tension and stiffness every this "
+        "many ms, to snapshots.npz (default: off).",
     )
     parser.add_argument(
         "--outdir",
@@ -671,6 +705,7 @@ def main(argv: list[str] | None = None):
         f0,
         quadrature_degree=QUAD_DEGREE,
         parameters={"Tref": args.tref * float(tref)},
+        scheme=args.scheme,
     )
     logger.info(f"Tref = {args.tref} x {float(tref)} kPa")
     circuit = GotranxCirculation(
@@ -697,7 +732,7 @@ def main(argv: list[str] | None = None):
             "mesh_unit": "m",
             "circulation_scheme": "backward_euler",
             "rho": pulse.Variable(1e3, "kg/m^3"),
-            "dt": pulse.Variable(DT_MECH * 1e-3, "s"),
+            "dt": pulse.Variable(args.dt_mech * 1e-3, "s"),
             "petsc_options": petsc_options,
         },
     )
@@ -726,19 +761,42 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     ep_solver = make_ep_solver(modules.ep, geometry.mesh, f0, geometry.dx)
     clock = CirculationClock(problem, time_unit="s", beat_phase=beat_phase, period=PERIOD)
-    controller = SimulationController(clock, ep_solver, backend, modules, DT_MECH, DT_EP)
+    controller = SimulationController(
+        clock,
+        ep_solver,
+        backend,
+        modules,
+        args.dt_mech,
+        DT_EP,
+    )
 
     # The tissue starts at rest at the inflated stretch, not at lambda = 1: without this,
     # the first step would see a stretch rate of (lambda(u_0) - 1) / dt, and the zeta
     # states and EP's troponin would start from the unloaded stretch.
-    F0 = ufl.grad(problem.u) + ufl.Identity(3)
-    lmbda0 = dolfinx.fem.Expression(
-        ufl.sqrt(ufl.inner(F0.T * F0 * f0, f0)),
-        backend.space.element.interpolation_points,
-    )
-    backend.lmbda_prev.interpolate(lmbda0)
-    backend.outputs["lmbda"].interpolate(lmbda0)
+    backend.reset_stretch()
     controller.plan.backward()
+
+    a = pulse.HolzapfelOgden.transversely_isotropic_parameters()["a"]
+    recorder = Recorder(
+        backend,
+        outdir,
+        snapshot_every_ms=args.snapshot_every,
+        run_info={
+            "geometry": "biv",
+            "split": "zetasplit",
+            "scheme": args.scheme,
+            "dt_mech_ms": args.dt_mech,
+            "t_end_ms": args.t_end,
+            "regime": {
+                # Uniaxial small-strain stiffness 3a of Holzapfel-Ogden's isotropic term.
+                "Kp_kPa": float(3 * a.to_base_units() / 1e3),
+                "eta_Pa_s": 100.0,
+                "rho_kg_m3": 1e3,
+                "h_m": CHAR_LENGTH * 1e-3,
+            },
+        },
+    )
+    newton_its = 0
 
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0, "mech_s": 0.0}
     ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
@@ -800,6 +858,9 @@ def main(argv: list[str] | None = None):
         rows.append(row)
 
     def on_mech_step(t: float, step: int, newton_iterations: int) -> None:
+        nonlocal newton_its
+        newton_its += newton_iterations
+        recorder.step(t, newton_iterations)
         record(t, newton_iterations)
         row = rows[-1]
         if step % 25 == 0 or step == 1:
@@ -814,32 +875,63 @@ def main(argv: list[str] | None = None):
     # 6. Run
     # ---------------------------------------------------------
     record(0.0, 0)
-    num_steps = round(args.t_end / DT_MECH)
+    num_steps = round(args.t_end / args.dt_mech)
     failed_at = None
+    failure: str | None = None
     start_loop = time.perf_counter()
+    timings["setup_s"] = start_loop - start_total
     try:
         for _ in range(num_steps):
             controller.step(mech_callback=on_mech_step)
-    except Exception:
+    except BaseException as e:
+        # BaseException: an interrupt is recorded too.
         failed_at = controller.t
+        failure = failure_of(e)
         logger.exception(f"The coupled step ending at t = {failed_at} ms failed")
         raise
     finally:
         timings["loop_s"] = time.perf_counter() - start_loop
         timings["total_s"] = time.perf_counter() - start_total
-        columns = {key: np.array([row[key] for row in rows]) for key in rows[0]}
-        summary = summarise(columns, failed_at)
-        summary["tref_scale"] = args.tref
-        if comm.rank == 0:
-            with open(outdir / "log.csv", "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
-            (outdir / "summary.json").write_text(json.dumps(summary, indent=4))
-            (outdir / "timings.json").write_text(json.dumps(timings, indent=4))
-            plot(columns, outdir / "pv_loops.png")
-        logger.info(f"Summary: {json.dumps(summary, indent=2)}")
+        timings["newton_its"] = newton_its
         logger.info(f"Timings: {timings}")
+        columns = {key: np.array([row[key] for row in rows]) for key in rows[0]}
+
+        def write_log() -> None:
+            if comm.rank == 0:
+                with open(outdir / "log.csv", "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+        def write_summary() -> None:
+            summary = summarise(columns, failed_at)
+            summary["tref_scale"] = args.tref
+            if comm.rank == 0:
+                (outdir / "summary.json").write_text(json.dumps(summary, indent=4))
+            logger.info(f"Summary: {json.dumps(summary, indent=2)}")
+
+        def write_timings() -> None:
+            if comm.rank == 0:
+                (outdir / "timings.json").write_text(json.dumps(timings, indent=4))
+
+        def write_plot() -> None:
+            if comm.rank == 0:
+                plot(columns, outdir / "pv_loops.png")
+
+        # This example's own files first, each guarded, and run.json (the mark of a
+        # finished run, for scheme_comparison/run.py) last.
+        finish_after_artifacts(
+            recorder,
+            [
+                ("log.csv", write_log),
+                ("summary.json", write_summary),
+                ("timings.json", write_timings),
+                ("pv_loops.png", write_plot),
+            ],
+            failure=failure,
+            t_fail_ms=failed_at,
+            timings=timings,
+        )
 
 
 if __name__ == "__main__":

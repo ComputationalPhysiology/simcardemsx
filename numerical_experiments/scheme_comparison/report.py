@@ -1,0 +1,1618 @@
+"""Report for the scheme comparison: tables (``report.md``) and figures (PNG).
+
+Reads a directory of runs laid out as ``<root>/<geometry>/<group>/<scheme>/dt<dt:g>/``
+(``geometry`` is ``element``, ``slab`` or ``biv``; ``group`` is the study on the element
+and the split on the slab and BiV) and writes ``report.md`` and one PNG per figure.
+Every metric is the one defined in the spec, section 5, and the pure functions are the
+ones in ``metrics.py``. A missing run, reference or file shows as "—" and never stops
+the report.
+
+Usage::
+
+    python3 report.py --root DIR [--out DIR]     # --out defaults to <root>/report
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import sys
+import traceback
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from scheme_comparison import metrics  # noqa: E402
+
+SCHEMES = ("monolithic", "segregated", "stabilized")
+#: Fixed colour per scheme (dataviz categorical slots 1-3, in fixed order).
+COLORS = {"monolithic": "#2a78d6", "segregated": "#eb6834", "stabilized": "#1baf7a"}
+MARKERS = {"monolithic": "o", "segregated": "s", "stabilized": "^"}
+INK = "#0b0b0b"
+INK_2 = "#52514e"
+GRID = "#e3e2dc"
+
+#: Onset rule of the static element (gate 1's criterion): spread of λ over the points.
+SPREAD_ONSET = 1e-3
+#: Dynamic element: more reversals of mean λ than this is an instability (gate D2's bound).
+MAX_REVERSALS = 2
+#: Reference-based orders need the finest tested dt to be at least this many times the
+#: reference's.
+MIN_REF_RATIO = 5.0
+#: A step difference below this is round-off (tests/conftest.py ``_FLAT``).
+_FLAT = 1e-12
+#: Newton residual norms at or below this are round-off and carry no convergence order.
+NEWTON_FLOOR = 1e-12
+
+
+# --------------------------------------------------------------------------------------
+# Loading
+# --------------------------------------------------------------------------------------
+
+
+#: Files that exist but could not be parsed, reported in "Load problems". Reset by
+#: ``build_report``.
+LOAD_PROBLEMS: list[str] = []
+
+
+def _problem(path: Path, why: str) -> None:
+    LOAD_PROBLEMS.append(f"`{path}`: {why}")
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    """A JSON object; empty when the file is absent, and recorded when it is corrupt."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:  # any parse failure is reported, never hidden
+        _problem(path, f"unreadable JSON ({type(exc).__name__}: {exc})")
+        return {}
+    if not isinstance(data, dict):
+        _problem(path, "JSON is not an object")
+        return {}
+    return data
+
+
+def _read_csv(path: Path) -> dict[str, np.ndarray]:
+    """A CSV with a header as a dict of columns; empty when absent, recorded when corrupt.
+
+    ``deletechars=""`` keeps '-' and '.' in the names: numpy would otherwise turn
+    ``reversal_fraction_1e-07`` into ``reversal_fraction_1e07``.
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = np.atleast_1d(np.genfromtxt(path, delimiter=",", names=True, deletechars=""))
+    except Exception as exc:  # any parse failure is reported, never hidden
+        _problem(path, f"unreadable CSV ({type(exc).__name__}: {exc})")
+        return {}
+    if data.dtype.names is None:
+        _problem(path, "CSV has no header")
+        return {}
+    return {name: np.asarray(data[name], dtype=float) for name in data.dtype.names}
+
+
+@dataclass
+class RunData:
+    path: Path
+    geometry: str
+    group: str
+    scheme: str
+    dt: float
+    meta: dict[str, Any]
+    timings: dict[str, Any]
+    steps: dict[str, np.ndarray]
+    snaps: dict[str, np.ndarray]
+    log: dict[str, np.ndarray]
+    summary: dict[str, Any]
+    launcher: dict[str, Any]
+
+    @property
+    def reached(self) -> bool | None:
+        return self.meta.get("reached_t_end")
+
+    @property
+    def failed(self) -> bool:
+        return self.reached is False
+
+
+def load_run(path: Path, geometry: str, group: str, scheme: str) -> RunData:
+    meta = _read_json(path / "run.json")
+    try:
+        dt = float(meta.get("dt_mech_ms", path.name.removeprefix("dt")))
+    except ValueError:
+        dt = float("nan")
+    snaps: dict[str, np.ndarray] = {}
+    if (path / "snapshots.npz").exists():
+        try:
+            with np.load(path / "snapshots.npz") as z:
+                snaps = {k: np.asarray(z[k]) for k in z.files}
+        except Exception as exc:  # any parse failure is reported, never hidden
+            _problem(path / "snapshots.npz", f"unreadable ({type(exc).__name__}: {exc})")
+            snaps = {}
+    return RunData(
+        path=path,
+        geometry=geometry,
+        group=group,
+        scheme=scheme,
+        dt=dt,
+        meta=meta,
+        timings=_read_json(path / "timings.json") or dict(meta.get("timings", {})),
+        steps=_read_csv(path / "steps.csv"),
+        snaps=snaps,
+        log=_read_csv(path / "log.csv"),
+        summary=_read_json(path / "summary.json"),
+        launcher=_read_json(path / "launcher.json"),
+    )
+
+
+Ladders = dict[tuple[str, str], dict[str, dict[float, RunData]]]
+
+
+def discover(root: Path) -> Ladders:
+    """Group the runs by ``(geometry, group)``, then ``scheme``, then dt."""
+    out: Ladders = {}
+    for dt_dir in sorted(p for p in root.glob("*/*/*/dt*") if p.is_dir()):
+        if not (dt_dir / "run.json").exists():
+            crash = (
+                " (launcher.json present: the run crashed)"
+                if (dt_dir / "launcher.json").exists()
+                else ""
+            )
+            _problem(dt_dir, f"no run.json{crash}")
+            continue
+        scheme_dir, group_dir = dt_dir.parent, dt_dir.parent.parent
+        geometry = group_dir.parent.name
+        run = load_run(dt_dir, geometry, group_dir.name, scheme_dir.name)
+        out.setdefault((geometry, group_dir.name), {}).setdefault(run.scheme, {})[run.dt] = run
+    return out
+
+
+# --------------------------------------------------------------------------------------
+# Series and errors
+# --------------------------------------------------------------------------------------
+
+
+def _empty() -> np.ndarray:
+    return np.empty(0)
+
+
+@dataclass
+class Series:
+    """A run's volume means on its step times, and its fields on its snapshot times.
+
+    The means come from ``steps.csv``, one row per step, so that a peak between two
+    snapshots is not missed: ``lmbda_mean`` and ``Ta_mean_kPa``, the weighted means of
+    ``lmbda_prev`` and ``tension_kPa`` over the quadrature points. The fields come from
+    ``snapshots.npz``. Either part can be empty.
+    """
+
+    t: np.ndarray = field(default_factory=_empty)  # step times (ms)
+    lmean: np.ndarray = field(default_factory=_empty)  # volume-mean λ per step
+    tamean: np.ndarray | None = None  # volume-mean Ta per step (kPa)
+    ts: np.ndarray = field(default_factory=_empty)  # snapshot times (ms)
+    lam: np.ndarray | None = None  # λ at the points, one row per snapshot
+    ta: np.ndarray | None = None  # Ta at the points, one row per snapshot (kPa)
+    w: np.ndarray | None = None  # the points' quadrature weights
+
+    @property
+    def empty(self) -> bool:
+        return len(self.t) == 0 and self.lam is None
+
+
+def series_of(run: RunData) -> Series | None:
+    """The run's means (``steps.csv``) and fields (``snapshots.npz``); None if it has neither."""
+    out = Series()
+    st = run.steps
+    if "t_ms" in st and "lmbda_mean" in st:
+        out.t, out.lmean = st["t_ms"], st["lmbda_mean"]
+        out.tamean = st.get("Ta_mean_kPa")
+    s = run.snaps
+    if {"t_ms", "weights", "lmbda"} <= s.keys():
+        out.ts = np.asarray(s["t_ms"], float)
+        out.lam, out.w = s["lmbda"], s["weights"]
+        out.ta = s.get("tension_kPa")
+    return None if out.empty else out
+
+
+def _common(ta: np.ndarray, tb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    _, ia, ib = np.intersect1d(np.round(ta, 6), np.round(tb, 6), return_indices=True)
+    return ia, ib
+
+
+def _finite_rows(*arrays: np.ndarray) -> np.ndarray:
+    ok = np.ones(len(arrays[0]), dtype=bool)
+    for a in arrays:
+        ok &= np.all(np.isfinite(a.reshape(len(a), -1)), axis=1)
+    return ok
+
+
+@dataclass
+class Err:
+    """Max over the common grid of the differences between two runs; nan where undefined."""
+
+    lam_rms: float = float("nan")  # RMS of λ over Ω
+    ta_rms: float = float("nan")  # RMS of Ta over Ω, kPa (not normalized)
+    lam_mean: float = float("nan")  # abs difference of the volume means of λ
+    ta_mean: float = float("nan")  # abs difference of the volume means of Ta, kPa
+
+
+#: The ``Err`` fields, in table order, with their labels.
+QUANTITIES: tuple[tuple[str, str], ...] = (
+    ("lam_rms", "RMS λ"),
+    ("ta_rms", "RMS Ta"),
+    ("lam_mean", "mean λ"),
+    ("ta_mean", "mean Ta"),
+)
+
+
+def on_grid(t: np.ndarray, grid: float | None) -> np.ndarray:
+    """Mask of the times that are multiples of ``grid`` (all of them when it is None)."""
+    if grid is None:
+        return np.ones(len(t), dtype=bool)
+    r = np.asarray(t, float) / grid
+    return np.abs(r - np.round(r)) < 1e-6
+
+
+def _grid_pairs(
+    ta: np.ndarray,
+    tb: np.ndarray,
+    grid: float | None,
+    *finite: tuple[np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Indices of the times common to ``ta`` and ``tb`` on the grid, where every pair of
+    ``finite`` arrays is finite on both sides."""
+    ia, ib = _common(ta, tb)
+    keep = on_grid(ta[ia], grid)
+    ia, ib = ia[keep], ib[keep]
+    if len(ia) == 0:
+        return ia, ib
+    ok = _finite_rows(*(x[ia] for x, _ in finite), *(y[ib] for _, y in finite))
+    return ia[ok], ib[ok]
+
+
+def compare(a: Series, b: Series, grid: float | None = None) -> Err:
+    """Max over the common times of the differences of ``a`` from ``b``.
+
+    The times are those of both series that are multiples of ``grid``: one grid for a whole
+    group, so every error and order in it covers the same instants (a failed run covers its
+    own truncated part of it). The volume means are compared at the step times on it, the
+    RMS of the fields at the snapshot times on it. Times at which either side is not
+    finite (a failed run's last iterate) are left out.
+    """
+    e = Err()
+    means = [(a.lmean, b.lmean)]
+    if a.tamean is not None and b.tamean is not None:
+        means.append((a.tamean, b.tamean))
+    ia, ib = _grid_pairs(a.t, b.t, grid, *means)
+    if len(ia):
+        e.lam_mean = float(np.max(np.abs(a.lmean[ia] - b.lmean[ib])))
+        if a.tamean is not None and b.tamean is not None:
+            e.ta_mean = float(np.max(np.abs(a.tamean[ia] - b.tamean[ib])))
+    if a.lam is None or b.lam is None or a.lam.shape[1:] != b.lam.shape[1:]:
+        return e
+    assert a.w is not None
+    fields = [(a.lam, b.lam)]
+    if a.ta is not None and b.ta is not None:
+        fields.append((a.ta, b.ta))
+    ja, jb = _grid_pairs(a.ts, b.ts, grid, *fields)
+    if len(ja):
+        e.lam_rms = float(
+            max(metrics.weighted_rms(a.lam[i] - b.lam[j], a.w) for i, j in zip(ja, jb)),
+        )
+        if a.ta is not None and b.ta is not None:
+            e.ta_rms = float(
+                max(metrics.weighted_rms(a.ta[i] - b.ta[j], a.w) for i, j in zip(ja, jb)),
+            )
+    return e
+
+
+def ta_norm(ref: Series, grid: float | None = None) -> float:
+    """The reference's max over time of the RMS of ``Ta`` (kPa): what ``Ta`` errors divide by.
+
+    Over its snapshot times on the grid. nan when there is no ``Ta`` or it is zero
+    throughout, so a division shows "—".
+    """
+    if ref.ta is None or ref.w is None:
+        return float("nan")
+    rows = ref.ta[on_grid(ref.ts, grid)]
+    if len(rows) == 0:
+        return float("nan")
+    v = float(max(metrics.weighted_rms(row, ref.w) for row in rows))
+    return v if v > 0 else float("nan")
+
+
+def safe_div(a: float, b: float) -> float:
+    """``a / b``, nan when ``b`` is zero or not finite."""
+    return a / b if b and np.isfinite(b) else float("nan")
+
+
+def richardson_series(fine: Series, coarse: Series, ratio: float) -> Series | None:
+    """The first-order extrapolation of ``fine`` and ``coarse``, at their common times."""
+    out = Series()
+    ia, ib = _common(fine.t, coarse.t)
+    if len(ia):
+        out.t = fine.t[ia]
+        out.lmean = metrics.richardson(fine.lmean[ia], coarse.lmean[ib], ratio)
+        if fine.tamean is not None and coarse.tamean is not None:
+            out.tamean = metrics.richardson(fine.tamean[ia], coarse.tamean[ib], ratio)
+    if (
+        fine.lam is not None
+        and coarse.lam is not None
+        and fine.lam.shape[1:] == coarse.lam.shape[1:]
+    ):
+        ja, jb = _common(fine.ts, coarse.ts)
+        if len(ja):
+            out.ts = fine.ts[ja]
+            out.lam = metrics.richardson(fine.lam[ja], coarse.lam[jb], ratio)
+            out.w = fine.w
+            if fine.ta is not None and coarse.ta is not None:
+                out.ta = metrics.richardson(fine.ta[ja], coarse.ta[jb], ratio)
+    return None if out.empty else out
+
+
+@dataclass
+class Reference:
+    name: str
+    series: Series
+    dt: float  # the reference's effective dt; 0 for an extrapolation
+    run_dt: float | None = None  # the dt of the run that is the reference, if it is one
+    logs: dict[str, np.ndarray] = field(default_factory=dict)  # BiV log.csv columns
+
+
+def is_reference(run: RunData, ref: Reference) -> bool:
+    return ref.run_dt is not None and run.scheme == "monolithic" and run.dt == ref.run_dt
+
+
+def completed_monolithic(lad: dict[str, dict[float, RunData]]) -> list[RunData]:
+    """The monolithic runs that reached ``t_end`` and have data, finest first.
+
+    Only these can be a reference: a failed run's error would be measured against a
+    truncated, possibly diverging, solution.
+    """
+    mono = lad.get("monolithic", {}).values()
+    done = [r for r in mono if r.reached is True and series_of(r) is not None]
+    return sorted(done, key=lambda r: r.dt)
+
+
+def finest_monolithic(lad: dict[str, dict[float, RunData]]) -> RunData | None:
+    done = completed_monolithic(lad)
+    return done[0] if done else None
+
+
+def no_reference_note(lad: dict[str, dict[float, RunData]]) -> str:
+    mono = lad.get("monolithic", {})
+    what = (
+        "No monolithic run in this group"
+        if not mono
+        else f"No monolithic run reached t_end ({len(mono)} ran, none completed)"
+    )
+    return (
+        f"{what}, so there is no reference: the errors against it, their orders and the "
+        "normalized Ta are not reported.\n"
+    )
+
+
+LOG_FIELDS = ("V_LV_mL", "V_RV_mL", "p_LV_mmHg", "p_RV_mmHg")
+
+
+def make_references(geometry: str, lad: dict[str, dict[float, RunData]]) -> list[Reference]:
+    """The finest completed monolithic run; for the BiV also the Richardson extrapolation
+    of the two finest completed ones."""
+    refs: list[Reference] = []
+    fin = finest_monolithic(lad)
+    if fin is not None:
+        s = series_of(fin)
+        assert s is not None
+        refs.append(Reference(f"monolithic dt {fin.dt:g} ms", s, fin.dt, fin.dt, dict(fin.log)))
+    if geometry == "biv":
+        mono = completed_monolithic(lad)
+        if len(mono) >= 2:
+            fine, coarse = mono[0], mono[1]
+            ratio = coarse.dt / fine.dt
+            sf, sc = series_of(fine), series_of(coarse)
+            assert sf is not None and sc is not None
+            rs = richardson_series(sf, sc, ratio)
+            if rs is not None:
+                logs: dict[str, np.ndarray] = {}
+                if fine.log and coarse.log and "t_ms" in fine.log and "t_ms" in coarse.log:
+                    ia, ib = _common(fine.log["t_ms"], coarse.log["t_ms"])
+                    logs["t_ms"] = fine.log["t_ms"][ia]
+                    for k in LOG_FIELDS:
+                        if k in fine.log and k in coarse.log:
+                            logs[k] = metrics.richardson(fine.log[k][ia], coarse.log[k][ib], ratio)
+                refs.append(
+                    Reference(
+                        f"Richardson of monolithic dt {coarse.dt:g} and {fine.dt:g} ms",
+                        rs,
+                        0.0,
+                        None,
+                        logs,
+                    ),
+                )
+    return refs
+
+
+# --------------------------------------------------------------------------------------
+# Onsets
+# --------------------------------------------------------------------------------------
+
+
+def kind_of(geometry: str, group: str) -> str:
+    if geometry == "element":
+        return "dynamic" if group.startswith("dynamic") else "static"
+    return "3d"
+
+
+def reversals(trace: np.ndarray) -> int:
+    """Changes of direction of a trace, ignoring differences below round-off.
+
+    Copied by value from ``tests/conftest.py::_reversals``, the definition the dynamic
+    gates use.
+    """
+    d = np.diff(trace)
+    d = d[np.abs(d) >= _FLAT]
+    return int(np.count_nonzero(np.diff(np.sign(d))))
+
+
+def _floor_col(eps: float) -> str:
+    return f"reversal_fraction_{eps:g}"
+
+
+def choose_epsilon(lad: dict[str, dict[float, RunData]]) -> tuple[float | None, str]:
+    """Smallest floor at which no monolithic run of the group has an onset."""
+    mono = [r for r in lad.get("monolithic", {}).values() if r.steps]
+    if not mono:
+        return None, "no monolithic run, so no floor can be fixed"
+    for r in mono:
+        for eps in metrics.FLOORS_PER_MS:
+            if _floor_col(eps) not in r.steps:
+                raise ValueError(f"{r.path / 'steps.csv'} has no column {_floor_col(eps)!r}")
+    for eps in metrics.FLOORS_PER_MS:
+        col = _floor_col(eps)
+        if all(metrics.onset_index(list(r.steps[col])) is None for r in mono):
+            return eps, ""
+    return None, (
+        "even the largest floor "
+        f"({metrics.FLOORS_PER_MS[-1]:g}) trips a monolithic run; no floor is chosen and "
+        "the 3D onset is not reported"
+    )
+
+
+@dataclass
+class Onset:
+    onset_ms: float | None
+    value: float  # the criterion's own value: spread, reversals or max fraction
+    flagged: bool | None  # None when it cannot be judged
+
+
+def onset_of(run: RunData, kind: str, eps: float | None) -> Onset:
+    st = run.steps
+    nan = float("nan")
+    if not st or "t_ms" not in st:
+        return Onset(None, nan, None)
+    t = st["t_ms"]
+    if kind == "static":
+        spread = st["lmbda_max"] - st["lmbda_min"]
+        bad = np.flatnonzero(spread > SPREAD_ONSET)
+        return Onset(float(t[bad[0]]) if len(bad) else None, float(np.nanmax(spread)), True)
+    if kind == "dynamic":
+        n = reversals(st["lmbda_mean"])
+        return Onset(None, float(n), n > MAX_REVERSALS)
+    if eps is None:
+        return Onset(None, nan, None)
+    col = _floor_col(eps)
+    if col not in st:
+        raise ValueError(f"{run.path / 'steps.csv'} has no column {col!r}")
+    frac = st[col]
+    i = metrics.onset_index(list(frac))
+    return Onset(float(t[i]) if i is not None else None, float(np.nanmax(frac)), True)
+
+
+def onset_text(o: Onset, kind: str) -> str:
+    if o.flagged is None:
+        return "n/a"
+    if kind == "dynamic":
+        return f"unstable ({o.value:g} reversals)" if o.flagged else "none"
+    return f"{o.onset_ms:g}" if o.onset_ms is not None else "none"
+
+
+# --------------------------------------------------------------------------------------
+# Markdown helpers
+# --------------------------------------------------------------------------------------
+
+DASH = "—"
+
+
+def fnum(x: Any, spec: str = ".3e") -> str:
+    if x is None:
+        return DASH
+    try:
+        if not np.isfinite(x):
+            return DASH
+    except TypeError:
+        return str(x)
+    return format(x, spec)
+
+
+def table(header: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
+    if not rows:
+        return "_no data_\n"
+    lines = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
+    for r in rows:
+        lines.append("| " + " | ".join(str(c) for c in r) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def sorted_runs(lad: dict[str, dict[float, RunData]]) -> list[RunData]:
+    """Runs ordered by scheme (fixed order), then coarse dt first."""
+    out: list[RunData] = []
+    for s in SCHEMES:
+        out += [lad[s][dt] for dt in sorted(lad.get(s, {}), reverse=True)]
+    for s in sorted(set(lad) - set(SCHEMES)):
+        out += [lad[s][dt] for dt in sorted(lad[s], reverse=True)]
+    return out
+
+
+def flag(run: RunData) -> str:
+    return "*" if run.failed else ""
+
+
+# --------------------------------------------------------------------------------------
+# Tables
+# --------------------------------------------------------------------------------------
+
+
+def grid_of(lad: dict[str, dict[float, RunData]]) -> float | None:
+    """The group's common grid: its coarsest dt, whose multiples every error is taken over."""
+    dts = [dt for runs in lad.values() for dt in runs if np.isfinite(dt) and dt > 0]
+    return max(dts) if dts else None
+
+
+GRID_RULE = (
+    "Every maximum and order in this group is taken over one common grid: the multiples of the "
+    "group's coarsest dt ({grid:g} ms). The volume means of λ and Ta (`steps.csv`'s "
+    "`lmbda_mean` and `Ta_mean_kPa`, the weighted means over the quadrature points) are "
+    "compared at every step on that grid; the RMS of the fields at the snapshot times on it; "
+    "V and p at `log.csv`'s rows on it. A failed run is compared over its own truncated part "
+    "of that grid.\n"
+)
+
+#: Column headers of an error table, in ``_err_cells`` order.
+ERR_HEADER = [
+    "RMS λ",
+    "RMS Ta (kPa)",
+    "RMS Ta / ref max RMS Ta",
+    "max abs Δ mean λ",
+    "max abs Δ mean Ta (kPa)",
+]
+
+
+def _err_cells(e: Err, norm: float) -> list[str]:
+    return [
+        fnum(e.lam_rms),
+        fnum(e.ta_rms),
+        fnum(safe_div(e.ta_rms, norm)),
+        fnum(e.lam_mean),
+        fnum(e.ta_mean),
+    ]
+
+
+def coupling_errors(
+    lad: dict[str, dict[float, RunData]],
+    grid: float | None,
+) -> dict[tuple[str, float], Err]:
+    """Each run that is not monolithic against the monolithic run of its dt."""
+    mono = lad.get("monolithic", {})
+    out: dict[tuple[str, float], Err] = {}
+    for run in sorted_runs(lad):
+        if run.scheme == "monolithic" or run.dt not in mono:
+            continue
+        s, sm = series_of(run), series_of(mono[run.dt])
+        if s is not None and sm is not None:
+            out[(run.scheme, run.dt)] = compare(s, sm, grid)
+    return out
+
+
+def reference_errors(
+    lad: dict[str, dict[float, RunData]],
+    ref: Reference,
+    grid: float | None,
+) -> dict[tuple[str, float], Err]:
+    """Each run against ``ref``; the run that is the reference is left out."""
+    out: dict[tuple[str, float], Err] = {}
+    for run in sorted_runs(lad):
+        s = series_of(run)
+        if s is not None and not is_reference(run, ref):
+            out[(run.scheme, run.dt)] = compare(s, ref.series, grid)
+    return out
+
+
+def accuracy_tables(
+    lad: dict[str, dict[float, RunData]],
+    refs: list[Reference],
+    grid: float | None,
+) -> tuple[str, dict[tuple[str, float, str], Err]]:
+    """The accuracy tables, and the errors against the first reference for the figures."""
+    md = []
+    if grid is not None:
+        md.append(GRID_RULE.format(grid=grid))
+    runs = sorted_runs(lad)
+    norms = [ta_norm(ref.series, grid) for ref in refs]
+    if not refs:
+        md.append(no_reference_note(lad))
+
+    cpl = coupling_errors(lad, grid)
+    norm0 = norms[0] if refs else float("nan")
+    rows = []
+    for run in runs:
+        cells = (
+            ["0 (by definition)"] * len(ERR_HEADER)
+            if run.scheme == "monolithic"
+            else _err_cells(cpl.get((run.scheme, run.dt), Err()), norm0)
+        )
+        rows.append([run.scheme, f"{run.dt:g}" + flag(run), *cells])
+    normalized_by = (
+        f"normalized by the max RMS Ta of the reference {refs[0].name}, given with its table"
+        if refs
+        else 'not normalized, since there is no reference ("—")'
+    )
+    md.append(
+        "**Coupling error**: each run against the monolithic run of the same dt, which needs "
+        f"no reference. Ta is {normalized_by}. (`*`: the run failed; the errors cover its "
+        "finite common times only.)\n",
+    )
+    md.append(table(["scheme", "dt (ms)", *ERR_HEADER], rows))
+
+    store: dict[tuple[str, float, str], Err] = {}
+    for ref_i, (ref, norm) in enumerate(zip(refs, norms)):
+        errs = reference_errors(lad, ref, grid)
+        if ref_i == 0:
+            store = {(scheme, dt, "main"): e for (scheme, dt), e in errs.items()}
+        rows = []
+        for run in runs:
+            cells = (
+                ["0 (is the reference)"] * len(ERR_HEADER)
+                if is_reference(run, ref)
+                else _err_cells(errs.get((run.scheme, run.dt), Err()), norm)
+            )
+            rows.append([run.scheme, f"{run.dt:g}" + flag(run), *cells])
+        constant = (
+            f"its max over t of the RMS of Ta, {fnum(norm, '.4g')} kPa"
+            if np.isfinite(norm)
+            else 'none: its Ta is zero (or absent) throughout, so the normalized column shows "—"'
+        )
+        md.append(
+            f"**Error against the reference: {ref.name}.** Ta normalization: {constant}. "
+            "(`*`: the run failed; the errors cover its finite common times only.)\n",
+        )
+        md.append(table(["scheme", "dt (ms)", *ERR_HEADER], rows))
+    md.append(orders_tables(lad, refs, grid))
+    return "\n".join(md), store
+
+
+def _order_pairs(dts: list[float], errs: list[float]) -> list[tuple[float, float, float]]:
+    """Observed order between successive dts (coarse to fine) whose errors are positive."""
+    ok = [(d, e) for d, e in zip(dts, errs) if np.isfinite(e) and e > 0]
+    if len(ok) < 2:
+        return []
+    p = metrics.reference_orders([d for d, _ in ok], [e for _, e in ok])
+    return [(ok[i][0], ok[i + 1][0], p[i]) for i in range(len(ok) - 1)]
+
+
+@dataclass
+class Order:
+    """An observed order of one ``Err`` field over ``dts`` (coarse to fine)."""
+
+    scheme: str
+    dts: tuple[float, ...]
+    quantity: str  # an ``Err`` field, a key of ``QUANTITIES``
+    value: float
+    ref: str = ""  # the reference's name; "" for a self-convergence order
+
+
+def reference_orders(
+    lad: dict[str, dict[float, RunData]],
+    refs: list[Reference],
+    grid: float | None,
+) -> tuple[list[Order], list[tuple[str, str, str]]]:
+    """The orders against each reference that is a run, and the ladders too short for one.
+
+    None against an extrapolation (ruling R8): the monolithic order against it is 1 by
+    construction. A ladder is the scheme's dts that reached ``t_end`` and are at least
+    ``MIN_REF_RATIO`` times the reference's; a short one is returned as
+    ``(reference, scheme, why)``.
+    """
+    orders: list[Order] = []
+    short: list[tuple[str, str, str]] = []
+    for ref in refs:
+        if ref.run_dt is None:
+            continue
+        for scheme in SCHEMES:
+            runs = lad.get(scheme, {})
+            if not runs:
+                continue
+            eligible = sorted(
+                (dt for dt in runs if not runs[dt].failed and dt >= MIN_REF_RATIO * ref.dt - 1e-12),
+                reverse=True,
+            )
+            if len(eligible) < 2:
+                why = f"fewer than 2 dts >= {MIN_REF_RATIO:g} x {ref.dt:g} ms that reached t_end"
+                short.append((ref.name, scheme, why))
+                continue
+            ec = {}
+            for dt in eligible:
+                s = series_of(runs[dt])
+                ec[dt] = compare(s, ref.series, grid) if s is not None else Err()
+            for q, _ in QUANTITIES:
+                for a, b, p in _order_pairs(eligible, [getattr(ec[d], q) for d in eligible]):
+                    orders.append(Order(scheme, (a, b), q, p, ref.name))
+    return orders, short
+
+
+def self_orders(lad: dict[str, dict[float, RunData]], grid: float | None) -> list[Order]:
+    """Self-convergence orders over each three successive dts; failed runs left out."""
+    out: list[Order] = []
+    for scheme in SCHEMES:
+        runs = lad.get(scheme, {})
+        dts = sorted((d for d in runs if not runs[d].failed), reverse=True)
+        for i in range(len(dts) - 2):
+            dd = (dts[i], dts[i + 1], dts[i + 2])
+            s0, s1, s2 = (series_of(runs[d]) for d in dd)
+            if s0 is None or s1 is None or s2 is None:
+                continue
+            c, f = compare(s0, s1, grid), compare(s1, s2, grid)
+            for q, _ in QUANTITIES:
+                p = metrics.self_convergence_order(dd, getattr(c, q), getattr(f, q))
+                out.append(Order(scheme, dd, q, p))
+    return out
+
+
+def orders_tables(
+    lad: dict[str, dict[float, RunData]],
+    refs: list[Reference],
+    grid: float | None,
+) -> str:
+    label = dict(QUANTITIES)
+    orders, short = reference_orders(lad, refs, grid)
+    rows = []
+    for ref in refs:
+        for scheme in SCHEMES:
+            rows += [[r, s, why, DASH, DASH] for r, s, why in short if (r, s) == (ref.name, scheme)]
+            rows += [
+                [o.ref, o.scheme, " → ".join(f"{d:g}" for d in o.dts), label[o.quantity]]
+                + [fnum(o.value, ".2f")]
+                for o in orders
+                if (o.ref, o.scheme) == (ref.name, scheme)
+            ]
+    md = [
+        "**Orders against the reference.** Computed over the dts that reached `t_end` and are "
+        f'at least {MIN_REF_RATIO:g}× the reference\'s; "—" where fewer than two remain. '
+        "Against a Richardson extrapolation only errors are reported, no orders: the "
+        "monolithic order against it is 1 by construction.\n",
+        table(["reference", "scheme", "dt pair (ms)", "quantity", "observed order"], rows),
+    ]
+    by_ladder: dict[tuple[str, tuple[float, ...]], dict[str, float]] = {}
+    for o in self_orders(lad, grid):
+        by_ladder.setdefault((o.scheme, o.dts), {})[o.quantity] = o.value
+    srows = [
+        [scheme, ", ".join(f"{d:g}" for d in dts)]
+        + [fnum(values.get(q, float("nan")), ".2f") for q, _ in QUANTITIES]
+        for (scheme, dts), values in by_ladder.items()
+    ]
+    md.append(
+        "**Self-convergence orders** (failed runs left out; from successive differences, "
+        'no reference; "—" where undefined).\n',
+    )
+    md.append(
+        table(["scheme", "dts (ms)", *(f"order, {lab}" for _, lab in QUANTITIES)], srows),
+    )
+    return "\n".join(md)
+
+
+def stability_table(
+    lad: dict[str, dict[float, RunData]],
+    kind: str,
+    eps: float | None,
+    eps_note: str,
+) -> str:
+    rule = {
+        "static": f"onset: first t with λ_max − λ_min > {SPREAD_ONSET:g} (gate 1's criterion); "
+        "criterion value: max spread",
+        "dynamic": f"onset: more than {MAX_REVERSALS} reversals of mean λ (gate D2's bound); "
+        "criterion value: reversals",
+        "3d": "onset: first of 3 consecutive steps with reversal fraction > 0.5; "
+        "criterion value: max reversal fraction",
+    }[kind]
+    lines = [rule + "\n"]
+    if kind == "3d":
+        if eps is not None:
+            lines.append(
+                f"**ε = {eps:g} per ms**, the smallest floor at which no monolithic run of this "
+                "group has an onset (column `reversal_fraction_"
+                f"{eps:g}`).\n",
+            )
+        else:
+            lines.append(f"**No ε chosen: {eps_note}.**\n")
+    rows = []
+    for run in sorted_runs(lad):
+        o = onset_of(run, kind, eps)
+        rows.append(
+            [
+                run.scheme,
+                f"{run.dt:g}",
+                run.reached,
+                fnum(run.meta.get("t_fail_ms"), "g"),
+                onset_text(o, kind),
+                fnum(o.value, ".3g"),
+                (run.meta.get("failure") or DASH),
+            ],
+        )
+    lines.append(
+        table(
+            [
+                "scheme",
+                "dt (ms)",
+                "reached_t_end",
+                "t_fail_ms",
+                "onset (ms)",
+                "criterion value",
+                "failure",
+            ],
+            rows,
+        ),
+    )
+    return "\n".join(lines)
+
+
+def consistency_table(lad: dict[str, dict[float, RunData]]) -> str:
+    runs = lad.get("stabilized", {})
+    rows = []
+    prev: tuple[float, float] | None = None
+    for dt in sorted(runs, reverse=True):
+        st = runs[dt].steps
+        if not st or "KaDl_max_kPa" not in st:
+            rows.append([f"{dt:g}", DASH, DASH])
+            continue
+        v = float(np.nanmax(np.abs(st["KaDl_max_kPa"])) / np.nanmax(np.abs(st["Ta_mean_kPa"])))
+        ratio = DASH
+        if prev is not None and v > 0:
+            ratio = f"{prev[1] / v:.3g} (dt ratio {prev[0] / dt:.3g})"
+        rows.append([f"{dt:g}" + flag(runs[dt]), fnum(v), ratio])
+        prev = (dt, v)
+    return (
+        "Stabilized scheme: max abs Ka·Δλ / max mean Ta. R&Q §4.1 say it is O(dt), so the ratio "
+        "between successive dts should equal the dt ratio.\n\n"
+        + table(["dt (ms)", "max abs KaΔλ / max Ta_mean", "ratio to previous (coarser) dt"], rows)
+    )
+
+
+def cost_table(lad: dict[str, dict[float, RunData]], geometry: str, group: str) -> str:
+    rows = []
+    for run in sorted_runs(lad):
+        nw = run.meta.get("newton", {}) or {}
+        tm = run.timings
+        total = nw.get("total", tm.get("newton_its"))
+        mech = tm.get("mech_s")
+        per = mech / total if isinstance(mech, (int, float)) and total else None
+        rows.append(
+            [
+                run.scheme,
+                f"{run.dt:g}" + flag(run),
+                fnum(total, "g"),
+                fnum(nw.get("mean"), ".3g"),
+                fnum(nw.get("max"), "g"),
+                fnum(mech, ".3g"),
+                fnum(per, ".3g"),
+                fnum(tm.get("ep_ode_s"), ".3g"),
+                fnum(tm.get("ep_pde_s"), ".3g"),
+                fnum(tm.get("setup_s"), ".3g"),
+                fnum(tm.get("loop_s"), ".3g"),
+                fnum(tm.get("total_s"), ".3g"),
+            ],
+        )
+    note = "Wall times are serial, one run at a time. "
+    if kind_of(geometry, group) == "dynamic" or geometry == "biv":
+        note += (
+            "This group is a `DynamicProblem` with dt compiled into its form, so every dt "
+            "compiles its own form. "
+        )
+    else:
+        note += (
+            "This group shares one compiled form per scheme across its dts (dt is not compiled "
+            "in), so the first run of each scheme pays the compilation in `setup_s`. "
+        )
+    note += (
+        "`setup_s` is listed per run so that cold outliers are visible; which runs were cold "
+        "is not recorded. `ep_ode_s` and `ep_pde_s` exist for the slab and BiV only. "
+    )
+    note += (
+        "The segregated schemes evaluate the ODE step at every assembly (spec §3); a "
+        "production code would evaluate it once per step.\n"
+    )
+    return (
+        note
+        + "\n"
+        + table(
+            [
+                "scheme",
+                "dt (ms)",
+                "Newton total",
+                "mean",
+                "max",
+                "mech_s",
+                "mech_s / Newton it.",
+                "ep_ode_s",
+                "ep_pde_s",
+                "setup_s",
+                "loop_s",
+                "total_s",
+            ],
+            rows,
+        )
+    )
+
+
+def threshold_of(run: RunData) -> float:
+    reg = run.meta.get("regime")
+    if not reg:
+        return float("nan")
+    try:
+        return metrics.naive_threshold_kPa(
+            run.dt,
+            Kp_kPa=reg["Kp_kPa"],
+            eta_Pa_s=reg["eta_Pa_s"],
+            rho_kg_m3=reg["rho_kg_m3"],
+            h_m=reg["h_m"],
+        )
+    except (KeyError, TypeError, ZeroDivisionError):
+        return float("nan")
+
+
+def ka_max_of(lad: dict[str, dict[float, RunData]], dt: float) -> float:
+    """Peak Ka from the stabilized run of this dt; otherwise from any run that logged one."""
+    order = ["stabilized"] + [s for s in lad if s != "stabilized"]
+    for s in order:
+        r = lad.get(s, {}).get(dt)
+        if r is not None and r.steps.get("Ka_max_kPa") is not None and len(r.steps["Ka_max_kPa"]):
+            v = float(np.nanmax(r.steps["Ka_max_kPa"]))
+            if v > 0 or s == "stabilized":
+                return v
+    return float("nan")
+
+
+def regime_table(
+    lad: dict[str, dict[float, RunData]],
+    kind: str,
+    eps: float | None,
+) -> tuple[str, dict[float, tuple[float, float]]]:
+    dts = sorted({dt for s in lad.values() for dt in s}, reverse=True)
+    rows = []
+    pts: dict[float, tuple[float, float]] = {}
+    for dt in dts:
+        any_run = next(s[dt] for s in lad.values() if dt in s)
+        thr = threshold_of(any_run)
+        ka = ka_max_of(lad, dt)
+        pts[dt] = (ka, thr)
+        pred = (
+            DASH
+            if not (np.isfinite(ka) and np.isfinite(thr))
+            else ("unstable" if ka > thr else "stable")
+        )
+        seg = lad.get("segregated", {}).get(dt)
+        if seg is None:
+            obs = DASH
+        else:
+            o = onset_of(seg, kind, eps)
+            bits = []
+            if seg.failed:
+                bits.append(f"failed at {fnum(seg.meta.get('t_fail_ms'), 'g')} ms")
+            if o.flagged and (o.onset_ms is not None or (kind == "dynamic" and o.flagged)):
+                bits.append("onset " + onset_text(o, kind))
+            obs = "; ".join(bits) if bits else ("stable" if o.flagged is not None else "n/a")
+        rows.append([f"{dt:g}", fnum(ka, ".4g"), fnum(thr, ".4g"), pred, obs])
+    txt = (
+        "Indicator, not a criterion: the naive scheme is predicted unstable where "
+        "max Ka exceeds Kp + η/dt + ρh²/dt² (Kp is a uniaxial Holzapfel-Ogden estimate; "
+        "parameters from `run.json`'s `regime`).\n\n"
+        + table(
+            ["dt (ms)", "max Ka_max (kPa)", "threshold (kPa)", "predicted naive", "observed naive"],
+            rows,
+        )
+    )
+    return txt, pts
+
+
+def newton_order_table(lad: dict[str, dict[float, RunData]]) -> str:
+    rows = []
+    for run in sorted_runs(lad):
+        res = run.meta.get("newton_residuals")
+        if not res:
+            continue
+        res = [float(x) for x in res]
+        order = float("nan")
+        # Residuals at round-off (below NEWTON_FLOOR) carry no order; drop them.
+        above = [x for x in res if x > NEWTON_FLOOR]
+        if len(above) >= 3:
+            order = float(np.log(above[-1] / above[-2]) / np.log(above[-2] / above[-3]))
+        rows.append(
+            [
+                run.scheme,
+                f"{run.dt:g}",
+                ", ".join(f"{x:.2e}" for x in res),
+                fnum(order, ".2f"),
+            ],
+        )
+    return (
+        "Residual history of one mid-twitch step per run, and the order estimated from the last "
+        f"three residuals above {NEWTON_FLOOR:g} (round-off is left out), "
+        "log(r₃/r₂)/log(r₂/r₁); 2 is quadratic. With so few residuals it is a rough estimate.\n\n"
+        + table(["scheme", "dt (ms)", "SNES residual norms", "observed order"], rows)
+    )
+
+
+def biv_tables(
+    lad: dict[str, dict[float, RunData]],
+    refs: list[Reference],
+    grid: float | None,
+) -> str:
+    md = []
+    runs = sorted_runs(lad)
+    for vent in ("LV", "RV"):
+        v_key, p_key = f"V_{vent}_mL", f"p_{vent}_mmHg"
+        for ref in refs:
+            rows = []
+            for run in runs:
+                lg = run.log
+                if not lg or "t_ms" not in lg or not ref.logs or "t_ms" not in ref.logs:
+                    dv = dp = float("nan")
+                else:
+                    ia, ib = _common(lg["t_ms"], ref.logs["t_ms"])
+                    keep = on_grid(lg["t_ms"][ia], grid)
+                    ia, ib = ia[keep], ib[keep]
+
+                    def md_(
+                        k: str,
+                        ia: np.ndarray = ia,
+                        ib: np.ndarray = ib,
+                        lg: Any = lg,
+                    ) -> float:
+                        if k not in lg or k not in ref.logs or len(ia) == 0:
+                            return float("nan")
+                        d = np.abs(lg[k][ia] - ref.logs[k][ib])
+                        d = d[np.isfinite(d)]
+                        return float(np.max(d)) if len(d) else float("nan")
+
+                    dv, dp = (0.0, 0.0) if is_reference(run, ref) else (md_(v_key), md_(p_key))
+                rows.append([run.scheme, f"{run.dt:g}" + flag(run), fnum(dv), fnum(dp)])
+            md.append(
+                f"**{vent}: max abs V − V_ref and p − p_ref on the common grid, reference: "
+                f"{ref.name}.**\n",
+            )
+            md.append(
+                table(
+                    ["scheme", "dt (ms)", "max abs V − V_ref (mL)", "max abs p − p_ref (mmHg)"],
+                    rows,
+                ),
+            )
+        rows = []
+        for run in runs:
+            s = (run.summary or {}).get(vent, {})
+            opens = s.get("outflow_valve_open") or []
+            ejected = sum(float(o.get("ejected_mL", 0.0)) for o in opens) if s else None
+            rows.append(
+                [
+                    run.scheme,
+                    f"{run.dt:g}" + flag(run),
+                    fnum(ejected, ".4g") if s else DASH,
+                    str(len(opens)) if s else DASH,
+                    fnum(s.get("peak_p_mmHg"), ".4g"),
+                    fnum(s.get("t_peak_p_ms"), ".4g"),
+                    fnum(s.get("V_range_mL"), ".4g"),
+                ],
+            )
+        md.append(
+            f"**{vent}: ejected volume and pressure peak** (from `summary.json`; ejected is "
+            "the sum over the outflow valve's open intervals).\n",
+        )
+        md.append(
+            table(
+                [
+                    "scheme",
+                    "dt (ms)",
+                    "ejected (mL)",
+                    "open intervals",
+                    "peak p (mmHg)",
+                    "t of peak p (ms)",
+                    "V range (mL)",
+                ],
+                rows,
+            ),
+        )
+    drift = [
+        [
+            r.scheme,
+            f"{r.dt:g}",
+            fnum((r.summary or {}).get("max_conservation_drift"), ".3g"),
+            fnum((r.summary or {}).get("peak_Ta_mean_kPa"), ".4g"),
+        ]
+        for r in runs
+    ]
+    md.append("**Conservation and peak tension.**\n")
+    md.append(table(["scheme", "dt (ms)", "max conservation drift", "peak mean Ta (kPa)"], drift))
+    return "\n".join(md)
+
+
+# --------------------------------------------------------------------------------------
+# Figures
+# --------------------------------------------------------------------------------------
+
+
+def _style(ax: Any, xlabel: str, ylabel: str, title: str = "") -> None:
+    ax.set_xlabel(xlabel, color=INK_2)
+    ax.set_ylabel(ylabel, color=INK_2)
+    if title:
+        ax.set_title(title, color=INK, fontsize=10, loc="left")
+    ax.grid(True, color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.tick_params(colors=INK_2)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(GRID)
+
+
+def _legend(ax: Any) -> None:
+    h, _ = ax.get_legend_handles_labels()
+    if h:
+        ax.legend(frameon=False, fontsize=8, labelcolor=INK_2)
+
+
+def _save(fig: Any, out: Path, name: str) -> str:
+    fig.tight_layout()
+    fig.savefig(out / name, dpi=130, facecolor="white")
+    plt.close(fig)
+    return name
+
+
+def _img(name: str | None, caption: str) -> str:
+    return f"![{caption}]({name})\n\n*{caption}*\n" if name else ""
+
+
+def fig_timeseries(lad: dict[str, dict[float, RunData]], out: Path, stem: str) -> str | None:
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.8))
+    any_line = False
+    for scheme in SCHEMES:
+        runs = lad.get(scheme, {})
+        usable = [dt for dt in runs if runs[dt].steps.get("t_ms") is not None]
+        if not usable:
+            continue
+        picks = [(max(usable), "--"), (min(usable), "-")] if len(usable) > 1 else [(usable[0], "-")]
+        for dt, ls in picks:
+            st = runs[dt].steps
+            for ax, key in zip(axes, ("lmbda_mean", "Ta_mean_kPa")):
+                if key in st:
+                    ax.plot(
+                        st["t_ms"],
+                        st[key],
+                        ls,
+                        color=COLORS[scheme],
+                        lw=1.6,
+                        label=f"{scheme}, dt {dt:g} ms",
+                    )
+                    any_line = True
+    if not any_line:
+        plt.close(fig)
+        return None
+    _style(axes[0], "t (ms)", "mean λ (-)", "Mean stretch")
+    _style(axes[1], "t (ms)", "mean Ta (kPa)", "Mean active tension")
+    _legend(axes[1])
+    return _save(fig, out, f"{stem}_timeseries.png")
+
+
+def _plot_split(
+    ax: Any,
+    scheme: str,
+    ok: list[tuple[float, float]],
+    failed: list[tuple[float, float]],
+) -> bool:
+    """A line of the runs that reached ``t_end``; failed runs as open markers, no line.
+
+    A run that failed early has a small, truncated error: it must not look accurate.
+    """
+    drawn = False
+    if ok:
+        ax.loglog(
+            *zip(*ok),
+            MARKERS[scheme] + "-",
+            color=COLORS[scheme],
+            lw=1.6,
+            ms=6,
+            label=scheme,
+        )
+        drawn = True
+    if failed:
+        ax.loglog(
+            *zip(*failed),
+            MARKERS[scheme],
+            color=COLORS[scheme],
+            markerfacecolor="none",
+            markeredgewidth=1.6,
+            ms=7,
+            linestyle="none",
+            label=None if ok else scheme,
+        )
+        drawn = True
+    return drawn
+
+
+def _failed_note(ax: Any) -> None:
+    ax.plot(
+        [],
+        [],
+        "o",
+        color=INK_2,
+        markerfacecolor="none",
+        markeredgewidth=1.6,
+        linestyle="none",
+        label="open: run failed (truncated)",
+    )
+
+
+def fig_error_dt(
+    lad: dict[str, dict[float, RunData]],
+    store: dict[tuple[str, float, str], Err],
+    refs: list[Reference],
+    grid: float | None,
+    out: Path,
+    stem: str,
+) -> str | None:
+    if not refs:
+        return None
+    norm = ta_norm(refs[0].series, grid)
+    panels: list[tuple[str, Callable[[Err], float]]] = [
+        ("RMS λ error", lambda e: e.lam_rms),
+        ("RMS Ta error / ref max RMS Ta", lambda e: safe_div(e.ta_rms, norm)),
+        ("max abs Δ mean λ", lambda e: e.lam_mean),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8))
+    any_line = False
+    any_failed = False
+    for ax, (label, f) in zip(axes, panels):
+        for scheme in SCHEMES:
+            ok: list[tuple[float, float]] = []
+            bad: list[tuple[float, float]] = []
+            for dt in sorted(lad.get(scheme, {})):
+                if (scheme, dt, "main") not in store:
+                    continue
+                v = f(store[(scheme, dt, "main")])
+                if not (np.isfinite(v) and v > 0):
+                    continue
+                (bad if lad[scheme][dt].failed else ok).append((dt, v))
+            any_failed |= bool(bad)
+            any_line |= _plot_split(ax, scheme, ok, bad)
+        xs = ax.get_xlim()
+        _style(ax, "dt (ms)", label + " vs " + refs[0].name.split(" dt")[0].lower())
+        ax.set_xlim(xs)
+    if not any_line:
+        plt.close(fig)
+        return None
+    if any_failed:
+        _failed_note(axes[0])
+    _legend(axes[0])
+    return _save(fig, out, f"{stem}_error_vs_dt.png")
+
+
+def fig_work_precision(
+    lad: dict[str, dict[float, RunData]],
+    store: dict[tuple[str, float, str], Err],
+    out: Path,
+    stem: str,
+) -> str | None:
+    fig, ax = plt.subplots(figsize=(5.6, 4))
+    any_line = False
+    any_failed = False
+    for scheme in SCHEMES:
+        ok: list[tuple[float, float]] = []
+        bad: list[tuple[float, float]] = []
+        labelled: list[tuple[float, float, float]] = []
+        for dt, run in sorted(lad.get(scheme, {}).items(), reverse=True):
+            e = store.get((scheme, dt, "main"))
+            mech = run.timings.get("mech_s")
+            if e is not None and mech and np.isfinite(e.lam_rms) and e.lam_rms > 0:
+                (bad if run.failed else ok).append((mech, e.lam_rms))
+                labelled.append((mech, e.lam_rms, dt))
+        any_failed |= bool(bad)
+        if _plot_split(ax, scheme, ok, bad):
+            any_line = True
+            for mech_t, err_v, dt_p in labelled:
+                ax.annotate(
+                    f"{dt_p:g}",
+                    (mech_t, err_v),
+                    textcoords="offset points",
+                    xytext=(4, 4),
+                    fontsize=7,
+                    color=INK_2,
+                )
+    if not any_line:
+        plt.close(fig)
+        return None
+    _style(
+        ax,
+        "mechanics wall time mech_s (s); points labelled with dt (ms)",
+        "RMS λ error vs reference",
+        "Work-precision",
+    )
+    if any_failed:
+        _failed_note(ax)
+    _legend(ax)
+    return _save(fig, out, f"{stem}_work_precision.png")
+
+
+def fig_newton(lad: dict[str, dict[float, RunData]], out: Path, stem: str) -> str | None:
+    counts: dict[float, int] = {}
+    for runs in lad.values():
+        for dt, run_ in runs.items():
+            if run_.steps.get("newton_iterations") is not None:
+                counts[dt] = counts.get(dt, 0) + 1
+    if not counts:
+        return None
+    dt = max(counts, key=lambda d: (counts[d], d))
+    fig, ax = plt.subplots(figsize=(6.4, 3.8))
+    for scheme in SCHEMES:
+        one = lad.get(scheme, {}).get(dt)
+        if one is not None and "newton_iterations" in one.steps:
+            ax.plot(
+                one.steps["t_ms"],
+                one.steps["newton_iterations"],
+                MARKERS[scheme] + "-",
+                color=COLORS[scheme],
+                lw=1.2,
+                ms=4,
+                label=scheme,
+            )
+    _style(ax, "t (ms)", "Newton iterations per step", f"Newton iterations, dt {dt:g} ms")
+    _legend(ax)
+    return _save(fig, out, f"{stem}_newton.png")
+
+
+def fig_regime(pts: dict[float, tuple[float, float]], out: Path, stem: str) -> str | None:
+    good = {dt: p for dt, p in pts.items() if np.isfinite(p[0])}
+    if not good:
+        return None
+    dts = sorted(good)
+    fig, ax = plt.subplots(figsize=(5.6, 4))
+    ax.loglog(
+        dts,
+        [good[d][0] for d in dts],
+        "^-",
+        color=COLORS["stabilized"],
+        lw=1.6,
+        ms=6,
+        label="max Ka_max over the run",
+    )
+    thr = [(d, good[d][1]) for d in dts if np.isfinite(good[d][1])]
+    if thr:
+        ax.loglog(*zip(*thr), "--", color=INK_2, lw=1.4, label="Kp + η/dt + ρh²/dt²")
+    _style(ax, "dt (ms)", "active stiffness (kPa)", "Ka_max against the naive threshold")
+    _legend(ax)
+    return _save(fig, out, f"{stem}_regime.png")
+
+
+def fig_biv(
+    lad: dict[str, dict[float, RunData]],
+    out: Path,
+    stem: str,
+    kind: str,
+) -> str | None:
+    """``kind`` is ``"pv"`` (PV loops) or ``"pt"`` (pressure in time), at dt 2 and 0.5."""
+    dts = [dt for dt in (2.0, 0.5) if any(dt in s and s[dt].log for s in lad.values())]
+    if not dts:
+        return None
+    fig, axes = plt.subplots(len(dts), 2, figsize=(9, 3.4 * len(dts)), squeeze=False)
+    for i, dt in enumerate(dts):
+        for j, vent in enumerate(("LV", "RV")):
+            ax = axes[i][j]
+            for scheme in SCHEMES:
+                r = lad.get(scheme, {}).get(dt)
+                if r is None or not r.log:
+                    continue
+                lg = r.log
+                vk, pk = f"V_{vent}_mL", f"p_{vent}_mmHg"
+                if vk not in lg or pk not in lg:
+                    continue
+                x = lg[vk] if kind == "pv" else lg["t_ms"]
+                ax.plot(x, lg[pk], "-", color=COLORS[scheme], lw=1.6, label=scheme)
+            xlabel = f"V_{vent} (mL)" if kind == "pv" else "t (ms)"
+            _style(ax, xlabel, f"p_{vent} (mmHg)", f"{vent}, dt {dt:g} ms")
+            _legend(ax)
+    name = "pv_loops" if kind == "pv" else "pressure_time"
+    return _save(fig, out, f"{stem}_{name}.png")
+
+
+# --------------------------------------------------------------------------------------
+# Assembly
+# --------------------------------------------------------------------------------------
+
+
+def group_section(
+    geometry: str,
+    group: str,
+    lad: dict[str, dict[float, RunData]],
+    out: Path,
+) -> str:
+    kind = kind_of(geometry, group)
+    stem = f"{geometry}_{group}"
+    refs = make_references(geometry, lad)
+    grid = grid_of(lad)
+    eps: float | None = None
+    eps_note = ""
+    if kind == "3d":
+        try:
+            eps, eps_note = choose_epsilon(lad)
+        except ValueError as exc:
+            print(f"[{stem}] {exc}", file=sys.stderr)
+            eps_note = f"ERROR, {exc}"
+    n = sum(len(v) for v in lad.values())
+    md = [
+        f"## {geometry} / {group}\n",
+        f"{n} runs: "
+        + ", ".join(
+            f"{s} (dt {', '.join(f'{d:g}' for d in sorted(lad[s], reverse=True))})"
+            for s in sorted(lad, key=lambda s: SCHEMES.index(s) if s in SCHEMES else 9)
+        )
+        + ".\n",
+    ]
+
+    def guarded(title: str, fn: Callable[[], str]) -> None:
+        md.append(f"### {title}\n")
+        try:
+            md.append(fn())
+        except Exception:  # never crash the report; say so in it
+            tb = traceback.format_exc()
+            print(f"[{stem}] {title} failed:\n{tb}", file=sys.stderr)
+            md.append(f"**This section failed to build:** `{tb.strip().splitlines()[-1]}`\n")
+
+    store: dict[tuple[str, float, str], Err] = {}
+
+    def acc() -> str:
+        text, st = accuracy_tables(lad, refs, grid)
+        store.update(st)
+        return text
+
+    guarded("Accuracy", acc)
+    guarded("Stability", lambda: stability_table(lad, kind, eps, eps_note))
+    guarded("Consistency of the stabilization", lambda: consistency_table(lad))
+    guarded("Cost", lambda: cost_table(lad, geometry, group))
+    pts_holder: dict[float, tuple[float, float]] = {}
+
+    def reg() -> str:
+        text, pts = regime_table(lad, kind, eps)
+        pts_holder.update(pts)
+        return text
+
+    guarded("Regime", reg)
+    if kind != "3d":
+        guarded("Newton convergence order", lambda: newton_order_table(lad))
+    if geometry == "biv":
+        guarded("Ventricles", lambda: biv_tables(lad, refs, grid))
+
+    figs: list[str] = []
+
+    def add(label: str, fn: Callable[[], str | None], cap: str) -> None:
+        try:
+            name = fn()
+        except Exception:
+            tb = traceback.format_exc()
+            print(f"[{stem}] figure {label} failed:\n{tb}", file=sys.stderr)
+            figs.append(f"**Figure `{label}` failed to build:** `{tb.strip().splitlines()[-1]}`\n")
+            plt.close("all")
+            return
+        figs.append(_img(name, cap) if name else f"_Figure `{label}`: no data._\n")
+
+    add(
+        "timeseries",
+        lambda: fig_timeseries(lad, out, stem),
+        "Mean λ and mean Ta in time; dashed: the coarsest dt of the scheme, solid: the finest.",
+    )
+    add(
+        "error_vs_dt",
+        lambda: fig_error_dt(lad, store, refs, grid, out, stem),
+        "Error against the reference, against dt (log-log), one line per scheme.",
+    )
+    add(
+        "work_precision",
+        lambda: fig_work_precision(lad, store, out, stem),
+        "Work-precision: RMS λ error against the mechanics wall time.",
+    )
+    add("newton", lambda: fig_newton(lad, out, stem), "Newton iterations per step.")
+    add(
+        "regime",
+        lambda: fig_regime(pts_holder, out, stem),
+        "Peak Ka against the naive scheme's threshold, per dt.",
+    )
+    if geometry == "biv":
+        add(
+            "pv_loops",
+            lambda: fig_biv(lad, out, stem, "pv"),
+            "PV loops per scheme at dt 2 and 0.5 ms.",
+        )
+        add(
+            "pressure_time",
+            lambda: fig_biv(lad, out, stem, "pt"),
+            "Ventricular pressure in time per scheme at dt 2 and 0.5 ms.",
+        )
+    md.append("### Figures\n")
+    md.extend(figs)
+    return "\n".join(md)
+
+
+def build_report(root: Path, out: Path) -> str:
+    out.mkdir(parents=True, exist_ok=True)
+    LOAD_PROBLEMS.clear()
+    ladders = discover(root)
+    order = {"element": 0, "slab": 1, "biv": 2}
+    md = [
+        "# Scheme comparison report\n",
+        f"Root: `{root}`. Generated {datetime.datetime.now(datetime.UTC):%Y-%m-%d %H:%M} UTC.\n",
+        "Metrics are those of the spec, §5. Within a group every error and order is taken over one "
+        "common grid, the multiples of the group's coarsest dt: the volume means of λ and Ta at "
+        "every step of `steps.csv` on it, the RMS of the fields at the snapshot times on it, the "
+        "BiV's V and p at `log.csv`'s rows on it. A reference is a monolithic run that reached "
+        "`t_end` (or, on the BiV, an extrapolation of two). A `*` after a dt marks a run that did "
+        'not reach `t_end`. A "—" is a value that does not exist (missing run, reference or '
+        "file, or undefined).\n",
+    ]
+    if LOAD_PROBLEMS:
+        md.append("## Load problems\n")
+        md.append(
+            "These files exist but could not be used. Whatever depended on them shows as "
+            '"—" or is absent from the tables below; it is not a missing run.\n',
+        )
+        md.extend(f"- {p}" for p in LOAD_PROBLEMS)
+        md.append("")
+    else:
+        md.append("No load problems: every run file present parsed.\n")
+    if not ladders:
+        md.append(
+            f"**No runs found under `{root}`** (expected "
+            "`<geometry>/<group>/<scheme>/dt<dt>/run.json`).\n",
+        )
+    for geometry, group in sorted(ladders, key=lambda k: (order.get(k[0], 9), k[1])):
+        try:
+            md.append(group_section(geometry, group, ladders[(geometry, group)], out))
+        except Exception:
+            tb = traceback.format_exc()
+            print(f"[{geometry}/{group}] failed:\n{tb}", file=sys.stderr)
+            md.append(
+                f"## {geometry} / {group}\n\n**Failed to build:** "
+                f"`{tb.strip().splitlines()[-1]}`\n",
+            )
+    text = "\n".join(md)
+    (out / "report.md").write_text(text)
+    return text
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--root", type=Path, required=True, help="directory of runs")
+    ap.add_argument("--out", type=Path, default=None, help="default <root>/report")
+    args = ap.parse_args()
+    out = args.out or args.root / "report"
+    build_report(args.root, out)
+    print(f"wrote {out / 'report.md'}")
+
+
+if __name__ == "__main__":
+    main()

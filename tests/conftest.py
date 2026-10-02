@@ -143,7 +143,7 @@ def _mechanics(
     *,
     quadrature_degree: int = 2,
     backend_quadrature_degree: int | None = None,
-    scheme: Literal["monolithic", "segregated"] = "monolithic",
+    scheme: Literal["monolithic", "segregated", "stabilized"] = "monolithic",
 ) -> tuple[pulse.StaticProblem, GeneratedActivation]:
     """The one-element setup of ``tests/test_monolithic_coupling.py``.
 
@@ -221,6 +221,7 @@ def _dynamic_mechanics(
     reference: bool = False,
     end_of_step: bool = True,
     quadrature_degree: int = 2,
+    scheme: Literal["monolithic", "segregated", "stabilized"] = "monolithic",
 ) -> tuple[pulse.DynamicProblem, GeneratedActivation]:
     """The pinned D1/D2 element: a one-element ``pulse.DynamicProblem``.
 
@@ -241,6 +242,8 @@ def _dynamic_mechanics(
     ``False`` on the instance *before* the problem is built: ``pulse.DynamicProblem``
     reads the flag when it compiles the form, i.e. in construction, not at solve
     time. This is the alpha_f variant.
+
+    ``scheme`` is the backend's coupling scheme.
     """
     mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
     mesh.geometry.x[:] *= 0.01
@@ -248,7 +251,13 @@ def _dynamic_mechanics(
     f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
     s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
 
-    backend = GeneratedActivation(mech_module, mesh, f0, quadrature_degree=quadrature_degree)
+    backend = GeneratedActivation(
+        mech_module,
+        mesh,
+        f0,
+        quadrature_degree=quadrature_degree,
+        scheme=scheme,
+    )
     if not end_of_step:
         backend.evaluate_at_end_of_step = False
 

@@ -91,6 +91,7 @@ dcansr
 dcass
 decaytime
 defence
+deletechars
 delta
 delta_epi
 deviatoric
@@ -167,6 +168,7 @@ gammas
 gammasu
 gammaw
 gammawu
+genfromtxt
 Gerarda
 GKb
 gmres
@@ -293,6 +295,7 @@ linestyle
 linf
 linspace
 lmbda
+lmean
 loadtxt
 loglevel
 Lssp
@@ -409,6 +412,7 @@ sarcomere
 sarcomeres
 savefig
 savetxt
+savez
 scale_drug_ICab
 scale_drug_ICaL
 scale_drug_IK1
@@ -474,6 +478,7 @@ subv
 sundnes
 superlu
 T
+tamean
 tauh
 tauj
 taujp
