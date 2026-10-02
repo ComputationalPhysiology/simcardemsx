@@ -567,7 +567,15 @@ def test_stiffness_is_the_derivative_of_the_stepped_tension(split_modules, schem
     rate = h * Tref / rs * (A * kappa(cs) * XS + A * kappa(cw) * XW)
     length = dh * Tref / rs * (XS * (1 + Zetas) + XW * Zetaw)
     assert rate.min() > 0  # the check is not vacuous
-    np.testing.assert_allclose(backend.stiffness_kPa.x.array, rate + length, rtol=1e-12)
+    # Round-off is measured against the size of the two terms, not of their sum. Where
+    # shortening drives the length path negative they cancel: at (0.85, 0.83), dt 0.05,
+    # monolithic, Ka = -13.6 kPa is +470 kPa of rate and -483 kPa of length, so a
+    # discrepancy of a few ulp in the terms is 1e-12 of the sum (seen on dolfinx nightly).
+    terms = np.abs(rate) + np.abs(length)
+    np.testing.assert_array_less(
+        np.abs(backend.stiffness_kPa.x.array - (rate + length)),
+        1e-12 * terms,
+    )
 
 
 def test_stiffness_at_rest_is_the_length_path(split_modules):
