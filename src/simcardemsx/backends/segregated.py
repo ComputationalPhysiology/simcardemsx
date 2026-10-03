@@ -1,7 +1,7 @@
 """The Ca_i split: a crossbridge contraction model, segregated but stabilized.
 
 The contraction model here is one of the NumPy models from ``crossbridge``, so
-unlike :class:`~simcardemsx.backends.zeta_split.ZetaSplitUFL` it cannot be
+unlike :class:`~simcardemsx.backends.generated.GeneratedActivation` it cannot be
 re-integrated inside the Newton iteration and cannot be differentiated by UFL.
 That forces the force-generation/mechanics interface to be **segregated**, and
 that is not a free choice: Regazzoni & Quarteroni (2021) show the naive
@@ -25,12 +25,23 @@ it is: a population of crossbridges acting as springs.
 Because crossbridge owns the whole contraction model, troponin included, this
 is the Ca_i split: calcium crosses in, and the troponin buffering flux
 ``J_TRPN`` must cross back, or the EP model's calcium transient runs unbuffered.
+
+The backend is a :class:`~simcardemsx.backends.base.CoupledBackend`, so
+:class:`~simcardemsx.controller.SimulationController` drives it. A step is a trial
+until it is accepted: :meth:`~CrossbridgeSegregated.begin_step` advances a deep copy
+of the model with the accepted stretch and writes its ``Ta`` and ``Ka`` into the
+stress, and :meth:`~CrossbridgeSegregated.post_solve` commits it once the solve has
+converged. A step whose solve fails is never accepted.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
+import warnings
+from collections.abc import Mapping
 
+import basix.ufl
 import crossbridge
 import dolfinx
 import numpy as np
@@ -38,6 +49,7 @@ import pulse
 import ufl
 
 from .. import units
+from ..averaging import make_averager
 from .base import Transfer
 
 logger = logging.getLogger(__name__)
@@ -60,8 +72,14 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         ``dolfinx.fem.functionspace`` spec. Defaults to ``("DG", 1)``, matching
         the zeta-split backend and the discretization used in the simcardems
         paper. Everything -- the ODE state, ``Ta``, ``Ka``, and
-        ``lambda_prev`` -- lives on this one space, which is what keeps the
+        ``lmbda_prev`` -- lives on this one space, which is what keeps the
         stabilization consistent.
+    quadrature_degree:
+        Instead of ``element``, a scalar quadrature space at this degree, as
+        :class:`~simcardemsx.backends.generated.GeneratedActivation` uses. Under
+        :class:`~simcardemsx.controller.SimulationController` it must equal the
+        quadrature degree of the mechanics form, which the controller checks.
+        Giving both ``element`` and ``quadrature_degree`` is a ``ValueError``.
     SL_ref:
         Sarcomere length [um] of the reference configuration, i.e. where
         ``lmbda == 1``. Defaults to the model's own slack length ``SL0``, which
@@ -78,41 +96,85 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         that tests can demonstrate the instability it removes; a False run is
         the non-convergent scheme described above.
 
+    Attributes
+    ----------
+    evaluate_at_end_of_step:
+        ``True`` (overriding :class:`pulse.active_model.ActiveModel`'s default): the
+        increment ``λ(u) - λ_n`` is measured from the stretch the model was advanced
+        with, so ``pulse.DynamicProblem`` must assemble ``S`` at the true end-of-step
+        displacement rather than at its ``alpha_f`` point. No effect under
+        ``pulse.StaticProblem``.
+    space, quadrature_degree, mesh:
+        The space everything below lives on, its quadrature degree (``None`` unless it
+        is a quadrature space), and the mechanics mesh.
+    inputs, outputs:
+        ``{"cai": cai}`` and ``{"J_TRPN": J_TRPN}``, in EP's mM and mM/ms.
+    lmbda_prev:
+        The accepted fibre stretch λ_n: the stretch the next step advances the model
+        with, and the one the stabilization measures its increment from.
+    Ta_current, Ka_current:
+        ``Ta`` and ``Ka`` (kPa; ``Ka`` per unit of the solver's λ) of the step being
+        solved, read by the stress form. :meth:`begin_step` writes them.
+    active_tension:
+        The accepted ``Ta`` averaged onto P1, in kPa.
+
     Notes
     -----
     Time is in **ms** here, matching the EP side and the rest of simcardemsx;
     crossbridge works in seconds, and the conversion happens in
-    :meth:`step`.
+    :meth:`begin_step`.
     """
+
+    evaluate_at_end_of_step = True
 
     def __init__(
         self,
         f0,
-        mesh,
+        mesh: dolfinx.mesh.Mesh,
         model: str | type = "Land2017",
         *,
-        element=("DG", 1),
+        element: tuple[str, int] | None = None,
+        quadrature_degree: int | None = None,
         SL_ref: float | None = None,
         trpnmax: float = units.TRPNMAX_MM,
         params: dict | None = None,
         stabilized: bool = True,
     ):
+        if element is not None and quadrature_degree is not None:
+            raise ValueError(
+                "Give the activation space as element or as quadrature_degree, not both "
+                f"(got element={element!r} and quadrature_degree={quadrature_degree})",
+            )
         self.f0 = f0
+        self.mesh = mesh
         self.trpnmax = trpnmax
         self.stabilized = stabilized
+        self.quadrature_degree = quadrature_degree
 
-        self.function_space = dolfinx.fem.functionspace(mesh, element)
+        if quadrature_degree is not None:
+            self.space = dolfinx.fem.functionspace(
+                mesh,
+                basix.ufl.quadrature_element(
+                    mesh.basix_cell(),
+                    value_shape=(),
+                    degree=quadrature_degree,
+                ),
+            )
+        else:
+            self.space = dolfinx.fem.functionspace(mesh, element or ("DG", 1))
 
         # One value per local dof, ghosts included, so the arrays line up with
         # x.array without a scatter before assembly. Mixing this convention with
         # size_local elsewhere is the classic way to break this in parallel.
-        num_cells = self.function_space.dofmap.index_map.size_local
-        num_cells += self.function_space.dofmap.index_map.num_ghosts
-        num_cells *= self.function_space.dofmap.index_map_bs
+        num_cells = self.space.dofmap.index_map.size_local
+        num_cells += self.space.dofmap.index_map.num_ghosts
+        num_cells *= self.space.dofmap.index_map_bs
         self.num_cells = num_cells
 
         ModelClass = crossbridge.get_model(model) if isinstance(model, str) else model
         self.model = ModelClass(num_cells=num_cells, params=params)
+        #: The step :meth:`begin_step` advanced, until :meth:`post_solve` commits it.
+        self._trial: crossbridge.base.CardiacActivationModel | None = None
 
         # Most models normalize length as Lambda = SL / SL0 and expose SL0.
         # RDQ18 does not: it uses SL directly in its overlap function Chi(SL),
@@ -136,21 +198,29 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         self.SL0 = SL_ref if model_SL0 is None else model_SL0
 
         self.u: dolfinx.fem.Function | None = None
+        self._lmbda_expression: dolfinx.fem.Expression | None = None
 
-        V = self.function_space
+        V = self.space
         self.cai = dolfinx.fem.Function(V, name="cai")
         self.J_TRPN = dolfinx.fem.Function(V, name="J_TRPN")
+        self.inputs = {"cai": self.cai}
+        self.outputs = {"J_TRPN": self.J_TRPN}
         self.Ta_current = dolfinx.fem.Function(V, name="Ta")
         self.Ka_current = dolfinx.fem.Function(V, name="Ka")
-        self.lmbda = dolfinx.fem.Function(V, name="lambda")
-        self.lmbda.x.array[:] = 1.0
-        #: The stretch the ODE was last advanced with. The stabilization term is
-        #: measured against exactly this, which is why both are set together in
-        #: :meth:`step` and nowhere else.
+        self._tension_kPa = dolfinx.fem.Function(V, name="tension_kPa")
+        self._stiffness_kPa = dolfinx.fem.Function(V, name="stiffness_kPa")
+        self.active_tension = dolfinx.fem.Function(
+            dolfinx.fem.functionspace(mesh, ("P", 1)),
+            name="active_tension",
+        )
+        self._average_tension = make_averager(self._tension_kPa, self.active_tension)
+
+        #: λ_n. The trial is advanced with exactly this array and the stabilization
+        #: measures its increment from this Function, which only :meth:`post_solve`
+        #: writes, after the solve.
         self.lmbda_prev = dolfinx.fem.Function(V, name="lambda_prev")
         self.lmbda_prev.x.array[:] = 1.0
-
-        # Stretch at the step before last, for the shortening velocity.
+        # λ_{n-1}, for the shortening velocity.
         self._lmbda_old = np.ones(num_cells)
 
         # The stress form itself is pulse's, not reimplemented here: one
@@ -171,6 +241,16 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
     # Coupling interface
     # ------------------------------------------------------------------
 
+    @property
+    def missing(self) -> Mapping[str, int]:
+        """What the backend needs from EP, name -> index: ``cai``."""
+        return {"cai": 0}
+
+    @property
+    def provides(self) -> Mapping[str, int]:
+        """What the backend hands to EP, name -> index: ``J_TRPN``."""
+        return {"J_TRPN": 0}
+
     def wants_from_ep(self) -> tuple[Transfer, ...]:
         """Intracellular calcium, in the EP model's own millimolar."""
         return (Transfer(name="cai", unit="mM"),)
@@ -187,79 +267,128 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
 
     @property
     def ep_inputs(self) -> dict[str, dolfinx.fem.Function]:
-        return {"cai": self.cai}
+        return self.inputs
 
     @property
     def ep_outputs(self) -> dict[str, dolfinx.fem.Function]:
-        return {"J_TRPN": self.J_TRPN}
+        return self.outputs
 
     def register(self, u: dolfinx.fem.Function) -> None:
-        """Receive the displacement from ``pulse.StaticProblem``."""
+        """Receive the displacement (``pulse.StaticProblem`` calls this) and compile
+        λ(u), which :meth:`post_solve` evaluates."""
         self.u = u
+        F = ufl.Identity(self.mesh.geometry.dim) + ufl.grad(u)
+        self._lmbda_expression = dolfinx.fem.Expression(
+            ufl.sqrt(ufl.inner((F.T * F) * self.f0, self.f0)),
+            self.space.element.interpolation_points,
+        )
 
-    def step(self, t: float, dt: float | None = None) -> None:
-        """Advance the contraction model by ``dt`` [ms], before the solve.
+    def begin_step(self, t_n: float, dt: float) -> None:
+        """Advance a trial copy of the model from ``t_n`` by ``dt`` [ms]; accept nothing.
 
-        Everything the stabilization depends on is set here, together:
+        The trial is a deep copy of the accepted model, so calling this again before
+        :meth:`post_solve` (a retried step) starts from the accepted state again. It
+        is advanced with ``inputs["cai"]``, the accepted stretch λ_n
+        (``lmbda_prev``), and the velocity (λ_n - λ_{n-1}) / dt. Its ``Ta`` and
+        ``Ka`` are written into ``Ta_current``/``Ka_current``, which the stress reads.
 
-        1. read the stretch produced by the *previous* solve,
-        2. advance the ODE with it, and with the velocity implied by it,
-        3. record it as ``lmbda_prev``, the point the stress increment is
-           measured from.
+        The stabilization measures its increment ``λ(u) - λ_n`` from ``lmbda_prev``,
+        the very array the trial was advanced with, and nothing writes it before
+        :meth:`post_solve`: the two cannot drift apart. If they did, the extra term
+        would stop being a consistent O(dt) perturbation and could destabilize the
+        solve it was added to stabilize.
 
-        Keeping (2) and (3) in one place is deliberate. If the stretch used to
-        advance the ODE and the one the stabilizer measures against ever drift
-        apart, the extra term stops being a consistent O(dt) perturbation and
-        can destabilize the solve it was added to stabilize.
+        At ``dt == 0`` the trial is not advanced, so the step is the identity.
         """
-        if dt is None:
-            raise ValueError("CrossbridgeSegregated.step requires an explicit dt [ms]")
+        trial = copy.deepcopy(self.model)
+        if dt > 0:
+            lmbda = self.lmbda_prev.x.array
+            # Velocity from the two most recent stretches. Passed explicitly rather
+            # than letting crossbridge finite-difference its own call history, which
+            # need not share this dt and would use a different lambda than the one
+            # the stabilization term is built on.
+            dt_s = units.ms_to_s(dt)
+            SL = units.stretch_to_sarcomere_length(lmbda, self.SL_ref)
+            dSL = units.stretch_to_sarcomere_length(lmbda - self._lmbda_old, self.SL_ref) / dt_s
+            Ca = units.calcium_to_crossbridge(self.cai.x.array)
+            trial.advance_step(dt_s, Ca, SL, dSL_vals=dSL)
+        self._trial = trial
 
-        lmbda = self._current_stretch()
-
-        # Velocity from the two most recent stretches. Passed explicitly rather
-        # than letting crossbridge finite-difference its own call history, which
-        # need not share this dt and would use a different lambda than the one
-        # the stabilization term is built on.
-        dt_s = units.ms_to_s(dt)
-        SL = units.stretch_to_sarcomere_length(lmbda, self.SL_ref)
-        dSL = units.stretch_to_sarcomere_length(lmbda - self._lmbda_old, self.SL_ref) / dt_s
-
-        Ca = units.calcium_to_crossbridge(self.cai.x.array)
-
-        self.model.advance_step(dt_s, Ca, SL, dSL_vals=dSL)
-
-        self.Ta_current.x.array[:] = self.model.get_active_tension()
+        self.Ta_current.x.array[:] = trial.get_active_tension()
         self.Ka_current.x.array[:] = units.active_stiffness_to_mechanics(
-            self.model.get_active_stiffness(),
+            trial.get_active_stiffness(),
             SL_ref=self.SL_ref,
             SL0=self.SL0,
         )
+
+    def step(self, t: float, dt: float | None = None) -> None:
+        """Deprecated alias of :meth:`begin_step`, which accepts nothing: call
+        :meth:`post_solve` after the solve to accept the step."""
+        warnings.warn(
+            "CrossbridgeSegregated.step is deprecated: call begin_step(t_n, dt), and "
+            "post_solve() after the solve to accept the step.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if dt is None:
+            raise ValueError("CrossbridgeSegregated.step requires an explicit dt [ms]")
+        self.begin_step(t, dt)
+
+    def post_solve(self) -> None:
+        """Accept the step :meth:`begin_step` prepared, after its solve converged.
+
+        Commits the trial; takes λ_n as λ_{n-1} and λ(u) at the converged
+        displacement as the new λ_n (without :meth:`register` there is no
+        displacement, and λ stays as it is); sets ``J_TRPN`` from the committed
+        model's calcium binding over the step; and records its ``Ta``/``Ka`` in
+        :attr:`tension_kPa`/:attr:`stiffness_kPa` and the P1 :attr:`active_tension`.
+
+        Raises
+        ------
+        RuntimeError
+            If no :meth:`begin_step` has been called since the last ``post_solve``.
+        """
+        if self._trial is None:
+            raise RuntimeError(
+                "post_solve() accepts the step begin_step() prepared, and begin_step() "
+                "has not been called since the last post_solve()",
+            )
+        self.model = self._trial
+        self._trial = None
+
+        self._lmbda_old = self.lmbda_prev.x.array.copy()
+        if self._lmbda_expression is not None:
+            self.lmbda_prev.interpolate(self._lmbda_expression)
+
         self.J_TRPN.x.array[:] = units.troponin_flux(
             self.model.get_calcium_binding_rate(),
             trpnmax_mM=self.trpnmax,
         )
-
-        self.lmbda.x.array[:] = lmbda
-        self.lmbda_prev.x.array[:] = lmbda
-        self._lmbda_old = lmbda
-
-    def post_solve(self) -> None:
-        """Nothing to do.
-
-        Deliberately empty. Unlike the zeta split, this backend captures the
-        stretch at the *start* of a step, so that the value the ODE was advanced
-        with and the value the stabilization measures against are provably the
-        same array. Recording anything here would reintroduce the possibility of
-        those two diverging.
-        """
+        self._tension_kPa.x.array[:] = self.Ta_current.x.array
+        self._stiffness_kPa.x.array[:] = self.Ka_current.x.array
+        self._average_tension()
 
     @property
-    def active_tension(self) -> dolfinx.fem.Function:
-        return self.Ta_current
+    def tension_kPa(self) -> dolfinx.fem.Function:
+        """``Ta`` of the last accepted step, in kPa, on :attr:`space` (read-only).
+
+        The ``Function`` :meth:`post_solve` writes in place and :attr:`active_tension`
+        is averaged from. ``Ta_current`` holds the same values once the step is
+        accepted, but :meth:`begin_step` overwrites it with the next trial's.
+        """
+        return self._tension_kPa
+
+    @property
+    def stiffness_kPa(self) -> dolfinx.fem.Function:
+        """``Ka`` of the last accepted step, in kPa per unit of the solver's λ, on
+        :attr:`space` (read-only): the continuous rate path of R&Q's Eq. (42), as
+        crossbridge reports it, rescaled by ``SL_ref / SL0``. With ``stabilized=False``
+        it is still reported, although the stress does not use it."""
+        return self._stiffness_kPa
 
     @property
     def active_stiffness(self) -> dolfinx.fem.Function:
+        """``Ka_current``: ``Ka`` of the step being solved, from :meth:`begin_step`."""
         return self.Ka_current
 
     # ------------------------------------------------------------------
@@ -293,20 +422,3 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
 
     def P(self, F: ufl.core.expr.Expr, dev: bool = False) -> ufl.core.expr.Expr:
         return F * self.S(F.T * F, dev=dev)
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    def _current_stretch(self) -> np.ndarray:
-        """Fibre stretch of the current displacement, on the activation space."""
-        if self.u is None:
-            return np.ones(self.num_cells)
-        F = ufl.Identity(3) + ufl.grad(self.u)
-        expr = dolfinx.fem.Expression(
-            ufl.sqrt(ufl.inner((F.T * F) * self.f0, self.f0)),
-            self.function_space.element.interpolation_points,
-        )
-        out = dolfinx.fem.Function(self.function_space)
-        out.interpolate(expr)
-        return out.x.array.copy()

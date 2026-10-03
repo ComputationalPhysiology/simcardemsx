@@ -6,11 +6,11 @@ is coupled to mechanics. See :mod:`simcardemsx.backends.base` for the
 ``CoupledBackend`` protocol and why the differences matter.
 
 The controller drives a backend through :class:`CoupledBackend`;
-:class:`GeneratedActivation` is one. What crosses between EP and activation is
-derived from the two generated modules by :func:`simcardemsx.transfer_plan.resolve`
-and moved by :class:`simcardemsx.transfer_plan.TransferPlan`. :class:`ZetaSplitUFL`
-and :class:`CrossbridgeSegregated` are driven directly against ``pulse`` and declare
-their crossings with :class:`Transfer`.
+:class:`GeneratedActivation` and :class:`CrossbridgeSegregated` are two. What crosses
+between EP and activation is derived from the EP module and the backend's
+``missing``/``provides`` by :func:`simcardemsx.transfer_plan.resolve` and moved by
+:class:`simcardemsx.transfer_plan.TransferPlan`. :class:`ZetaSplitUFL` is driven
+directly against ``pulse`` and declares its crossings with :class:`Transfer`.
 
 ======================================  ================================  =================
 Backend                                 Coupling                          Split

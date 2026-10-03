@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -7,6 +7,7 @@ from typing import Literal
 from mpi4py import MPI
 
 import beat
+import crossbridge
 import dolfinx
 import numpy as np
 import pulse
@@ -35,6 +36,11 @@ def calcium(t: float) -> float:
     return 1e-4 + 9e-4 * (tau / 20.0) * np.exp(1.0 - tau / 20.0)
 
 
+def _f0(mesh: dolfinx.mesh.Mesh) -> dolfinx.fem.Constant:
+    """The fibre direction of the one-element tests: x, as a Constant."""
+    return dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
+
+
 #: Differences of λ smaller than this are round-off, not a change of direction.
 _FLAT = 1e-12
 
@@ -55,6 +61,67 @@ def _reversals(trace: np.ndarray) -> int:
     steps = np.diff(trace)
     steps = steps[np.abs(steps) >= _FLAT]
     return int(np.count_nonzero(np.diff(np.sign(steps))))
+
+
+def land2017_from_ode(mech_module: ModuleType) -> dict[str, float]:
+    """crossbridge ``Land2017`` parameters for the ``.ode``'s Land, from ``mech_module``'s values.
+
+    The mapping of sub-project 5's X4 probe: rates from per ms to per s (x1000); ``Tref``
+    and ``a`` from kPa to Pa (x1000), since crossbridge's tension formula is in Pa;
+    ``eta_l``/``eta_s`` from ms to s (/1000); ``ca50_ref`` is ``cat50_ref`` (uM in both);
+    ``SL0`` is crossbridge's own 1.8 um. crossbridge's defaults differ (e.g. ``kuw`` 26/s
+    against 182/s, ``Tref`` 40.5 against 120 kPa, ``ca50_ref`` 2.5 against 0.805 uM).
+    """
+    values = mech_module.init_parameter_values()
+    P = {name: float(values[index]) for name, index in mech_module.parameter.items()}
+    return dict(
+        SL0=1.8,
+        a=P["p_a"] * 1000,
+        b=P["p_b"],
+        k=P["p_k"],
+        eta_l=P["etal"] / 1000,
+        eta_s=P["etas"] / 1000,
+        k_trpn=P["ktrpn"] * 1000,
+        ntrpn=P["ntrpn"],
+        ca50_ref=P["cat50_ref"],
+        ku=P["ku"] * 1000,
+        nTm=P["ntm"],
+        trpn50=P["Trpn50"],
+        kuw=P["kuw"] * 1000,
+        kws=P["kws"] * 1000,
+        rw=P["rw"],
+        rs=P["rs"],
+        gs=P["gammas"] * 1000,
+        gw=P["gammaw"] * 1000,
+        phi=P["phi"],
+        Aeff=P["Tot_A"],
+        beta0=P["Beta0"],
+        beta1=P["Beta1"],
+        Tref=P["Tref"] * 1000,
+    )
+
+
+#: crossbridge ``Land2017``'s state attributes, by the ``.ode``'s state names.
+_LAND2017_STATES = {
+    "CaTRPN": "CaTrpn",
+    "B": "TmB",
+    "S": "XS",
+    "W": "XW",
+    "Zs": "Zetas",
+    "Zw": "Zetaw",
+    "Cd": "Cd",
+}
+
+
+def match_land2017_initial_states(model: crossbridge.Land2017, mech_module: ModuleType) -> None:
+    """Set ``model``'s states, at every point, to ``mech_module``'s initial ones.
+
+    crossbridge's own ``reset()`` starts at B = 0 with CaTRPN at its rest value; the
+    ``.ode`` starts at TmB = 1, CaTrpn = 1e-8 and the rest 0.
+    """
+    init = mech_module.init_state_values()
+    for attribute, name in _LAND2017_STATES.items():
+        getattr(model, attribute)[:] = init[mech_module.state[name]]
 
 
 @pytest.fixture(scope="session")
@@ -144,25 +211,38 @@ def _mechanics(
     quadrature_degree: int = 2,
     backend_quadrature_degree: int | None = None,
     scheme: Literal["monolithic", "segregated", "stabilized"] = "monolithic",
-) -> tuple[pulse.StaticProblem, GeneratedActivation]:
+    backend_factory: Callable[
+        [dolfinx.mesh.Mesh, dolfinx.fem.Constant, int],
+        pulse.active_model.ActiveModel,
+    ]
+    | None = None,
+) -> tuple[pulse.StaticProblem, pulse.active_model.ActiveModel]:
     """The one-element setup of ``tests/test_monolithic_coupling.py``.
 
     Holzapfel-Ogden (transversely isotropic), incompressible, rollers on the three
     faces through the origin, ``snes_atol`` = :data:`SNES_ATOL`. The backend's
     quadrature degree defaults to the geometry's.
+
+    The backend is a :class:`GeneratedActivation` of ``mech_module`` with ``scheme``,
+    or, with ``backend_factory``, ``backend_factory(mesh, f0, backend_quadrature_degree)``
+    (``mech_module`` and ``scheme`` are then not read).
     """
     geometry = pulse.Geometry(mesh=mesh, metadata={"quadrature_degree": quadrature_degree})
     f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
     s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
     if backend_quadrature_degree is None:
         backend_quadrature_degree = quadrature_degree
-    backend = GeneratedActivation(
-        mech_module,
-        mesh,
-        f0,
-        quadrature_degree=backend_quadrature_degree,
-        scheme=scheme,
-    )
+    backend: pulse.active_model.ActiveModel
+    if backend_factory is not None:
+        backend = backend_factory(mesh, f0, backend_quadrature_degree)
+    else:
+        backend = GeneratedActivation(
+            mech_module,
+            mesh,
+            f0,
+            quadrature_degree=backend_quadrature_degree,
+            scheme=scheme,
+        )
     material = pulse.HolzapfelOgden(
         f0=f0,
         s0=s0,

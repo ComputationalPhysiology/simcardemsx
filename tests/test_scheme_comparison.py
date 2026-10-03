@@ -118,7 +118,8 @@ def _run_info(t_end: float) -> dict:
 
 
 def _backend(split_modules, **kw):
-    from test_generated_activation import _f0, _prescribed
+    from conftest import _f0
+    from test_generated_activation import _prescribed
 
     mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
     u = _prescribed(mesh, 1.0)

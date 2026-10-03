@@ -1,9 +1,12 @@
 """The coupled time step: EP micro-steps, then one mechanics solve, values crossing both ways.
 
-What crosses is derived from the two generated modules (:func:`~simcardemsx.transfer_plan.
-resolve`), and moved by a :class:`~simcardemsx.transfer_plan.TransferPlan`. Only
-:class:`~simcardemsx.backends.GeneratedActivation` is supported here; the older backends
-remain usable directly against ``pulse``.
+What crosses is derived from the EP module and the backend's ``missing``/``provides``
+(:func:`~simcardemsx.transfer_plan.resolve`), and moved by a
+:class:`~simcardemsx.transfer_plan.TransferPlan`. The backend is a
+:class:`~simcardemsx.backends.base.CoupledBackend`:
+:class:`~simcardemsx.backends.GeneratedActivation` or
+:class:`~simcardemsx.backends.CrossbridgeSegregated`. The deprecated
+:class:`~simcardemsx.backends.ZetaSplitUFL` remains usable directly against ``pulse``.
 """
 
 from __future__ import annotations
@@ -43,9 +46,10 @@ class SimulationController:
     backend:
         The activation backend. Must be ``mechanics.problem.model.active``.
     ode_modules:
-        The two modules generated from the ``.ode`` file ``ep_solver`` and ``backend``
-        were built from. Only ``ode_modules.ep`` is read: what crosses is resolved
-        between it and the backend, and ``ode_modules.mechanics`` is no longer read.
+        The two modules generated from the ``.ode`` file ``ep_solver`` was built from
+        (and a ``GeneratedActivation`` backend, from its ``mechanics``). Only
+        ``ode_modules.ep`` is read: what crosses is resolved between it and the
+        backend, and ``ode_modules.mechanics`` is no longer read.
     dt_mech, dt_ep:
         Mechanics and EP time steps, in ms. ``dt_mech`` must be a whole multiple of
         ``dt_ep``.

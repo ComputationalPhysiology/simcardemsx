@@ -6,12 +6,13 @@ different numerical choices -- where the EP/mechanics split is cut, and whether
 the force-generation model is coupled monolithically or in a segregated way.
 
 The controller drives a backend through the :class:`CoupledBackend` protocol below;
-what crosses between EP and activation is derived from the two generated modules by
-:func:`simcardemsx.transfer_plan.resolve` and moved by
+what crosses between EP and activation is derived from the EP module and the backend's
+``missing``/``provides`` by :func:`simcardemsx.transfer_plan.resolve` and moved by
 :class:`simcardemsx.transfer_plan.TransferPlan`. :class:`~simcardemsx.backends.generated.
-GeneratedActivation` is one. :class:`ZetaSplitUFL` and :class:`CrossbridgeSegregated`
-are driven directly against ``pulse``, and declare their crossings with
-:class:`Transfer` instead.
+GeneratedActivation` and :class:`~simcardemsx.backends.segregated.CrossbridgeSegregated`
+are two; ``CrossbridgeSegregated`` also documents the units of its crossings with
+:class:`Transfer` records. :class:`ZetaSplitUFL` is driven directly against ``pulse``,
+and declares its crossings with :class:`Transfer` instead.
 
 That matters more than usual here, because the choices are not equivalent.
 A segregated coupling of force generation to mechanics is unstable, and in

@@ -24,7 +24,7 @@ import numpy as np
 import pulse
 import pytest
 import ufl
-from conftest import calcium
+from conftest import _f0, calcium
 
 from simcardemsx.averaging import make_averager
 from simcardemsx.backends import GeneratedActivation
@@ -55,10 +55,6 @@ def _numpy_mech(split: str) -> types.ModuleType:
 
 def _mesh() -> dolfinx.mesh.Mesh:
     return dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
-
-
-def _f0(mesh):
-    return dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
 
 
 def _set_stretch(u: dolfinx.fem.Function, stretch: float) -> None:
