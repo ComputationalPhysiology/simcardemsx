@@ -12,14 +12,13 @@ import logging
 from typing import TYPE_CHECKING, Callable
 
 import beat
-import numpy as np
 import pulse
 
 from .mechanics import as_driver
 from .transfer_plan import TransferPlan, resolve
 
 if TYPE_CHECKING:
-    from .backends import GeneratedActivation
+    from .backends.base import CoupledBackend
     from .mechanics import MechanicsDriver
     from .ode_model import ODEModules
 
@@ -45,7 +44,8 @@ class SimulationController:
         The activation backend. Must be ``mechanics.problem.model.active``.
     ode_modules:
         The two modules generated from the ``.ode`` file ``ep_solver`` and ``backend``
-        were built from.
+        were built from. Only ``ode_modules.ep`` is read: what crosses is resolved
+        between it and the backend, and ``ode_modules.mechanics`` is no longer read.
     dt_mech, dt_ep:
         Mechanics and EP time steps, in ms. ``dt_mech`` must be a whole multiple of
         ``dt_ep``.
@@ -68,7 +68,7 @@ class SimulationController:
         self,
         mechanics: MechanicsDriver | pulse.StaticProblem,
         ep_solver: beat.MonodomainSplittingSolver,
-        backend: GeneratedActivation,
+        backend: CoupledBackend,
         ode_modules: ODEModules,
         dt_mech: float,
         dt_ep: float,
@@ -131,7 +131,7 @@ class SimulationController:
         self.ep_steps_per_mech = ep_steps_per_mech
 
         self.plan = TransferPlan(
-            resolve(ode_modules.ep, ode_modules.mechanics),
+            resolve(ode_modules.ep, backend),
             ode_modules.ep,
             ode,
             backend,
@@ -169,8 +169,7 @@ class SimulationController:
 
         self.plan.forward(self.t)
 
-        self.backend.t.value = np.asarray(t_n)
-        self.backend.dt.value = np.asarray(self.dt_mech)
+        self.backend.begin_step(t_n, self.dt_mech)
         ok = self.mechanics.advance(t_n, self.dt_mech)
         if not ok:
             raise RuntimeError(

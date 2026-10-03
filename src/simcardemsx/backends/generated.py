@@ -54,6 +54,7 @@ from typing import Any, Literal, NamedTuple
 
 import basix.ufl
 import dolfinx
+import numpy as np
 import pulse
 import ufl
 
@@ -429,6 +430,21 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
     # ------------------------------------------------------------------
     # pulse.ActiveModel
     # ------------------------------------------------------------------
+
+    @property
+    def missing(self) -> Mapping[str, int]:
+        """What the activation module needs from EP, name -> index."""
+        return getattr(self.module, "missing", {})
+
+    @property
+    def provides(self) -> Mapping[str, int]:
+        """What the activation module hands to EP, name -> index."""
+        return self.module.provides
+
+    def begin_step(self, t_n: float, dt: float) -> None:
+        """Set the step's start time and length (ms), read when the form is assembled."""
+        self.t.value = np.asarray(t_n)
+        self.dt.value = np.asarray(dt)
 
     def register(self, u: dolfinx.fem.Function) -> None:
         """Receive the displacement (``pulse.StaticProblem`` calls this) and compile

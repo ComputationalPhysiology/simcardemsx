@@ -28,6 +28,7 @@ from conftest import ELLIPSOID_DT_MS, _ellipsoid_ep_mechanics
 from pulse.circulation import mL, mmHg
 from pulse.cycle import CycleController, CycleParams, Phase, PrescribedInflow, Windkessel
 
+from simcardemsx.backends import GeneratedActivation
 from simcardemsx.controller import SimulationController
 from simcardemsx.mechanics import Cycle
 
@@ -194,6 +195,7 @@ def _accepted(controller: SimulationController) -> dict[str, np.ndarray]:
     And the mechanics unknowns, the displacement and the cavity pressure.
     """
     backend = controller.backend
+    assert isinstance(backend, GeneratedActivation)
     problem = controller.mechanics.problem
     ode = controller.ep_solver.ode
     assert isinstance(ode, beat.odesolver.DolfinODESolver)

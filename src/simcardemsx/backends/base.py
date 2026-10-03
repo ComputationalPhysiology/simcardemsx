@@ -5,14 +5,13 @@ and how it reaches the mechanics solve. Different backends make genuinely
 different numerical choices -- where the EP/mechanics split is cut, and whether
 the force-generation model is coupled monolithically or in a segregated way.
 
-Only :class:`ZetaSplitUFL` and :class:`CrossbridgeSegregated` implement the
-``ActivationBackend`` protocol below. :class:`~simcardemsx.backends.generated.
-GeneratedActivation` does not: it has no ``wants_from_ep``/``gives_to_ep``/
-``ep_inputs``, since what crosses between EP and activation is instead derived
-from the two generated modules by :func:`simcardemsx.transfer_plan.resolve` and
-moved by :class:`simcardemsx.transfer_plan.TransferPlan`. It is also the only
-backend driven through :class:`~simcardemsx.controller.SimulationController`
-rather than directly against ``pulse``.
+The controller drives a backend through the :class:`CoupledBackend` protocol below;
+what crosses between EP and activation is derived from the two generated modules by
+:func:`simcardemsx.transfer_plan.resolve` and moved by
+:class:`simcardemsx.transfer_plan.TransferPlan`. :class:`~simcardemsx.backends.generated.
+GeneratedActivation` is one. :class:`ZetaSplitUFL` and :class:`CrossbridgeSegregated`
+are driven directly against ``pulse``, and declare their crossings with
+:class:`Transfer` instead.
 
 That matters more than usual here, because the choices are not equivalent.
 A segregated coupling of force generation to mechanics is unstable, and in
@@ -35,10 +34,9 @@ external-operator backend ``Ta`` is opaque by construction. This is fine:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Mapping, Protocol
+from typing import Literal, Mapping, Protocol, runtime_checkable
 
 import dolfinx
-import ufl
 
 
 @dataclass(frozen=True)
@@ -46,8 +44,8 @@ class Transfer:
     """One variable crossing between the EP and mechanics subsystems.
 
     A bare name is not enough to drive a transfer. The direction is carried by
-    which method returns the ``Transfer`` (:meth:`ActivationBackend.wants_from_ep`
-    or :meth:`ActivationBackend.gives_to_ep`); the rest is here.
+    which backend method returns the ``Transfer`` (``wants_from_ep`` or
+    ``gives_to_ep``); the rest is here.
 
     Attributes
     ----------
@@ -70,88 +68,52 @@ class Transfer:
     kind: Literal["state", "monitor"] = "state"
 
 
-class ActivationBackend(Protocol):
-    """What the coupler and the mechanics problem require of a backend.
+@runtime_checkable
+class CoupledBackend(Protocol):
+    """What :class:`~simcardemsx.controller.SimulationController` requires of a backend.
 
-    Lifecycle, once per mechanics time step::
+    Once per mechanics time step the controller calls, in this order::
 
-        backend.step(t, dt)     # advance activation using the EP inputs and
-                                # the stretch from the *previous* solve
-        problem.solve()         # Newton
-        backend.post_solve()    # record the new stretch; advance anything
-                                # that needed the updated displacement
+        backend.begin_step(t_n, dt)   # t_n is the old time, dt the mechanics step (ms)
+        mechanics.advance(t_n, dt)    # the Newton solve
+        backend.post_solve()          # accept the step
+        # then TransferPlan.backward() reads ``outputs``
 
-    The ordering is not cosmetic. Whatever stretch a backend uses to advance
-    its activation in ``step`` must be the same one it measures the increment
-    against afterwards, or a stabilized scheme stops being consistent.
+    Nothing is accepted before ``post_solve``: until then the backend's stored states,
+    ``outputs`` and ``active_tension`` are those of the last accepted step, so a step
+    whose solve fails leaves them untouched. ``begin_step`` only prepares the step.
+
+    What crosses between EP and the backend is derived by
+    :func:`simcardemsx.transfer_plan.resolve` from ``missing`` and ``provides``, the
+    name -> index dicts of the generated activation module, and moved through
+    ``inputs`` (EP -> backend, filled before ``begin_step``) and ``outputs``
+    (backend -> EP, read after ``post_solve``), all on ``space``.
     """
 
-    # -- pulse.ActiveModel ---------------------------------------------------
-
-    def S(self, C: ufl.core.expr.Expr, dev: bool = False) -> ufl.core.expr.Expr:
-        """Active second Piola-Kirchhoff stress."""
-        ...
-
-    def P(self, F: ufl.core.expr.Expr, dev: bool = False) -> ufl.core.expr.Expr:
-        """Active first Piola-Kirchhoff stress."""
-        ...
-
-    def Fe(self, F: ufl.core.expr.Expr) -> ufl.core.expr.Expr:
-        """Elastic part of the deformation gradient (identity for active stress)."""
-        ...
-
-    def register(self, u: dolfinx.fem.Function) -> None:
-        """Receive the displacement field. Called by ``pulse.StaticProblem``."""
-        ...
-
-    # -- coupling ------------------------------------------------------------
-
-    def wants_from_ep(self) -> tuple[Transfer, ...]:
-        """Variables this backend needs transferred from the EP subsystem."""
-        ...
-
-    def gives_to_ep(self) -> tuple[Transfer, ...]:
-        """Variables this backend supplies back to the EP subsystem.
-
-        Rarely empty, and never safely ignored: a split that moves calcium
-        buffering out of the EP model has to return the buffering flux, or the
-        EP calcium transient is wrong with nothing raised.
-        """
+    @property
+    def missing(self) -> Mapping[str, int]:
+        """What the activation module needs from EP, name -> index."""
         ...
 
     @property
-    def ep_inputs(self) -> Mapping[str, dolfinx.fem.Function]:
-        """Functions the coupler fills with the :meth:`wants_from_ep` variables.
-
-        The backend owns these, on whatever space it evaluates activation on,
-        so the coupler interpolates into them rather than deciding where they
-        live.
-        """
+    def provides(self) -> Mapping[str, int]:
+        """What the activation module hands to EP, name -> index."""
         ...
 
     @property
-    def ep_outputs(self) -> Mapping[str, dolfinx.fem.Function]:
-        """Functions holding the :meth:`gives_to_ep` variables, for the coupler
-        to transfer back to the EP mesh.
-
-        The mirror of :attr:`ep_inputs`. Kept symmetric because the return path
-        is as load-bearing as the forward one and is easier to forget.
-        """
+    def quadrature_degree(self) -> int | None:
+        """The degree of the quadrature space the states live on, if they live on one."""
         ...
 
-    def step(self, t: float, dt: float | None = None) -> None:
-        """Advance activation to time ``t``, before the mechanics solve."""
+    inputs: dict[str, dolfinx.fem.Function]
+    outputs: dict[str, dolfinx.fem.Function]
+    space: dolfinx.fem.FunctionSpace
+    active_tension: dolfinx.fem.Function
+
+    def begin_step(self, t_n: float, dt: float) -> None:
+        """Prepare the step from ``t_n`` to ``t_n + dt`` (ms)."""
         ...
 
     def post_solve(self) -> None:
-        """Update state that depends on the just-computed displacement."""
-        ...
-
-    @property
-    def active_tension(self) -> dolfinx.fem.Function:
-        """Active tension of the last completed step, for output.
-
-        Named in full rather than ``Ta`` because backends may already use that
-        name for a UFL-valued method of the stretch.
-        """
+        """Accept the converged step."""
         ...
