@@ -82,13 +82,35 @@ def _assert_same_states(actual: dict[str, np.ndarray], expected: dict[str, np.nd
         np.testing.assert_array_equal(actual[name], value, err_msg=name)
 
 
-def _stretched(mesh, stretch: float) -> dolfinx.fem.Function:
-    """A P2 displacement whose fibre (x) stretch is exactly ``stretch`` everywhere."""
-    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("P", 2, (3,))))
+def _set_stretch(u: dolfinx.fem.Function, stretch: float) -> None:
+    """Set ``u`` in place so that its fibre (x) stretch is exactly ``stretch`` everywhere."""
     u.interpolate(
         lambda x: np.vstack([(stretch - 1.0) * x[0], np.zeros_like(x[1]), np.zeros_like(x[2])]),
     )
+
+
+def _stretched(mesh, stretch: float) -> dolfinx.fem.Function:
+    """A P2 displacement whose fibre (x) stretch is exactly ``stretch`` everywhere."""
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("P", 2, (3,))))
+    _set_stretch(u, stretch)
     return u
+
+
+@pytest.fixture
+def advanced_with(monkeypatch) -> list[tuple[np.ndarray, np.ndarray]]:
+    """``(SL, dSL)`` of every ``crossbridge.Land2017.advance_step`` call, in order.
+
+    Patched on the class, so it also sees the deep-copied trials ``begin_step`` makes.
+    """
+    calls: list[tuple[np.ndarray, np.ndarray]] = []
+    advance_step = crossbridge.Land2017.advance_step
+
+    def record(model, dt, Ca_val, SL_vals, dSL_vals=None):
+        calls.append((np.array(SL_vals, copy=True), np.array(dSL_vals, copy=True)))
+        advance_step(model, dt, Ca_val, SL_vals, dSL_vals=dSL_vals)
+
+    monkeypatch.setattr(crossbridge.Land2017, "advance_step", record)
+    return calls
 
 
 def _integrate(expr, mesh):
@@ -407,8 +429,12 @@ def test_is_evaluated_at_the_end_of_the_step(mesh, f0):
 def test_post_solve_accepts_the_step(mesh, f0):
     """``begin_step`` advances a trial and accepts nothing: the model, the stretch, the
     reported tension and stiffness, ``active_tension`` and ``J_TRPN`` are those of the
-    last accepted step until ``post_solve`` commits it."""
-    backend = _drive(CrossbridgeSegregated(f0=f0, mesh=mesh), n=4)
+    last accepted step until ``post_solve`` commits it.
+
+    ``SL_ref`` is not Land2017's ``SL0`` (1.8 um), so that the stiffness's rescaling is
+    not the identity."""
+    backend = _drive(CrossbridgeSegregated(f0=f0, mesh=mesh, SL_ref=2.0), n=4)
+    assert backend.SL0 == 1.8
     states = _model_states(backend.model)
     reported = {
         name: getattr(backend, name).x.array.copy()
@@ -428,39 +454,88 @@ def test_post_solve_accepts_the_step(mesh, f0):
     _assert_same_states(_model_states(backend.model), trial)
     np.testing.assert_array_equal(backend.tension_kPa.x.array, backend.model.get_active_tension())
     np.testing.assert_array_equal(
+        backend.stiffness_kPa.x.array,
+        units.active_stiffness_to_mechanics(
+            backend.model.get_active_stiffness(),
+            SL_ref=2.0,
+            SL0=1.8,
+        ),
+    )
+    assert not np.array_equal(backend.stiffness_kPa.x.array, reported["stiffness_kPa"])
+    np.testing.assert_array_equal(
         backend.J_TRPN.x.array,
         units.troponin_flux(backend.model.get_calcium_binding_rate()),
     )
     assert not np.array_equal(backend.active_tension.x.array, reported["active_tension"])
 
 
-def test_lambda_prev_is_the_stretch_the_ode_used(mesh, f0, monkeypatch):
+def test_lambda_prev_is_the_stretch_the_ode_used(mesh, f0, advanced_with):
     """The invariant the whole scheme rests on (ADR 0002): the stretch the trial is
-    advanced with is the stabilization's ``lmbda_prev``, the point its increment
-    ``λ(u) - λ_n`` is measured from during the solve."""
+    advanced with is the stabilization's ``lmbda_prev``, the accepted λ_n its increment
+    ``λ(u) - λ_n`` is measured from during the solve, and not λ of wherever ``u`` is.
+    The shortening velocity is (λ_n - λ_{n-1}) SL_ref / dt, in um/s, and accepting a
+    step shifts λ_n to λ_{n-1}.
+
+    The velocities are compared bit for bit, computed in the backend's order of
+    operations, from the accepted stretches."""
     backend = CrossbridgeSegregated(f0=f0, mesh=mesh)
-    backend.register(_stretched(mesh, 0.92))
+    u = _stretched(mesh, 0.92)
+    backend.register(u)
     backend.cai.x.array[:] = 1e-3
+    dt_s = 0.5e-3
     backend.begin_step(0.0, 0.5)
-    backend.post_solve()  # accepts λ(u) = 0.92 as λ_n
+    backend.post_solve()  # accepts λ(u) = 0.92 as λ_n, with λ_{n-1} = 1
+    lmbda_n = backend.lmbda_prev.x.array.copy()
+    np.testing.assert_allclose(lmbda_n, 0.92, rtol=1e-9)
 
-    passed: list[np.ndarray] = []
-    advance_step = crossbridge.Land2017.advance_step
-
-    def record(model, dt, Ca_val, SL_vals, dSL_vals=None):
-        passed.append(np.array(SL_vals, copy=True))
-        advance_step(model, dt, Ca_val, SL_vals, dSL_vals=dSL_vals)
-
-    monkeypatch.setattr(crossbridge.Land2017, "advance_step", record)
+    # u moves before the next step, as a failed solve leaves it.
+    _set_stretch(u, 0.97)
+    advanced_with.clear()
     backend.begin_step(0.5, 0.5)
 
-    (SL,) = passed
-    lmbda_prev = backend._active.lmbda_prev.x.array
-    np.testing.assert_allclose(lmbda_prev, 0.92, rtol=1e-9)
-    np.testing.assert_array_equal(
-        SL,
-        units.stretch_to_sarcomere_length(lmbda_prev, backend.SL_ref),
-    )
+    ((SL, dSL),) = advanced_with
+    np.testing.assert_array_equal(backend._active.lmbda_prev.x.array, lmbda_n)
+    np.testing.assert_array_equal(SL, units.stretch_to_sarcomere_length(lmbda_n, backend.SL_ref))
+    np.testing.assert_array_equal(dSL, (lmbda_n - 1.0) * backend.SL_ref / dt_s)
+
+    # The step is accepted at u: λ = 0.97 is the new λ_n, and 0.92 the new λ_{n-1}.
+    backend.post_solve()
+    lmbda_new = backend.lmbda_prev.x.array.copy()
+    np.testing.assert_allclose(lmbda_new, 0.97, rtol=1e-9)
+    advanced_with.clear()
+    backend.begin_step(1.0, 0.5)
+
+    ((SL, dSL),) = advanced_with
+    np.testing.assert_array_equal(SL, units.stretch_to_sarcomere_length(lmbda_new, backend.SL_ref))
+    np.testing.assert_array_equal(dSL, (lmbda_new - lmbda_n) * backend.SL_ref / dt_s)
+
+
+def test_reset_stretch_seeds_a_deformed_start(mesh, f0, advanced_with):
+    """A problem that starts deformed: ``reset_stretch`` takes λ(u) as the stretch at
+    rest, so the first step is advanced at it with no shortening velocity. The model and
+    everything reported are untouched. Without a displacement it cannot."""
+    with pytest.raises(RuntimeError, match="register"):
+        CrossbridgeSegregated(f0=f0, mesh=mesh).reset_stretch()
+
+    backend = CrossbridgeSegregated(f0=f0, mesh=mesh)
+    backend.register(_stretched(mesh, 0.9))
+    states = _model_states(backend.model)
+    reported = {
+        name: getattr(backend, name).x.array.copy()
+        for name in ("tension_kPa", "stiffness_kPa", "active_tension", "J_TRPN")
+    }
+
+    backend.reset_stretch()
+
+    _assert_same_states(_model_states(backend.model), states)
+    for name, value in reported.items():
+        np.testing.assert_array_equal(getattr(backend, name).x.array, value, err_msg=name)
+
+    backend.cai.x.array[:] = 1e-3
+    backend.begin_step(0.0, 0.5)
+    ((SL, dSL),) = advanced_with
+    np.testing.assert_allclose(SL, 0.9 * backend.SL_ref, rtol=1e-12)
+    np.testing.assert_array_equal(dSL, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -484,12 +559,16 @@ def test_begin_step_twice_starts_from_the_committed_state(mesh, f0):
     np.testing.assert_array_equal(retried.tension_kPa.x.array, once.tension_kPa.x.array)
 
 
-def test_begin_step_at_rest_is_the_identity(mesh, f0):
+def test_begin_step_at_rest_is_the_identity(mesh, f0, advanced_with):
     """Review Focus 2: a rest step at ``dt == 0`` (rodero_05's unloaded solve) leaves
     the model unchanged, and never divides by ``dt`` for the shortening velocity, even
-    with a stretch that changed over the step before."""
+    with a stretch that changed over the step before.
+
+    It accepts ``u`` as the rest state: ``u`` moves during that solve, and the next
+    step is advanced at the new λ with no shortening velocity."""
     backend = _drive(CrossbridgeSegregated(f0=f0, mesh=mesh), n=4)
-    backend.register(_stretched(mesh, 0.95))
+    u = _stretched(mesh, 0.95)
+    backend.register(u)
     backend.begin_step(2.0, 0.5)
     backend.post_solve()  # λ_n = 0.95, λ_{n-1} = 1
     states = _model_states(backend.model)
@@ -500,11 +579,22 @@ def test_begin_step_at_rest_is_the_identity(mesh, f0):
 
     with np.errstate(divide="raise", invalid="raise"):
         backend.begin_step(2.5, 0.0)
+        _set_stretch(u, 0.9)  # the solve moves u
         backend.post_solve()
 
     _assert_same_states(_model_states(backend.model), states)
     for name, value in reported.items():
         np.testing.assert_array_equal(getattr(backend, name).x.array, value, err_msg=name)
+    np.testing.assert_allclose(backend.lmbda_prev.x.array, 0.9, rtol=1e-9)
+
+    advanced_with.clear()
+    backend.begin_step(2.5, 0.5)
+    ((SL, dSL),) = advanced_with
+    np.testing.assert_array_equal(
+        SL,
+        units.stretch_to_sarcomere_length(backend.lmbda_prev.x.array, backend.SL_ref),
+    )
+    np.testing.assert_array_equal(dSL, 0.0)
 
 
 def test_post_solve_without_register_keeps_the_stretch(mesh, f0):
@@ -611,11 +701,11 @@ def test_failed_step_accepts_nothing(split_modules, make_ep_solver, make_mechani
     nothing of it has been accepted.
 
     Gate 5's set-up (beat EP on the 3x3x3 cube, one element), with crossbridge Land2017
-    on quadrature. One converged step comes first, so that the model has left its
-    initial state. The next step's solve runs for real and its driver reports failure,
-    so ``begin_step`` has advanced a trial and the solve has moved ``u``; the controller
-    must raise without calling ``post_solve`` or moving anything back to EP. The
-    failed step's EP micro-steps are not rolled back, for any driver.
+    on quadrature. Two converged steps come first, so that the model and both stretches
+    have left their initial values. The next step's solve runs for real and its driver
+    reports failure, so ``begin_step`` has advanced a trial and the solve has moved
+    ``u``; the controller must raise without calling ``post_solve`` or moving anything
+    back to EP. The failed step's EP micro-steps are not rolled back, for any driver.
     """
     modules = split_modules["caisplit"]
     ep_solver = make_ep_solver(modules.ep, _unit_cube(3))
@@ -633,9 +723,13 @@ def test_failed_step_accepts_nothing(split_modules, make_ep_solver, make_mechani
     assert ode.missing_variables is not None
 
     controller.step()
+    controller.step()
     model = backend.model
     before = _accepted(backend, ode)
     assert np.any(before["outputs['J_TRPN']"] != 0.0)
+    assert np.all(before["lmbda_prev"] != 1.0)
+    assert np.all(before["_lmbda_old"] != 1.0)
+    assert not np.array_equal(before["_lmbda_old"], before["lmbda_prev"])
 
     driver.fail = True
     with pytest.raises(RuntimeError, match="did not converge"):

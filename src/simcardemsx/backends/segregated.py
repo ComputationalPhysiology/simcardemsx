@@ -111,7 +111,9 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         ``{"cai": cai}`` and ``{"J_TRPN": J_TRPN}``, in EP's mM and mM/ms.
     lmbda_prev:
         The accepted fibre stretch λ_n: the stretch the next step advances the model
-        with, and the one the stabilization measures its increment from.
+        with, and the one the stabilization measures its increment from. It starts at
+        1, the reference configuration; for a problem that starts deformed, see
+        :meth:`reset_stretch`.
     Ta_current, Ka_current:
         ``Ta`` and ``Ka`` (kPa; ``Ka`` per unit of the solver's λ) of the step being
         solved, read by the stress form. :meth:`begin_step` writes them.
@@ -173,8 +175,10 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
 
         ModelClass = crossbridge.get_model(model) if isinstance(model, str) else model
         self.model = ModelClass(num_cells=num_cells, params=params)
-        #: The step :meth:`begin_step` advanced, until :meth:`post_solve` commits it.
+        #: The step :meth:`begin_step` advanced, and its dt [ms], until
+        #: :meth:`post_solve` commits it.
         self._trial: crossbridge.base.CardiacActivationModel | None = None
+        self._trial_dt = 0.0
 
         # Most models normalize length as Lambda = SL / SL0 and expose SL0.
         # RDQ18 does not: it uses SL directly in its overlap function Chi(SL),
@@ -217,7 +221,7 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
 
         #: λ_n. The trial is advanced with exactly this array and the stabilization
         #: measures its increment from this Function, which only :meth:`post_solve`
-        #: writes, after the solve.
+        #: and :meth:`reset_stretch` write, between steps.
         self.lmbda_prev = dolfinx.fem.Function(V, name="lambda_prev")
         self.lmbda_prev.x.array[:] = 1.0
         # λ_{n-1}, for the shortening velocity.
@@ -293,13 +297,15 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         ``Ka`` are written into ``Ta_current``/``Ka_current``, which the stress reads.
 
         The stabilization measures its increment ``λ(u) - λ_n`` from ``lmbda_prev``,
-        the very array the trial was advanced with, and nothing writes it before
-        :meth:`post_solve`: the two cannot drift apart. If they did, the extra term
-        would stop being a consistent O(dt) perturbation and could destabilize the
-        solve it was added to stabilize.
+        the very array the trial was advanced with, and only :meth:`post_solve` and
+        :meth:`reset_stretch` write it, between steps: the two cannot drift apart. If
+        they did, the extra term would stop being a consistent O(dt) perturbation and
+        could destabilize the solve it was added to stabilize.
 
-        At ``dt == 0`` the trial is not advanced, so the step is the identity.
+        At ``dt == 0`` the trial is not advanced, so the step is the identity, and
+        :meth:`post_solve` then accepts ``u`` as the rest state.
         """
+        self._trial = None  # a retry's first trial need not outlive the copy below
         trial = copy.deepcopy(self.model)
         if dt > 0:
             lmbda = self.lmbda_prev.x.array
@@ -313,6 +319,7 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
             Ca = units.calcium_to_crossbridge(self.cai.x.array)
             trial.advance_step(dt_s, Ca, SL, dSL_vals=dSL)
         self._trial = trial
+        self._trial_dt = dt
 
         self.Ta_current.x.array[:] = trial.get_active_tension()
         self.Ka_current.x.array[:] = units.active_stiffness_to_mechanics(
@@ -343,6 +350,11 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         model's calcium binding over the step; and records its ``Ta``/``Ka`` in
         :attr:`tension_kPa`/:attr:`stiffness_kPa` and the P1 :attr:`active_tension`.
 
+        After a step at ``dt == 0`` (the identity) it accepts ``u`` as the rest state,
+        as :meth:`reset_stretch` does: λ_{n-1} and λ_n are both λ(u), so a ``u`` that
+        moved during that solve, e.g. an unloaded one, gives the next step no
+        shortening velocity.
+
         Raises
         ------
         RuntimeError
@@ -356,9 +368,10 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         self.model = self._trial
         self._trial = None
 
-        self._lmbda_old = self.lmbda_prev.x.array.copy()
+        lmbda_n = self.lmbda_prev.x.array.copy()
         if self._lmbda_expression is not None:
             self.lmbda_prev.interpolate(self._lmbda_expression)
+        self._lmbda_old = lmbda_n if self._trial_dt > 0 else self.lmbda_prev.x.array.copy()
 
         self.J_TRPN.x.array[:] = units.troponin_flux(
             self.model.get_calcium_binding_rate(),
@@ -367,6 +380,29 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         self._tension_kPa.x.array[:] = self.Ta_current.x.array
         self._stiffness_kPa.x.array[:] = self.Ka_current.x.array
         self._average_tension()
+
+    def reset_stretch(self) -> None:
+        """Take λ(u) of the registered displacement as the stretch at rest.
+
+        For a problem that starts deformed: otherwise the first step is advanced at
+        λ = 1, and the stabilization measures its increment from 1. ``lmbda_prev``
+        (λ_n) and λ_{n-1} are both set to λ(u), so the first step is advanced at λ(u)
+        with no shortening velocity. The model, ``outputs`` and the reported tension
+        are untouched, and nothing is sent to EP. Call it between steps, not between
+        :meth:`begin_step` and :meth:`post_solve`.
+
+        The other way to start deformed is one accepted step at ``dt == 0``, where the
+        step is the identity.
+
+        Raises
+        ------
+        RuntimeError
+            If :meth:`register` has not been called: there is no displacement.
+        """
+        if self._lmbda_expression is None:
+            raise RuntimeError("register(u) must be called before reset_stretch()")
+        self.lmbda_prev.interpolate(self._lmbda_expression)
+        self._lmbda_old = self.lmbda_prev.x.array.copy()
 
     @property
     def tension_kPa(self) -> dolfinx.fem.Function:
