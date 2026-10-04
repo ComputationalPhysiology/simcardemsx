@@ -28,7 +28,7 @@ import ufl
 
 import cardiac_geometries
 from simcardemsx.averaging import make_averager
-from simcardemsx.backends import GeneratedActivation
+from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.controller import SimulationController
 from simcardemsx.datacollector import DataCollector
 from simcardemsx.ode_model import load_ode_modules
@@ -47,6 +47,7 @@ QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
 DEFAULT_ODEFILE = Path("../odefiles/ToRORd_dynCl_endo_zetasplit.ode")
 SLAB_DX = 0.5  # Resolution of the slab mesh
 SCHEMES = ("monolithic", "segregated", "stabilized")
+CROSSBRIDGE_MODELS = ("Land2017", "RDQ18", "RDQ20MF", "Lewalle2024")
 DT_EP = 0.05  # ms
 T_END = 40.0  # ms
 
@@ -212,6 +213,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Coupling scheme of the mechanics (default: %(default)s).",
     )
     parser.add_argument(
+        "--crossbridge",
+        choices=CROSSBRIDGE_MODELS,
+        default=None,
+        help="Run this crossbridge contraction model (Ca_i split) instead of the "
+        "generated mechanics component. Needs the Ca_i split as --odefile, e.g. "
+        "../odefiles/ToRORd_dynCl_endo_caisplit.ode. --scheme segregated is the naive "
+        "scheme, stabilized the stabilized one; monolithic is not available "
+        "(default: off).",
+    )
+    parser.add_argument(
+        "--sl-ref",
+        type=float,
+        default=None,
+        help="Reference sarcomere length SL_ref in um for --crossbridge; required for RDQ18 "
+        "(default: the model's own SL0).",
+    )
+    parser.add_argument(
         "--dt-mech",
         type=float,
         default=DT_EP,
@@ -245,6 +263,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None):
     start_total = time.perf_counter()
     args = parse_args(argv)
+    if args.crossbridge is not None and args.scheme == "monolithic":
+        raise SystemExit(
+            "--scheme monolithic is not available with --crossbridge: the crossbridge models "
+            "are NumPy and cannot be stepped inside Newton. Use --scheme stabilized or "
+            "segregated.",
+        )
 
     logging.basicConfig(level=logging.DEBUG)
     disable_logger()
@@ -380,13 +404,24 @@ def main(argv: list[str] | None = None):
 
     # The contraction model, stepped inside Newton. Its states live on a quadrature
     # space of the same degree as the mechanics form (the controller checks this).
-    backend = GeneratedActivation(
-        modules.mechanics,
-        mesh,
-        mech_geo.f0,
-        quadrature_degree=QUAD_DEGREE,
-        scheme=args.scheme,
-    )
+    backend: GeneratedActivation | CrossbridgeSegregated
+    if args.crossbridge is not None:
+        backend = CrossbridgeSegregated(
+            mech_geo.f0,
+            mesh,
+            args.crossbridge,
+            quadrature_degree=QUAD_DEGREE,
+            SL_ref=args.sl_ref,
+            stabilized=args.scheme == "stabilized",
+        )
+    else:
+        backend = GeneratedActivation(
+            modules.mechanics,
+            mesh,
+            mech_geo.f0,
+            quadrature_degree=QUAD_DEGREE,
+            scheme=args.scheme,
+        )
 
     model = pulse.CardiacModel(
         material=material,
@@ -469,6 +504,9 @@ def main(argv: list[str] | None = None):
         run_info={
             "geometry": "slab",
             "split": odefile.stem.rsplit("_", 1)[-1],
+            "backend": "generated"
+            if args.crossbridge is None
+            else f"crossbridge:{args.crossbridge}",
             "scheme": args.scheme,
             "dt_mech_ms": dt_mech,
             "t_end_ms": args.t_end,
@@ -499,8 +537,11 @@ def main(argv: list[str] | None = None):
     P1 = dolfinx.fem.functionspace(mesh, ("P", 1))
     mech_variables = {"Ta": backend.active_tension}
     averagers = []
-    for name, output in backend.outputs.items():
-        out_name = "lambda" if name == "lmbda" else name
+    # The stretch is recorded whichever backend runs; a crossbridge backend does not send
+    # it to EP, so it is not among its outputs and is taken from lmbda_prev instead.
+    recorded = {("lambda" if name == "lmbda" else name): f for name, f in backend.outputs.items()}
+    recorded.setdefault("lambda", backend.lmbda_prev)
+    for out_name, output in recorded.items():
         mech_variables[out_name] = dolfinx.fem.Function(P1, name=out_name)
         averagers.append(make_averager(output, mech_variables[out_name]))
 
