@@ -18,11 +18,10 @@ brackets):
 
 Gate X2, gate 5 for every model in ``crossbridge.MODEL_REGISTRY``. Measured max |J_TRPN|
 in EP after the first step / the last (mM/ms): RDQ18 5.45e-4 / 3.37e-6, Lewalle2024
-4.11e-9 / 2.05e-5, Land2017 1.01e-4 / 7.75e-5. RDQ20MF's run is not finite at dt_mech
-1 ms: it binds 1.97e-3 mM/ms in the first step, EP's cai is negative at 2.1 ms and NaN
-from 3 ms. crossbridge's RDQ20MF steps its RU by explicit Euler at the dt it is handed,
-and expects its own ``dt_RU`` of 0.025 ms. It is therefore a strict xfail
-(``AssertionError``) until crossbridge is fixed upstream.
+4.11e-9 / 2.05e-5, Land2017 1.01e-4 / 7.75e-5, RDQ20MF 1.85e-3 / 1.80e-5. RDQ20MF needs
+crossbridge 0.3.3: before it, ``advance_step`` took one explicit Euler RU step of the dt it
+was handed, correct only at its own ``dt_RU`` of 0.025 ms, and at dt_mech 1 ms EP's cai
+was negative at 2.1 ms and NaN from 3 ms.
 
 Gate X5, gate 1 and S1 for crossbridge's Land2017. Measured: the naive scheme's onsets
 35.0 / 17.5 / 13.4 ms at dt 1 / 0.25 / 0.05 (Newton failed at 35.0 / 22.0 / 17.15 ms);
@@ -208,26 +207,7 @@ NUM_STEPS = 60
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    "model",
-    [
-        pytest.param(
-            name,
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason=(
-                    "crossbridge 0.3.1's RDQ20MF.advance_step is correct only at dt = dt_RU "
-                    "(25 us); the fix is upstream in crossbridge. Remove this marker once a "
-                    "release has it."
-                ),
-            ),
-        )
-        if name == "RDQ20MF"
-        else name
-        for name in crossbridge.MODEL_REGISTRY
-    ],
-)
+@pytest.mark.parametrize("model", list(crossbridge.MODEL_REGISTRY))
 def test_every_crossbridge_model_round_trips_through_the_controller(
     split_modules,
     make_ep_solver,
