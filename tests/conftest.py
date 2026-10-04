@@ -1,5 +1,7 @@
+import types
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from types import ModuleType
 from typing import Literal
@@ -9,6 +11,7 @@ from mpi4py import MPI
 import beat
 import crossbridge
 import dolfinx
+import gotranx
 import numpy as np
 import pulse
 import pytest
@@ -61,6 +64,27 @@ def _reversals(trace: np.ndarray) -> int:
     steps = np.diff(trace)
     steps = steps[np.abs(steps) >= _FLAT]
     return int(np.count_nonzero(np.diff(np.sign(steps))))
+
+
+@cache
+def _numpy_mech(split: str) -> types.ModuleType:
+    """The ``mechanics`` component of ``split``, generated as numpy (GRL) and loaded.
+
+    Generated exactly as :func:`simcardemsx.ode_model.generate_ode_code` generates
+    the UFL module -- same component, same scheme, same ``missing_values`` -- but
+    with ``gotran2py``.
+    """
+    ode = gotranx.load_ode(ODEFILES_DIR / f"ToRORd_dynCl_endo_{split}.ode")
+    mechanics_comp = ode.get_component("mechanics")
+    ep_ode = ode - mechanics_comp
+    code = gotranx.cli.gotran2py.get_code(
+        mechanics_comp.to_ode(),
+        scheme=[gotranx.schemes.Scheme.generalized_rush_larsen],
+        missing_values=ep_ode.missing_variables,
+    )
+    module = types.ModuleType(f"numpy_mechanics_{split}")
+    exec(code, module.__dict__)
+    return module
 
 
 def land2017_from_ode(mech_module: ModuleType) -> dict[str, float]:
