@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from types import ModuleType
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from mpi4py import MPI
 
@@ -207,6 +207,14 @@ def make_ep_solver():
     return _ep_solver
 
 
+#: ``backend_factory(mesh, f0, quadrature_degree)``: the activation backend a mechanics
+#: builder below uses in place of its ``GeneratedActivation``.
+_BackendFactory = Callable[
+    [dolfinx.mesh.Mesh, dolfinx.fem.Constant, int],
+    pulse.active_model.ActiveModel,
+]
+
+
 def _rollers(mesh: dolfinx.mesh.Mesh):
     """Roller conditions: ``u_i = 0`` on the face ``x_i = 0``, for i = 0, 1, 2."""
 
@@ -235,11 +243,7 @@ def _mechanics(
     quadrature_degree: int = 2,
     backend_quadrature_degree: int | None = None,
     scheme: Literal["monolithic", "segregated", "stabilized"] = "monolithic",
-    backend_factory: Callable[
-        [dolfinx.mesh.Mesh, dolfinx.fem.Constant, int],
-        pulse.active_model.ActiveModel,
-    ]
-    | None = None,
+    backend_factory: _BackendFactory | None = None,
 ) -> tuple[pulse.StaticProblem, pulse.active_model.ActiveModel]:
     """The one-element setup of ``tests/test_monolithic_coupling.py``.
 
@@ -294,6 +298,125 @@ def make_mechanics():
     return _mechanics
 
 
+#: Spread of λ over the element's quadrature points above which a run is unstable.
+#: The load and the boundary conditions are uniform, so the solution is uniform: the
+#: monolithic runs stay below 1e-15. At the smaller time steps the naive scheme's
+#: unstable mode is spatial, amplified from round-off, and the mean of λ hides it.
+_UNSTABLE_SPREAD = 1e-3
+
+
+def _caisplit_inputs(t: float) -> dict[str, float]:
+    return {"cai": calcium(t)}
+
+
+class _Run(NamedTuple):
+    trace: np.ndarray  # mean(lmbda_prev) after each converged step, at dt, 2 dt, ...
+    spread: np.ndarray  # max - min of lmbda_prev after each converged step
+    dt: float
+    t_fail: float  # end of the first step that failed, or t_end if none did
+    t_end: float
+
+    @property
+    def t_unstable(self) -> float:
+        """End of the first step after which λ is no longer uniform, or ``t_fail``.
+
+        Instability is measured at its onset rather than by the Newton failure
+        alone: when Newton gives up on the naive scheme depends on the solver
+        settings (line search, tolerances), when the mode appears does not.
+        """
+        (unstable,) = np.nonzero(self.spread > _UNSTABLE_SPREAD)
+        if unstable.size:
+            return min(float((unstable[0] + 1) * self.dt), self.t_fail)
+        return self.t_fail
+
+
+def _run(
+    split_modules,
+    make_mechanics,
+    split: str,
+    scheme: Literal["monolithic", "segregated", "stabilized"],
+    dt: float,
+    t_end: float,
+    inputs_of_t: Callable[[float], dict[str, float]],
+    *,
+    backend_factory: _BackendFactory | None = None,
+) -> _Run:
+    """Contract one element under the given inputs: λ after each step, and when it failed.
+
+    The loop of the one-element ``StaticProblem`` gates (gate 1, S1, gate 4 and X5).
+    Records the mean of λ over the element's quadrature points and its spread
+    (max - min).
+
+    Each step writes the inputs at ``t_{n+1}``, calls ``backend.begin_step(t_n, dt)``
+    (after the inputs, since a crossbridge backend advances its model with them
+    there), solves, and accepts the step with ``post_solve``. The run stops at the
+    first step whose Newton solve fails or leaves a non-finite displacement.
+
+    The backend is ``make_mechanics``'s: a ``GeneratedActivation`` of ``split``'s
+    mechanics module with ``scheme``, or, with ``backend_factory``, whatever that
+    builds (``scheme`` is then not read).
+    """
+    _, mech = split_modules[split]
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    problem, backend = make_mechanics(mech, mesh, scheme=scheme, backend_factory=backend_factory)
+
+    trace: list[float] = []
+    spread: list[float] = []
+    for n in range(round(t_end / dt)):
+        t_n, t_next = n * dt, (n + 1) * dt
+        for name, value in inputs_of_t(t_next).items():
+            backend.inputs[name].x.array[:] = value
+        backend.begin_step(t_n, dt)
+
+        ok = problem.solve(raise_on_failure=False)
+        with np.errstate(over="ignore", invalid="ignore"):
+            finite = bool(np.all(np.isfinite(problem.u.x.array)))
+        if not ok or not finite:
+            return _Run(np.array(trace), np.array(spread), dt, t_next, t_end)
+
+        backend.post_solve()
+        lmbda = backend.lmbda_prev.x.array
+        trace.append(float(np.mean(lmbda)))
+        spread.append(float(lmbda.max() - lmbda.min()))
+    return _Run(np.array(trace), np.array(spread), dt, t_end, t_end)
+
+
+def _at_whole_ms(trace: np.ndarray, dt: float) -> np.ndarray:
+    """The entries of a trace recorded at t = 1, 2, ... ms."""
+    per_ms = round(1.0 / dt)
+    return trace[per_ms - 1 :: per_ms]
+
+
+def _lmbda_error(run: _Run, reference: _Run) -> float:
+    """The error of gate 1, S1 and X5: max |mean λ - the reference's| at t = 1, 2, ... ms."""
+    return float(
+        np.max(
+            np.abs(_at_whole_ms(run.trace, run.dt) - _at_whole_ms(reference.trace, reference.dt)),
+        ),
+    )
+
+
+def _observed_orders(errors: Mapping[float, float]) -> list[float]:
+    """Observed orders of convergence between successive time steps, coarsest first:
+    ``log(e_i / e_{i+1}) / log(dt_i / dt_{i+1})`` for ``errors = {dt: e}``."""
+    dts = sorted(errors, reverse=True)
+    return [
+        float(np.log(errors[coarse] / errors[fine]) / np.log(coarse / fine))
+        for coarse, fine in zip(dts, dts[1:])
+    ]
+
+
+@pytest.fixture(scope="session")
+def caisplit_reference(split_modules) -> _Run:
+    """The reference of gate 1, S1 and X5: the Ca_i split, monolithic, at dt 0.01 ms for
+    40 ms.
+
+    Built with :func:`_mechanics` itself, since the ``make_mechanics`` fixture is
+    function-scoped and this one is shared by the session: 4000 static solves, run once.
+    """
+    return _run(split_modules, _mechanics, "caisplit", "monolithic", 0.01, 40.0, _caisplit_inputs)
+
+
 @dataclass
 class _TrueUActive(pulse.DynamicProblem):
     """A ``DynamicProblem`` that adds a hand-built end-of-step active stress.
@@ -302,11 +425,12 @@ class _TrueUActive(pulse.DynamicProblem):
     without ``dev`` -- ``GeneratedActivation.S`` takes no such argument -- built
     independently of :attr:`~pulse.active_model.ActiveModel.evaluate_at_end_of_step`
     so it can serve as the reference the flag is checked against: ``true_u_active``
-    is evaluated at the true end-of-step displacement ``self.u``, exactly what the
-    flag makes ``DynamicProblem`` itself do, but by a completely separate code path.
+    (a ``GeneratedActivation`` in D1, a ``CrossbridgeSegregated`` in X6) is evaluated
+    at the true end-of-step displacement ``self.u``, exactly what the flag makes
+    ``DynamicProblem`` itself do, but by a completely separate code path.
     """
 
-    true_u_active: GeneratedActivation | None = None
+    true_u_active: pulse.active_model.ActiveModel | None = None
 
     def _material_form(self, u, v, p):
         forms = super()._material_form(u, v, p)
@@ -326,7 +450,8 @@ def _dynamic_mechanics(
     end_of_step: bool = True,
     quadrature_degree: int = 2,
     scheme: Literal["monolithic", "segregated", "stabilized"] = "monolithic",
-) -> tuple[pulse.DynamicProblem, GeneratedActivation]:
+    backend_factory: _BackendFactory | None = None,
+) -> tuple[pulse.DynamicProblem, pulse.active_model.ActiveModel]:
     """The pinned D1/D2 element: a one-element ``pulse.DynamicProblem``.
 
     A unit cube scaled to L = 0.01 m (``mesh_unit`` "m", ``DynamicProblem``'s
@@ -347,7 +472,10 @@ def _dynamic_mechanics(
     reads the flag when it compiles the form, i.e. in construction, not at solve
     time. This is the alpha_f variant.
 
-    ``scheme`` is the backend's coupling scheme.
+    The backend is a :class:`GeneratedActivation` of ``mech_module`` with ``scheme``,
+    its coupling scheme, or, with ``backend_factory``, ``backend_factory(mesh, f0,
+    quadrature_degree)`` (``mech_module`` and ``scheme`` are then not read). The
+    reference and the alpha_f variant treat either the same way.
     """
     mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
     mesh.geometry.x[:] *= 0.01
@@ -355,13 +483,17 @@ def _dynamic_mechanics(
     f0 = dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
     s0 = dolfinx.fem.Constant(mesh, np.array([0.0, 1.0, 0.0]))
 
-    backend = GeneratedActivation(
-        mech_module,
-        mesh,
-        f0,
-        quadrature_degree=quadrature_degree,
-        scheme=scheme,
-    )
+    backend: pulse.active_model.ActiveModel
+    if backend_factory is not None:
+        backend = backend_factory(mesh, f0, quadrature_degree)
+    else:
+        backend = GeneratedActivation(
+            mech_module,
+            mesh,
+            f0,
+            quadrature_degree=quadrature_degree,
+            scheme=scheme,
+        )
     if not end_of_step:
         backend.evaluate_at_end_of_step = False
 
@@ -409,6 +541,96 @@ def _dynamic_mechanics(
 def make_dynamic_mechanics():
     """Factory for :func:`_dynamic_mechanics`: ``make_dynamic_mechanics(mech_module, ...)``."""
     return _dynamic_mechanics
+
+
+#: The time step of D1 and X6 on :func:`_dynamic_mechanics`'s element, in ms.
+D1_DT_MS = 1.0
+#: The end time of D1 and X6, in ms.
+D1_T_END = 60.0
+
+
+def _run_dynamic_until_failure(
+    make_dynamic_mechanics,
+    mech_module,
+    *,
+    reference: bool,
+    end_of_step: bool,
+    scheme: Literal["monolithic", "segregated", "stabilized"] = "monolithic",
+    dt_ms: float = D1_DT_MS,
+    t_end: float = D1_T_END,
+    inputs_of_t: Callable[[float], dict[str, float]] = _caisplit_inputs,
+    backend_factory: _BackendFactory | None = None,
+) -> tuple[np.ndarray, float | None]:
+    """Drive the pinned D1/D2 element exactly as :func:`_run` drives the one-element
+    ``StaticProblem`` gates: write the inputs at ``t_{n+1}``, ``begin_step(t_n, dt)``,
+    solve, ``post_solve``, record ``mean(lmbda_prev)``. The run stops at the first step
+    that leaves a non-finite displacement or fails to converge.
+
+    Parameters
+    ----------
+    reference, end_of_step:
+        Passed on to ``make_dynamic_mechanics``: the ``_TrueUActive`` reference, and
+        whether the flag is set (``False`` is the alpha_f evaluation). The backend is
+        stepped the same way in all three.
+    scheme, backend_factory:
+        Passed on to ``make_dynamic_mechanics``: the ``GeneratedActivation``'s coupling
+        scheme, or the factory of another backend.
+    dt_ms:
+        The time step in ms, of both the backend and the problem.
+    t_end:
+        The end time in ms: ``round(t_end / dt_ms)`` steps, from ``t = 0``.
+    inputs_of_t:
+        The backend's inputs at a time in ms, as ``{name: value}``; each value is
+        written into all of ``backend.inputs[name]`` at ``t_{n+1}``. The default is the
+        Ca_i split's prescribed ``calcium``.
+
+    Returns
+    -------
+    trace : np.ndarray
+        ``mean(lmbda_prev)`` after each converged step.
+    t_fail : float | None
+        The end (ms) of the step that failed, or ``None`` if none did.
+    """
+    problem, backend = make_dynamic_mechanics(
+        mech_module,
+        dt_ms=dt_ms,
+        reference=reference,
+        end_of_step=end_of_step,
+        scheme=scheme,
+        backend_factory=backend_factory,
+    )
+    trace: list[float] = []
+    for n in range(round(t_end / dt_ms)):
+        t_n, t_next = n * dt_ms, (n + 1) * dt_ms
+        for name, value in inputs_of_t(t_next).items():
+            backend.inputs[name].x.array[:] = value
+        backend.begin_step(t_n, dt_ms)
+
+        ok = problem.solve(raise_on_failure=False)
+        with np.errstate(over="ignore", invalid="ignore"):
+            finite = bool(np.all(np.isfinite(problem.u.x.array)))
+        if not ok or not finite:
+            return np.array(trace), t_next
+
+        backend.post_solve()
+        trace.append(float(np.mean(backend.lmbda_prev.x.array)))
+    return np.array(trace), None
+
+
+def _run_dynamic(make_dynamic_mechanics, mech_module, **kwargs) -> np.ndarray:
+    """:func:`_run_dynamic_until_failure`, returning the trace only.
+
+    Raises
+    ------
+    AssertionError
+        If a step leaves a non-finite displacement, or fails to converge.
+    """
+    trace, t_fail = _run_dynamic_until_failure(make_dynamic_mechanics, mech_module, **kwargs)
+    if t_fail is not None:
+        raise AssertionError(
+            f"step {trace.size} (t={t_fail} ms) failed to converge or went non-finite",
+        )
+    return trace
 
 
 #: Mechanics time step of :func:`_ellipsoid_ep_mechanics`'s ``DynamicProblem``, in ms.
