@@ -153,9 +153,10 @@ class SimulationController:
         """Advance the coupled system by one mechanics time step, from ``t`` to ``t + dt_mech``.
 
         In order: the EP micro-steps (``ep_callback(t, ep_step_idx)`` after each); EP
-        values forward into the backend's inputs, at the new ``t``; ``self.mechanics.
-        advance()``, with the backend stepping from the old ``t`` by ``dt_mech``;
-        ``post_solve()``; the backend's outputs back into EP's arrays; ``mech_callback(t,
+        values forward into the backend's inputs, at the new ``t``;
+        ``backend.begin_step(t_n, dt_mech)``, which prepares the step from the old ``t``;
+        ``self.mechanics.advance(t_n, dt_mech)``; ``backend.post_solve()``, which accepts
+        the step; the backend's outputs back into EP's arrays; ``mech_callback(t,
         mech_step_idx, newton_iterations)``.
 
         Raises ``RuntimeError`` if the mechanics driver's ``advance`` does not converge.

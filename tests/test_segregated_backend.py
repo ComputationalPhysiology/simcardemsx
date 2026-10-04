@@ -549,7 +549,11 @@ def test_begin_step_twice_starts_from_the_committed_state(mesh, f0):
     retried = _drive(CrossbridgeSegregated(f0=f0, mesh=mesh), n=4)
     once = _drive(CrossbridgeSegregated(f0=f0, mesh=mesh), n=4)
 
-    retried.begin_step(2.0, 0.5)
+    # The first attempt differs in dt and calcium, so a second call that returned early
+    # on a pending trial, or advanced the first trial, would not match the fresh backend.
+    retried.cai.x.array[:] = 5e-3
+    retried.begin_step(2.0, 0.25)
+    retried.cai.x.array[:] = 1e-3
     retried.begin_step(2.0, 0.5)
     retried.post_solve()
     once.begin_step(2.0, 0.5)
@@ -791,3 +795,17 @@ def test_drives_an_unmodified_static_problem(mesh, f0):
 
     assert np.max(backend.active_tension.x.array) > 0.0, "no tension generated"
     assert np.mean(backend.lmbda_prev.x.array) < 1.0, "fibre did not shorten"
+
+
+def test_reset_stretch_discards_a_pending_step(mesh, f0):
+    """The pending trial was advanced with the old λ_n, while the stress would measure
+    from the new one, so ``reset_stretch`` drops it: ``post_solve`` needs a fresh
+    ``begin_step``."""
+    backend = CrossbridgeSegregated(f0=f0, mesh=mesh)
+    backend.register(_stretched(mesh, 0.9))
+    backend.cai.x.array[:] = 1e-3
+    backend.begin_step(0.0, 0.5)
+    backend.reset_stretch()
+
+    with pytest.raises(RuntimeError, match="begin_step"):
+        backend.post_solve()

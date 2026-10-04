@@ -91,8 +91,11 @@ class CrossingSide(Protocol):
 def resolve(ep_module: ModuleType, activation_module: CrossingSide) -> Crossings:
     """Derive what crosses between `ep_module` and `activation_module`.
 
-    Both are the modules `ode_model.load_ode_modules` loads from one `.ode`
-    file's split. A module may lack a `missing` or `provides` attribute
+    `ep_module` is the EP module `ode_model.load_ode_modules` loads from one `.ode`
+    file's split; `activation_module` is the other side, any `CrossingSide`: the
+    mechanics module of the same split, or a backend that carries `missing` and
+    `provides` (`GeneratedActivation`, `CrossbridgeSegregated`). Either may lack a
+    `missing` or `provides` attribute
     entirely (gotranx omits `missing` when a side needs nothing; treat a
     missing `provides` the same way) -- both are read with `getattr(...,
     {})`, not indexing, for that reason.
@@ -189,7 +192,7 @@ class TransferPlan:
     Parameters
     ----------
     crossings:
-        From :func:`resolve` on ``ep_module`` and the backend's module.
+        From :func:`resolve` on ``ep_module`` and ``backend``.
     ep_module:
         The generated EP module; the one ``ode`` integrates.
     ode:

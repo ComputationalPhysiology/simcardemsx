@@ -537,10 +537,7 @@ def main(argv: list[str] | None = None):
     P1 = dolfinx.fem.functionspace(mesh, ("P", 1))
     mech_variables = {"Ta": backend.active_tension}
     averagers = []
-    # The stretch is recorded whichever backend runs; a crossbridge backend does not send
-    # it to EP, so it is not among its outputs and is taken from lmbda_prev instead.
     recorded = {("lambda" if name == "lmbda" else name): f for name, f in backend.outputs.items()}
-    recorded.setdefault("lambda", backend.lmbda_prev)
     for out_name, output in recorded.items():
         mech_variables[out_name] = dolfinx.fem.Function(P1, name=out_name)
         averagers.append(make_averager(output, mech_variables[out_name]))

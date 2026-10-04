@@ -8,12 +8,15 @@ agree with its ``missing``/``provides``.
 from mpi4py import MPI
 
 import dolfinx
+import numpy as np
 import pytest
 from conftest import _f0
+from test_crossbridge_coupling import _crossbridge_factory
 
 from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.backends.base import CoupledBackend
 from simcardemsx.controller import SimulationController
+from simcardemsx.ode_model import load_ode_modules
 from simcardemsx.transfer_plan import resolve
 
 SPLITS = ["zetasplit", "caisplit"]
@@ -51,12 +54,17 @@ def test_resolve_against_the_backend_equals_against_its_module(split_modules, sp
     assert resolve(modules.ep, backend) == resolve(modules.ep, backend.module)
 
 
-def test_controller_calls_begin_step_then_post_solve(
+@pytest.mark.parametrize("kind", ["generated", "crossbridge"])
+def test_controller_calls_begin_step_advance_post_solve_in_order(
     split_modules,
     make_ep_solver,
     make_mechanics,
+    kind,
 ):
-    modules = split_modules["zetasplit"]
+    """Each step is ``begin_step(t_n, dt)``, then the mechanics driver's ``advance(t_n,
+    dt)``, then ``post_solve``, for both backends. ``advance`` is recorded through a
+    driver, so a controller that solved before preparing the step would fail here."""
+    modules = split_modules["caisplit"]
     ep_solver = make_ep_solver(
         modules.ep,
         dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 3, 3, 3),
@@ -65,10 +73,30 @@ def test_controller_calls_begin_step_then_post_solve(
         modules.mechanics,
         dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1),
         quadrature_degree=2,
+        backend_factory=(
+            _crossbridge_factory("Land2017", modules.mechanics) if kind == "crossbridge" else None
+        ),
     )
-    controller = SimulationController(problem, ep_solver, backend, modules, 1.0, 0.05)
 
     calls: list = []
+
+    class _RecordingDriver:
+        def __init__(self, problem):
+            self.problem = problem
+
+        def advance(self, t_n: float, dt: float) -> bool:
+            calls.append(("advance", t_n, dt))
+            return self.problem.solve()
+
+    controller = SimulationController(
+        _RecordingDriver(problem),
+        ep_solver,
+        backend,
+        modules,
+        1.0,
+        0.05,
+    )
+
     begin, post = backend.begin_step, backend.post_solve
 
     def record_begin(t_n, dt):
@@ -86,8 +114,10 @@ def test_controller_calls_begin_step_then_post_solve(
 
     assert calls == [
         ("begin_step", 0.0, 1.0),
+        ("advance", 0.0, 1.0),
         "post_solve",
         ("begin_step", 1.0, 1.0),
+        ("advance", 1.0, 1.0),
         "post_solve",
     ]
 
@@ -99,7 +129,8 @@ def test_crossbridge_is_a_coupled_backend():
     assert backend.missing == {"cai": 0}
     assert backend.provides == {"J_TRPN": 0}
     assert backend.inputs == {"cai": backend.cai}
-    assert backend.outputs == {"J_TRPN": backend.J_TRPN}
+    assert backend.outputs == {"J_TRPN": backend.J_TRPN, "lmbda": backend.lmbda_prev}
+    assert backend.outputs["lmbda"] is backend.lmbda_prev
     assert backend.quadrature_degree == 2
     for function in (*backend.inputs.values(), *backend.outputs.values()):
         assert function.function_space is backend.space
@@ -133,3 +164,61 @@ def test_crossbridge_transfer_records_agree_with_its_dicts():
         backend.provides,
         key=backend.provides.__getitem__,
     )
+
+
+def test_crossbridge_sends_the_stretch_to_an_ep_remainder_that_takes_it(
+    tmp_path,
+    make_ep_solver,
+    make_mechanics,
+):
+    """An EP remainder that keeps ``lmbda`` as a parameter, with the Ca_i split's
+    crossings otherwise: the controller constructs (``outputs["lmbda"]`` exists) and
+    λ(u) of the accepted step lands in EP's ``parameters``."""
+    ode_file = tmp_path / "cai_with_stretch.ode"
+    ode_file.write_text(
+        """
+    parameters("ep", lmbda=1.0)
+    states("ep", v=0.0, cai=1e-4)
+
+    states("mechanics", x=0.0)
+    expressions("mechanics")
+    dx_dt = cai - x
+    J_TRPN = dx_dt
+
+    expressions("ep")
+    dv_dt = -v * lmbda
+    dcai_dt = -J_TRPN
+    """,
+    )
+    modules = load_ode_modules(ode_file, tmp_path)
+    assert "lmbda" in modules.ep.parameter
+    assert resolve(modules.ep, _crossbridge()).stretch_to_ep
+
+    problem, backend = make_mechanics(
+        modules.mechanics,
+        dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1),
+        quadrature_degree=2,
+        backend_factory=lambda mesh, f0, degree: CrossbridgeSegregated(
+            f0,
+            mesh,
+            "Land2017",
+            quadrature_degree=degree,
+        ),
+    )
+    ep_solver = make_ep_solver(
+        modules.ep,
+        dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 3, 3, 3),
+    )
+    controller = SimulationController(problem, ep_solver, backend, modules, 1.0, 0.05)
+
+    # The element is stretched by 10% along its fibres; one accepted step at dt == 0
+    # (the identity) makes that the backend's stretch, then it goes back to EP.
+    problem.u.interpolate(
+        lambda x: np.vstack([0.1 * x[0], np.zeros_like(x[1]), np.zeros_like(x[2])]),
+    )
+    backend.begin_step(0.0, 0.0)
+    backend.post_solve()
+    controller.plan.backward()
+
+    row = modules.ep.parameter["lmbda"]
+    np.testing.assert_allclose(ep_solver.ode.parameters[row], 1.1, rtol=1e-12)

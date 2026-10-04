@@ -108,7 +108,11 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         The space everything below lives on, its quadrature degree (``None`` unless it
         is a quadrature space), and the mechanics mesh.
     inputs, outputs:
-        ``{"cai": cai}`` and ``{"J_TRPN": J_TRPN}``, in EP's mM and mM/ms.
+        ``{"cai": cai}`` and ``{"J_TRPN": J_TRPN, "lmbda": lmbda_prev}``, in EP's mM,
+        mM/ms and the dimensionless stretch. ``outputs["lmbda"]`` is ``lmbda_prev``
+        itself, the accepted λ(u) that :meth:`post_solve` and :meth:`reset_stretch`
+        update in place, as in :class:`~simcardemsx.backends.generated.GeneratedActivation`:
+        an EP remainder that keeps ``lmbda`` as a parameter is sent it.
     lmbda_prev:
         The accepted fibre stretch λ_n: the stretch the next step advances the model
         with, and the one the stabilization measures its increment from. It starts at
@@ -224,6 +228,7 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         #: and :meth:`reset_stretch` write, between steps.
         self.lmbda_prev = dolfinx.fem.Function(V, name="lambda_prev")
         self.lmbda_prev.x.array[:] = 1.0
+        self.outputs["lmbda"] = self.lmbda_prev
         # λ_{n-1}, for the shortening velocity.
         self._lmbda_old = np.ones(num_cells)
 
@@ -387,9 +392,11 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         For a problem that starts deformed: otherwise the first step is advanced at
         λ = 1, and the stabilization measures its increment from 1. ``lmbda_prev``
         (λ_n) and λ_{n-1} are both set to λ(u), so the first step is advanced at λ(u)
-        with no shortening velocity. The model, ``outputs`` and the reported tension
-        are untouched, and nothing is sent to EP. Call it between steps, not between
-        :meth:`begin_step` and :meth:`post_solve`.
+        with no shortening velocity. The model, ``outputs`` (but for ``outputs["lmbda"]``,
+        which is ``lmbda_prev``) and the reported tension are untouched, and nothing is
+        sent to EP. Call it between steps. A trial pending from :meth:`begin_step` was
+        advanced with the old λ_n, so it is discarded: a fresh :meth:`begin_step` is
+        needed, and a :meth:`post_solve` without one raises ``RuntimeError``.
 
         The other way to start deformed is one accepted step at ``dt == 0``, where the
         step is the identity.
@@ -401,6 +408,7 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         """
         if self._lmbda_expression is None:
             raise RuntimeError("register(u) must be called before reset_stretch()")
+        self._trial = None
         self.lmbda_prev.interpolate(self._lmbda_expression)
         self._lmbda_old = self.lmbda_prev.x.array.copy()
 

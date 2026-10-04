@@ -298,8 +298,7 @@ def run_one(
     t1 = time.perf_counter()
     for n in range(n_steps):
         t_n, t_next = n * dt, (n + 1) * dt
-        backend.t.value = t_n  # type: ignore[assignment]
-        backend.dt.value = dt  # type: ignore[assignment]
+        backend.begin_step(t_n, dt)
         for name, value in study.inputs(t_next).items():
             backend.inputs[name].x.array[:] = value
 
