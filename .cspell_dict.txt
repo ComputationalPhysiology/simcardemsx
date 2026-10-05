@@ -573,3 +573,4 @@ checkpointable
 checkpointer
 checkpointed
 getpid
+Intracomm
