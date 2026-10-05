@@ -199,10 +199,10 @@ def test_conforms_to_the_protocol(mesh, dirs, Backend):
     f0, s0, n0 = dirs
     backend = Backend(f0=f0, s0=s0, n0=n0, mesh=mesh)
 
-    # Checked member by member rather than with isinstance: ActivationBackend is
-    # a plain Protocol, and a runtime_checkable one would only verify that names
-    # exist, not that they are callable or of the right type -- which is all the
-    # coupler actually depends on.
+    # Checked member by member rather than with isinstance: these backends are
+    # not a CoupledBackend, and a runtime_checkable protocol would only verify that
+    # names exist, not that they are callable or of the right type -- which is all
+    # the coupler actually depends on.
     for name in ("S", "P", "Fe", "register", "wants_from_ep", "gives_to_ep", "step", "post_solve"):
         assert callable(getattr(backend, name)), f"{Backend.__name__} is missing {name}"
 

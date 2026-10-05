@@ -12,10 +12,10 @@ at a much smaller step:
   split at 10 times gate 4's inputs (gate D2).
 
 The builders and inputs below mirror ``tests/conftest.py`` (``_mechanics``,
-``_dynamic_mechanics``, ``_rollers``, ``calcium``, ``_twitch``, ``_zetasplit_inputs``)
-and ``tests/test_dynamic_coupling.py`` (``D2_INPUT_SCALE``, ``_d2_inputs``), by value.
-They are copies, not imports: keep them in step with the gates. The step loop is that
-of ``_run`` in ``tests/test_monolithic_coupling.py``.
+``_dynamic_mechanics``, ``_rollers``, ``calcium``, ``_twitch``, ``_caisplit_inputs``,
+``_zetasplit_inputs``) and ``tests/test_dynamic_coupling.py`` (``D2_INPUT_SCALE``,
+``_d2_inputs``), by value. They are copies, not imports: keep them in step with the
+gates. The step loop is that of ``_run`` in ``tests/conftest.py``.
 
 Each run goes to ``<output-dir>/element/<study>/<scheme>/dt<dt>/`` with ``steps.csv``,
 ``snapshots.npz`` (every step), ``run.json`` (which holds the SNES residual history
@@ -298,8 +298,7 @@ def run_one(
     t1 = time.perf_counter()
     for n in range(n_steps):
         t_n, t_next = n * dt, (n + 1) * dt
-        backend.t.value = t_n  # type: ignore[assignment]
-        backend.dt.value = dt  # type: ignore[assignment]
+        backend.begin_step(t_n, dt)
         for name, value in study.inputs(t_next).items():
             backend.inputs[name].x.array[:] = value
 

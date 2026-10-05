@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import ModuleType
-from typing import TYPE_CHECKING, Callable, Mapping, NamedTuple
+from typing import TYPE_CHECKING, Callable, Mapping, NamedTuple, Protocol
 
 import dolfinx
 import numpy as np
@@ -44,7 +44,7 @@ from .interpolation import TransferOperator
 if TYPE_CHECKING:
     import beat
 
-    from .backends import GeneratedActivation
+    from .backends.base import CoupledBackend
 
 
 @dataclass(frozen=True)
@@ -77,11 +77,25 @@ def _names_by_index(missing: Mapping[str, int]) -> tuple[str, ...]:
     return tuple(name for name, _ in sorted(missing.items(), key=lambda item: item[1]))
 
 
-def resolve(ep_module: ModuleType, activation_module: ModuleType) -> Crossings:
+class CrossingSide(Protocol):
+    """What :func:`resolve` reads of the activation side: a generated module, or a
+    backend exposing the same two name -> index dicts."""
+
+    @property
+    def missing(self) -> Mapping[str, int]: ...
+
+    @property
+    def provides(self) -> Mapping[str, int]: ...
+
+
+def resolve(ep_module: ModuleType, activation_module: CrossingSide) -> Crossings:
     """Derive what crosses between `ep_module` and `activation_module`.
 
-    Both are the modules `ode_model.load_ode_modules` loads from one `.ode`
-    file's split. A module may lack a `missing` or `provides` attribute
+    `ep_module` is the EP module `ode_model.load_ode_modules` loads from one `.ode`
+    file's split; `activation_module` is the other side, any `CrossingSide`: the
+    mechanics module of the same split, or a backend that carries `missing` and
+    `provides` (`GeneratedActivation`, `CrossbridgeSegregated`). Either may lack a
+    `missing` or `provides` attribute
     entirely (gotranx omits `missing` when a side needs nothing; treat a
     missing `provides` the same way) -- both are read with `getattr(...,
     {})`, not indexing, for that reason.
@@ -178,7 +192,7 @@ class TransferPlan:
     Parameters
     ----------
     crossings:
-        From :func:`resolve` on ``ep_module`` and the backend's module.
+        From :func:`resolve` on ``ep_module`` and ``backend``.
     ep_module:
         The generated EP module; the one ``ode`` integrates.
     ode:
@@ -203,7 +217,7 @@ class TransferPlan:
         crossings: Crossings,
         ep_module: ModuleType,
         ode: beat.odesolver.DolfinODESolver,
-        backend: GeneratedActivation,
+        backend: CoupledBackend,
     ):
         V_ep = ode.v_ode.function_space
         space = _space_name(V_ep)

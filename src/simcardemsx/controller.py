@@ -1,9 +1,12 @@
 """The coupled time step: EP micro-steps, then one mechanics solve, values crossing both ways.
 
-What crosses is derived from the two generated modules (:func:`~simcardemsx.transfer_plan.
-resolve`), and moved by a :class:`~simcardemsx.transfer_plan.TransferPlan`. Only
-:class:`~simcardemsx.backends.GeneratedActivation` is supported here; the older backends
-remain usable directly against ``pulse``.
+What crosses is derived from the EP module and the backend's ``missing``/``provides``
+(:func:`~simcardemsx.transfer_plan.resolve`), and moved by a
+:class:`~simcardemsx.transfer_plan.TransferPlan`. The backend is a
+:class:`~simcardemsx.backends.base.CoupledBackend`:
+:class:`~simcardemsx.backends.GeneratedActivation` or
+:class:`~simcardemsx.backends.CrossbridgeSegregated`. The deprecated
+:class:`~simcardemsx.backends.ZetaSplitUFL` remains usable directly against ``pulse``.
 """
 
 from __future__ import annotations
@@ -12,14 +15,13 @@ import logging
 from typing import TYPE_CHECKING, Callable
 
 import beat
-import numpy as np
 import pulse
 
 from .mechanics import as_driver
 from .transfer_plan import TransferPlan, resolve
 
 if TYPE_CHECKING:
-    from .backends import GeneratedActivation
+    from .backends.base import CoupledBackend
     from .mechanics import MechanicsDriver
     from .ode_model import ODEModules
 
@@ -44,8 +46,10 @@ class SimulationController:
     backend:
         The activation backend. Must be ``mechanics.problem.model.active``.
     ode_modules:
-        The two modules generated from the ``.ode`` file ``ep_solver`` and ``backend``
-        were built from.
+        The two modules generated from the ``.ode`` file ``ep_solver`` was built from
+        (and a ``GeneratedActivation`` backend, from its ``mechanics``). Only
+        ``ode_modules.ep`` is read: what crosses is resolved between it and the
+        backend, and ``ode_modules.mechanics`` is no longer read.
     dt_mech, dt_ep:
         Mechanics and EP time steps, in ms. ``dt_mech`` must be a whole multiple of
         ``dt_ep``.
@@ -68,7 +72,7 @@ class SimulationController:
         self,
         mechanics: MechanicsDriver | pulse.StaticProblem,
         ep_solver: beat.MonodomainSplittingSolver,
-        backend: GeneratedActivation,
+        backend: CoupledBackend,
         ode_modules: ODEModules,
         dt_mech: float,
         dt_ep: float,
@@ -131,7 +135,7 @@ class SimulationController:
         self.ep_steps_per_mech = ep_steps_per_mech
 
         self.plan = TransferPlan(
-            resolve(ode_modules.ep, ode_modules.mechanics),
+            resolve(ode_modules.ep, backend),
             ode_modules.ep,
             ode,
             backend,
@@ -149,9 +153,10 @@ class SimulationController:
         """Advance the coupled system by one mechanics time step, from ``t`` to ``t + dt_mech``.
 
         In order: the EP micro-steps (``ep_callback(t, ep_step_idx)`` after each); EP
-        values forward into the backend's inputs, at the new ``t``; ``self.mechanics.
-        advance()``, with the backend stepping from the old ``t`` by ``dt_mech``;
-        ``post_solve()``; the backend's outputs back into EP's arrays; ``mech_callback(t,
+        values forward into the backend's inputs, at the new ``t``;
+        ``backend.begin_step(t_n, dt_mech)``, which prepares the step from the old ``t``;
+        ``self.mechanics.advance(t_n, dt_mech)``; ``backend.post_solve()``, which accepts
+        the step; the backend's outputs back into EP's arrays; ``mech_callback(t,
         mech_step_idx, newton_iterations)``.
 
         Raises ``RuntimeError`` if the mechanics driver's ``advance`` does not converge.
@@ -169,8 +174,7 @@ class SimulationController:
 
         self.plan.forward(self.t)
 
-        self.backend.t.value = np.asarray(t_n)
-        self.backend.dt.value = np.asarray(self.dt_mech)
+        self.backend.begin_step(t_n, self.dt_mech)
         ok = self.mechanics.advance(t_n, self.dt_mech)
         if not ok:
             raise RuntimeError(

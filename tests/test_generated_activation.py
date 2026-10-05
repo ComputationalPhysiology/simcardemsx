@@ -11,54 +11,22 @@ numpy printer instead of its UFL printer, so the two runs differ only in how the
 expressions are evaluated.
 """
 
-import types
-from functools import cache
-from pathlib import Path
-
 from mpi4py import MPI
 
 import basix.ufl
 import dolfinx
-import gotranx
 import numpy as np
 import pulse
 import pytest
 import ufl
-from conftest import calcium
+from conftest import _f0, _numpy_mech, calcium
 
 from simcardemsx.averaging import make_averager
 from simcardemsx.backends import GeneratedActivation
 
-ODEFILES_DIR = Path(__file__).parent.parent / "numerical_experiments" / "odefiles"
-
-
-@cache
-def _numpy_mech(split: str) -> types.ModuleType:
-    """The ``mechanics`` component of ``split``, generated as numpy (GRL) and loaded.
-
-    Generated exactly as :func:`simcardemsx.ode_model.generate_ode_code` generates
-    the UFL module -- same component, same scheme, same ``missing_values`` -- but
-    with ``gotran2py``.
-    """
-    ode = gotranx.load_ode(ODEFILES_DIR / f"ToRORd_dynCl_endo_{split}.ode")
-    mechanics_comp = ode.get_component("mechanics")
-    ep_ode = ode - mechanics_comp
-    code = gotranx.cli.gotran2py.get_code(
-        mechanics_comp.to_ode(),
-        scheme=[gotranx.schemes.Scheme.generalized_rush_larsen],
-        missing_values=ep_ode.missing_variables,
-    )
-    module = types.ModuleType(f"numpy_mechanics_{split}")
-    exec(code, module.__dict__)
-    return module
-
 
 def _mesh() -> dolfinx.mesh.Mesh:
     return dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
-
-
-def _f0(mesh):
-    return dolfinx.fem.Constant(mesh, np.array([1.0, 0.0, 0.0]))
 
 
 def _set_stretch(u: dolfinx.fem.Function, stretch: float) -> None:
