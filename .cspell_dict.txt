@@ -478,6 +478,7 @@ Stockmeyer
 streamlit
 subk
 subv
+summarise
 sundnes
 superlu
 T
