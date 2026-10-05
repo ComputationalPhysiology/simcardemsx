@@ -13,22 +13,39 @@ the backend, and the controller itself. A :class:`Snapshot` holds copies of all 
 state in memory (:func:`take_snapshot`), so that a step that fails can be undone
 (:func:`restore_snapshot`). A restore is exact on its own: nothing has to be moved
 back to EP afterwards.
+
+On disk, a :class:`Checkpointer` writes them in the upstream CLIs' layout: every
+Function into :data:`RESTART` (``restart.bp``, through io4dolfinx, in input-mesh order)
+and every metadata value into :data:`RESTART_META` (``restart.json``), written last and
+atomically, so that it only ever names a complete checkpoint.
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import hashlib
+import json
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
+
+from mpi4py import MPI
 
 import dolfinx
+import io4dolfinx
 import numpy as np
+
+from .provenance import provenance
 
 if TYPE_CHECKING:
     import beat
     import pulse
     import pulse.cycle
+
+    from .controller import SimulationController
 
 
 @runtime_checkable
@@ -210,11 +227,16 @@ def take_snapshot(components: Sequence[Checkpointable]) -> Snapshot:
     return Snapshot(arrays, metadata)
 
 
-def _difference(saved: Sequence[str], own: Sequence[str]) -> str:
+def _difference(
+    saved: Sequence[str],
+    own: Sequence[str],
+    saved_in: str = "the snapshot",
+    own_in: str = "the components",
+) -> str:
     only_saved = [name for name in saved if name not in own]
     only_own = [name for name in own if name not in saved]
     if only_saved or only_own:
-        return f"only in the snapshot: {only_saved}; only in the components: {only_own}"
+        return f"only in {saved_in}: {only_saved}; only in {own_in}: {only_own}"
     return f"the same names in another order: {list(saved)} and {list(own)}"
 
 
@@ -257,3 +279,367 @@ def restore_snapshot(components: Sequence[Checkpointable], snapshot: Snapshot) -
         for (_, f), (_, values) in zip(functions, snapshot.arrays[component.namespace]):
             f.x.array[:] = values
         component.load_restart(functions, copy.deepcopy(snapshot.metadata[component.namespace]))
+
+
+# ----------------------------------------------------------------------
+# On disk: restart.bp and restart.json
+# ----------------------------------------------------------------------
+
+#: The checkpoint's Functions, written by io4dolfinx into the run's output folder.
+RESTART = "restart.bp"
+#: The checkpoint's metadata. Written last, and atomically, so it names only a
+#: checkpoint whose Functions are all in :data:`RESTART`.
+RESTART_META = "restart.json"
+#: The namespace in ``restart.json`` that holds the controller's metadata and the
+#: checkpointer's own keys: :class:`~simcardemsx.controller.SimulationController`'s.
+NAMESPACE = "simcardemsx"
+#: The keys the checkpointer adds to :data:`NAMESPACE`'s entry. No component's metadata
+#: may use them.
+RESERVED_KEYS = ("physics_hash", "functions", "provenance", "history")
+
+#: The directory provenance is taken in: simcardemsx's own source, for its git commit.
+_PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def write_json(path: Path, data: Mapping[str, Any], comm: MPI.Comm = MPI.COMM_WORLD) -> None:
+    """Write ``data`` to ``path`` as JSON, atomically, on rank 0 of ``comm``.
+
+    The JSON goes into a temporary file beside ``path``, which ``os.replace`` then moves
+    onto it, so ``path`` holds either the old document or the new one, whole, even if
+    the process is killed meanwhile. Rank 0 then broadcasts whether it succeeded, which
+    is the barrier: no rank returns before the file is in place, and if rank 0 fails,
+    every rank raises (rank 0 its own error, the others ``OSError``).
+    """
+    failure: Exception | None = None
+    if comm.rank == 0:
+        tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+        try:
+            tmp.write_text(json.dumps(dict(data), indent=2))
+            os.replace(tmp, path)
+        except Exception as error:
+            failure = error
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+    message = comm.bcast(None if failure is None else repr(failure), root=0)
+    if failure is not None:
+        raise failure
+    if message is not None:
+        raise OSError(f"Rank 0 could not write {path}: {message}")
+
+
+def physics_hash(physics: Mapping[str, Any]) -> str:
+    """The sha256 of ``physics`` as JSON with sorted keys, as the upstream CLIs hash
+    their configuration. Values JSON cannot hold are hashed as their ``str``."""
+    return hashlib.sha256(
+        json.dumps(dict(physics), sort_keys=True, default=str).encode(),
+    ).hexdigest()
+
+
+def check_restart(folder: Path, physics: Mapping[str, Any]) -> None:
+    """Refuse to restart a run of ``physics`` from the checkpoint in ``folder`` unless
+    that checkpoint was written with the same physics.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``folder / RESTART_META`` does not exist: ``folder`` holds no complete
+        checkpoint.
+    ValueError
+        If the checkpoint's ``physics_hash`` is not :func:`physics_hash` of ``physics``,
+        or it has none (it was not written by a :class:`Checkpointer`).
+    """
+    folder = Path(folder)
+    path = folder / RESTART_META
+    if not path.exists():
+        raise FileNotFoundError(f"No checkpoint to restart from: {path} does not exist")
+    stored = json.loads(path.read_text()).get(NAMESPACE, {}).get("physics_hash")
+    if stored is None:
+        raise ValueError(
+            f"{path} has no {NAMESPACE}.physics_hash: it was not written by simcardemsx's "
+            "Checkpointer",
+        )
+    own = physics_hash(physics)
+    if stored != own:
+        raise ValueError(
+            f"Cannot restart: the physics differ from the checkpoint's (physics_hash "
+            f"{stored} in {path}, {own} for this run). The checkpointed run's "
+            f"configuration is in {folder / 'config.resolved.toml'}.",
+        )
+
+
+def _names_difference(
+    saved: Mapping[str, Sequence[str]],
+    own: Mapping[str, Sequence[str]],
+) -> str:
+    """How two ``{namespace: function names}`` dicts differ, namespace by namespace."""
+    parts = []
+    for namespace in [*saved, *(namespace for namespace in own if namespace not in saved)]:
+        if namespace not in own:
+            parts.append(f"{namespace!r} only in the checkpoint")
+        elif namespace not in saved:
+            parts.append(f"{namespace!r} only in this run")
+        elif list(saved[namespace]) != list(own[namespace]):
+            difference = _difference(
+                saved[namespace],
+                own[namespace],
+                "the checkpoint",
+                "this run",
+            )
+            parts.append(f"{namespace!r}: {difference}")
+    return "; ".join(parts)
+
+
+class Checkpointer:
+    """Write a coupled run to ``folder`` and read it back: ``restart.bp`` and
+    ``restart.json``, in the upstream CLIs' layout.
+
+    Its components are ``controller.components()`` followed by ``extra``. A checkpoint
+    holds each component's restart Functions in :data:`RESTART`, at ``t =
+    controller.t`` (ms), under their own names, and its metadata in
+    :data:`RESTART_META`, one entry per namespace. The :data:`NAMESPACE` entry, the
+    controller's, also holds the checkpointer's own keys (:data:`RESERVED_KEYS`):
+    ``physics_hash``, ``functions`` (each namespace's function names), ``provenance``
+    (of the process that wrote it) and ``history``.
+
+    Parameters
+    ----------
+    controller:
+        The coupled run.
+    folder:
+        Where the checkpoint is written and read.
+    physics:
+        Everything that defines the run's physics, and nothing about its length, its
+        output or its solver options. Only its :func:`physics_hash` is stored, and a
+        restore refuses a checkpoint written with another, so a restart may change the
+        end time or the solver options, as with the CLIs.
+    extra:
+        More components, saved after the controller's.
+
+    Attributes
+    ----------
+    components:
+        ``controller.components()`` followed by ``extra``.
+    provenance:
+        This process's :func:`~simcardemsx.provenance.provenance`.
+    history:
+        The provenance of every process that wrote this run or resumed it, oldest
+        first: ``[provenance]`` until :meth:`restore` puts the stored history before it.
+
+    Raises
+    ------
+    ValueError
+        If two components share a namespace or a restart-function name, or a
+        component's metadata uses one of :data:`RESERVED_KEYS`.
+
+    Notes
+    -----
+    Times that :data:`RESTART` holds for every function are complete checkpoints.
+    :meth:`write` writes no Functions at a time already complete there (io4dolfinx
+    would append a duplicate, and read the first one back), and only rewrites
+    ``restart.json``. A fresh checkpointer knows of none; :meth:`restore` reads them.
+    So a fresh one assumes that ``folder`` holds no ``restart.bp`` of another run.
+    """
+
+    def __init__(
+        self,
+        controller: SimulationController,
+        folder: Path,
+        *,
+        physics: Mapping[str, Any],
+        extra: Sequence[Checkpointable] = (),
+    ):
+        self.controller = controller
+        self.folder = Path(folder)
+        self.physics = physics
+        self.components: list[Checkpointable] = [*controller.components(), *extra]
+        self.comm = controller.mechanics.problem.geometry.mesh.comm
+        self._check_components()
+        self.provenance = provenance(_PACKAGE_DIR, self.comm)
+        self.history: list[dict[str, Any]] = [self.provenance]
+        self._complete: list[float] = []
+
+    def _check_components(self) -> None:
+        namespaces: set[str] = set()
+        owners: dict[str, str] = {}
+        shared: list[str] = []
+        for component in self.components:
+            namespace = component.namespace
+            if namespace in namespaces:
+                raise ValueError(f"Two components share the namespace {namespace!r}")
+            namespaces.add(namespace)
+            for name, _ in component.restart_functions():
+                if name in owners:
+                    shared.append(f"{name!r} ({owners[name]!r} and {namespace!r})")
+                owners.setdefault(name, namespace)
+            reserved = [key for key in RESERVED_KEYS if key in component.restart_metadata()]
+            if reserved:
+                raise ValueError(
+                    f"The {namespace!r} component's metadata uses {reserved}, which the "
+                    f"checkpointer reserves for its own keys: {list(RESERVED_KEYS)}",
+                )
+        if shared:
+            raise ValueError(
+                "Restart function names must be unique across components, but these are "
+                f"shared: {', '.join(shared)}",
+            )
+
+    def _tolerance(self) -> float:
+        """Two times (ms) this close are one checkpoint's, as the CLIs compare them."""
+        return 1e-9 * self.controller.dt_mech
+
+    def _holds(self, times: Sequence[float] | np.ndarray, t: float) -> bool:
+        return bool(np.any(np.abs(np.asarray(times, dtype=float) - t) < self._tolerance()))
+
+    def _stored_times(self, name: str) -> np.ndarray:
+        """Every time :data:`RESTART` holds ``name`` at, duplicates included."""
+        times = io4dolfinx.read_timestamps(
+            filename=self.folder / RESTART,
+            comm=self.comm,
+            function_name=name,
+        )
+        return np.asarray(times, dtype=float)
+
+    def _functions(
+        self,
+    ) -> list[tuple[Checkpointable, list[tuple[str, dolfinx.fem.Function]]]]:
+        """Each component with a fresh call of its ``restart_functions()``."""
+        return [(component, component.restart_functions()) for component in self.components]
+
+    def write(self) -> None:
+        """Write a checkpoint of the run at ``t = controller.t``.
+
+        In order: every component's Functions into :data:`RESTART` at ``t``, unless
+        ``t`` is already complete there; each component's ``write_sidecar(folder, t)``,
+        where defined; and :data:`RESTART_META`, last and atomically
+        (:func:`write_json`), so that it names this checkpoint only once all of it is
+        on disk.
+
+        Raises
+        ------
+        RuntimeError
+            Before writing anything, if the backend has a step pending
+            (``begin_step`` without ``post_solve``): checkpoint between steps.
+        """
+        t = self.controller.t
+        # Both CoupledBackends have step_pending; the protocol does not say so.
+        if cast(Any, self.controller.backend).step_pending:
+            raise RuntimeError(
+                f"Cannot checkpoint at t = {t} ms: the backend has a step pending "
+                "(begin_step without post_solve). Checkpoint between steps.",
+            )
+        functions = self._functions()
+        if not self._holds(self._complete, t):
+            for _, pairs in functions:
+                for name, f in pairs:
+                    io4dolfinx.write_function_on_input_mesh(
+                        self.folder / RESTART,
+                        f,
+                        time=t,
+                        name=name,
+                    )
+            self._complete.append(t)
+        for component in self.components:
+            write_sidecar = getattr(component, "write_sidecar", None)
+            if write_sidecar is not None:
+                write_sidecar(self.folder, t)
+
+        metadata = {
+            component.namespace: component.restart_metadata() for component in self.components
+        }
+        metadata[NAMESPACE] = {
+            **metadata.get(NAMESPACE, {}),
+            "physics_hash": physics_hash(self.physics),
+            "functions": {
+                component.namespace: [name for name, _ in pairs] for component, pairs in functions
+            },
+            "provenance": self.provenance,
+            "history": self.history,
+        }
+        write_json(self.folder / RESTART_META, metadata, self.comm)
+
+    def restore(self) -> float:
+        """Restore the run from the checkpoint :data:`RESTART_META` names, and return
+        its ``t`` (ms).
+
+        In order: the physics are checked (:func:`check_restart`), then the function
+        names and the time; every component's Functions, from a fresh
+        ``restart_functions()`` call, are read from :data:`RESTART` at ``t``; each
+        component's ``load_restart`` is called, in order, with its metadata as written;
+        then each component's ``read_sidecar(folder, t)``, where defined. Nothing is
+        moved back to EP afterwards (``plan.backward()`` is not called): the rows of
+        EP's arrays that come from the backend are the transfer plan's own restart
+        Functions. :attr:`history` becomes the stored history followed by this
+        process's provenance.
+
+        Each Function is read at the stored time closest to ``t``: io4dolfinx reads at
+        an exact time, and returns the first of duplicates.
+
+        Raises
+        ------
+        FileNotFoundError, ValueError
+            From :func:`check_restart`.
+        ValueError
+            If the checkpoint's function names differ from this run's, listing the
+            differences, or if :data:`RESTART` does not hold ``t`` for every function,
+            listing the times it does hold for every one. Both before anything is read.
+        """
+        check_restart(self.folder, self.physics)
+        meta = json.loads((self.folder / RESTART_META).read_text())
+        own = meta[NAMESPACE]
+
+        functions = self._functions()
+        names = {component.namespace: [name for name, _ in pairs] for component, pairs in functions}
+        if own["functions"] != names:
+            raise ValueError(
+                f"The checkpoint in {self.folder} holds other functions than this run "
+                f"({_names_difference(own['functions'], names)})",
+            )
+
+        t = float(own["t_ms"])
+        stored = {name: self._stored_times(name) for pairs in names.values() for name in pairs}
+        complete = self._complete_times(stored)
+        missing = [name for name, times in stored.items() if not self._holds(times, t)]
+        if missing:
+            which = "any function" if len(missing) == len(stored) else str(missing)
+            raise ValueError(
+                f"{self.folder / RESTART} holds no checkpoint at t = {t} ms, which "
+                f"{RESTART_META} names, for {which}. It holds complete checkpoints at "
+                f"t = {complete} ms.",
+            )
+
+        for _, pairs in functions:
+            for name, f in pairs:
+                times = stored[name]
+                io4dolfinx.read_function(
+                    self.folder / RESTART,
+                    f,
+                    time=float(times[np.argmin(np.abs(times - t))]),
+                    name=name,
+                )
+                f.x.scatter_forward()
+        for component, pairs in functions:
+            metadata = {
+                key: value
+                for key, value in meta[component.namespace].items()
+                if key not in RESERVED_KEYS
+            }
+            component.load_restart(pairs, metadata)
+        for component in self.components:
+            read_sidecar = getattr(component, "read_sidecar", None)
+            if read_sidecar is not None:
+                read_sidecar(self.folder, t)
+
+        self._complete = complete
+        self.history = [*own["history"], self.provenance]
+        return t
+
+    def _complete_times(self, stored: Mapping[str, np.ndarray]) -> list[float]:
+        """The times held by every one of ``stored``'s names, sorted."""
+        if not stored:
+            return []
+        first, *rest = stored.values()
+        return [
+            float(t)
+            for t in np.unique(first)
+            if all(self._holds(times, float(t)) for times in rest)
+        ]

@@ -18,7 +18,7 @@ import pulse
 import pytest
 import ufl
 
-from simcardemsx.backends import GeneratedActivation
+from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.checkpoint import Checkpointable
 from simcardemsx.controller import SimulationController
 from simcardemsx.mechanics import MechanicsDriver
@@ -150,6 +150,37 @@ def match_land2017_initial_states(model: crossbridge.Land2017, mech_module: Modu
     init = mech_module.init_state_values()
     for attribute, name in _LAND2017_STATES.items():
         getattr(model, attribute)[:] = init[mech_module.state[name]]
+
+
+#: The reference sarcomere length [um] of the models that define no ``SL0``.
+SL_REF = {"RDQ18": 2.0}
+
+
+def _crossbridge_factory(model: str, mech: ModuleType, *, stabilized: bool = True):
+    """A ``backend_factory`` for :func:`_mechanics`/:func:`_dynamic_mechanics`.
+
+    It builds ``CrossbridgeSegregated`` of ``model`` on quadrature at the degree it is
+    handed, the mechanics form's. Land2017 gets the ``.ode``'s parameters and initial
+    states (``land2017_from_ode``, ``match_land2017_initial_states``); the other models
+    their own defaults, with :data:`SL_REF` where they define no ``SL0``.
+    """
+
+    def factory(mesh, f0, quadrature_degree):
+        land = model == "Land2017"
+        backend = CrossbridgeSegregated(
+            f0,
+            mesh,
+            model,
+            quadrature_degree=quadrature_degree,
+            SL_ref=SL_REF.get(model),
+            params=land2017_from_ode(mech) if land else None,
+            stabilized=stabilized,
+        )
+        if land:
+            match_land2017_initial_states(backend.model, mech)
+        return backend
+
+    return factory
 
 
 @pytest.fixture(scope="session")

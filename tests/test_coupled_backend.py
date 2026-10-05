@@ -10,8 +10,7 @@ from mpi4py import MPI
 import dolfinx
 import numpy as np
 import pytest
-from conftest import _f0
-from test_crossbridge_coupling import _crossbridge_factory
+from conftest import _crossbridge_factory, _f0
 
 from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.backends.base import CoupledBackend

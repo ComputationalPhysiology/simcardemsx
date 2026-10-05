@@ -571,3 +571,5 @@ zmin
 gpgsign
 checkpointable
 checkpointer
+checkpointed
+getpid
