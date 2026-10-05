@@ -69,9 +69,9 @@ def _unit_cube(n: int) -> dolfinx.mesh.Mesh:
 
 @pytest.fixture
 def build(split_modules, make_ep_solver, make_mechanics, make_dynamic_mechanics):
-    """``build(split, scheme, *, crossbridge=False, dynamic=False)``: gate 5's controller,
-    with every object new: the EP solver, the mechanics problem, the backend and the
-    controller.
+    """``build(split, scheme, *, crossbridge=False, dynamic=False, dt_mech=DT_MECH)``:
+    gate 5's controller, with every object new: the EP solver, the mechanics problem,
+    the backend and the controller.
 
     ``crossbridge`` puts ``CrossbridgeSegregated`` Land2017 in place of the
     ``GeneratedActivation`` (X2's harness; ``scheme`` is then not read), and
@@ -86,6 +86,7 @@ def build(split_modules, make_ep_solver, make_mechanics, make_dynamic_mechanics)
         *,
         crossbridge: bool = False,
         dynamic: bool = False,
+        dt_mech: float = DT_MECH,
     ) -> SimulationController:
         modules = split_modules[split]
         ep_mesh = _unit_cube(3)
@@ -107,7 +108,7 @@ def build(split_modules, make_ep_solver, make_mechanics, make_dynamic_mechanics)
                 ),
             )
         ep_solver = make_ep_solver(modules.ep, ep_mesh)
-        return SimulationController(problem, ep_solver, backend, modules, DT_MECH, DT_EP)
+        return SimulationController(problem, ep_solver, backend, modules, dt_mech, DT_EP)
 
     return build
 
@@ -238,6 +239,48 @@ def test_restore_refuses_other_function_names(tmp_path, build):
     checkpointer = Checkpointer(c, tmp_path, physics=P)
     raised = _refused(c, checkpointer.restore, ValueError, "activation_output_J_TRPN")
     assert "activation_output_Zetas" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "other, match",
+    [({"scheme": "segregated"}, "scheme must match"), ({"dt_mech": 0.5}, "dt_mech")],
+)
+def test_a_component_refusing_the_checkpoint_undoes_the_restore(tmp_path, build, other, match):
+    """Another scheme, or another ``dt_mech``, under the same physics dict: the
+    checkpointer's own checks pass, every Function is read, and then a component's
+    ``load_restart`` refuses (the backend's, or the controller's, the last one). The
+    restore must then put back everything the reads overwrote."""
+    b = _steps(build(), 2)
+    Checkpointer(b, tmp_path, physics=P).write()
+
+    c = build(**other)
+    checkpointer = Checkpointer(c, tmp_path, physics=P)
+    _refused(c, checkpointer.restore, ValueError, match)
+    assert checkpointer.history == [checkpointer.provenance]
+
+
+@dataclass
+class _Refusing(_Recording):
+    """Refuses its first ``load_restart`` (the restore), and fails its second (the undo)."""
+
+    def load_restart(self, functions, metadata) -> None:
+        super().load_restart(functions, metadata)
+        if len(self.calls) == 1:
+            raise ValueError("refused")
+        raise RuntimeError("cannot undo")
+
+
+def test_a_failing_undo_is_raised_with_the_refusal_as_its_cause(tmp_path, build):
+    b = _steps(build(), 1)
+    Checkpointer(b, tmp_path, physics=P, extra=[_Recording()]).write()
+
+    c = build()
+    refusing = _Refusing()
+    with pytest.raises(RuntimeError, match="cannot undo") as raised:
+        Checkpointer(c, tmp_path, physics=P, extra=[refusing]).restore()
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert str(raised.value.__cause__) == "refused"
+    assert len(refusing.calls) == 2
 
 
 def test_restore_refuses_a_component_this_run_lacks(tmp_path, build):

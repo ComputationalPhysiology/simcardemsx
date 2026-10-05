@@ -574,6 +574,14 @@ class Checkpointer:
         Each Function is read at the stored time closest to ``t``: io4dolfinx reads at
         an exact time, and returns the first of duplicates.
 
+        A refused restore changes nothing. The physics, the function names and the time
+        are checked before anything is read. Anything raised after that, by a read, by a
+        component's ``load_restart`` (a backend of another scheme, or a controller of
+        another ``dt_mech``, say) or by a ``read_sidecar``, is raised only once every
+        component has been put back as it was before the call, from a
+        :class:`Snapshot` taken before the first read. If putting it back raises too,
+        that error is raised, with the first as its cause.
+
         Raises
         ------
         FileNotFoundError, ValueError
@@ -581,7 +589,8 @@ class Checkpointer:
         ValueError
             If the checkpoint's function names differ from this run's, listing the
             differences, or if :data:`RESTART` does not hold ``t`` for every function,
-            listing the times it does hold for every one. Both before anything is read.
+            listing the times it does hold for every one; or from a component's
+            ``load_restart``, if it refuses its metadata.
         """
         check_restart(self.folder, self.physics)
         meta = json.loads((self.folder / RESTART_META).read_text())
@@ -607,6 +616,40 @@ class Checkpointer:
                 f"t = {complete} ms.",
             )
 
+        # Many restart Functions are the components' live ones, so the reads overwrite
+        # the run's state before any load_restart can refuse the checkpoint.
+        before = take_snapshot(self.components)
+        try:
+            self._read(functions, stored, t)
+            for component, pairs in functions:
+                metadata = {
+                    key: value
+                    for key, value in meta[component.namespace].items()
+                    if key not in RESERVED_KEYS
+                }
+                component.load_restart(pairs, metadata)
+            for component in self.components:
+                read_sidecar = getattr(component, "read_sidecar", None)
+                if read_sidecar is not None:
+                    read_sidecar(self.folder, t)
+        except BaseException as error:
+            try:
+                restore_snapshot(self.components, before)
+            except BaseException as restore_error:
+                raise restore_error from error
+            raise
+
+        self._complete = complete
+        self.history = [*own["history"], self.provenance]
+        return t
+
+    def _read(
+        self,
+        functions: Sequence[tuple[Checkpointable, list[tuple[str, dolfinx.fem.Function]]]],
+        stored: Mapping[str, np.ndarray],
+        t: float,
+    ) -> None:
+        """Read every Function from :data:`RESTART` at the stored time closest to ``t``."""
         for _, pairs in functions:
             for name, f in pairs:
                 times = stored[name]
@@ -617,21 +660,6 @@ class Checkpointer:
                     name=name,
                 )
                 f.x.scatter_forward()
-        for component, pairs in functions:
-            metadata = {
-                key: value
-                for key, value in meta[component.namespace].items()
-                if key not in RESERVED_KEYS
-            }
-            component.load_restart(pairs, metadata)
-        for component in self.components:
-            read_sidecar = getattr(component, "read_sidecar", None)
-            if read_sidecar is not None:
-                read_sidecar(self.folder, t)
-
-        self._complete = complete
-        self.history = [*own["history"], self.provenance]
-        return t
 
     def _complete_times(self, stored: Mapping[str, np.ndarray]) -> list[float]:
         """The times held by every one of ``stored``'s names, sorted."""
