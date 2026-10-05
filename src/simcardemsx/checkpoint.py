@@ -6,11 +6,13 @@ writes every component's :meth:`~Checkpointable.restart_functions` to one file a
 their :meth:`~Checkpointable.restart_metadata` to another, and on restart hands each
 component a fresh call of ``restart_functions()`` whose values it has overwritten.
 
-The controller's components are its EP solver (:class:`EPState`), its mechanics problem
+The controller's components are its EP solver (:class:`EPState`), its transfer plan
+(the rows of EP's arrays that come from the backend), its mechanics problem
 (:class:`MechanicsState`), a cycle controller if it drives one (:class:`CycleState`),
 the backend, and the controller itself. A :class:`Snapshot` holds copies of all their
 state in memory (:func:`take_snapshot`), so that a step that fails can be undone
-(:func:`restore_snapshot`).
+(:func:`restore_snapshot`). A restore is exact on its own: nothing has to be moved
+back to EP afterwards.
 """
 
 from __future__ import annotations

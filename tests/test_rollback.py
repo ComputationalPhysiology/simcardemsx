@@ -9,8 +9,8 @@ whose λ and ``Zetas``/``Zetaw`` cross back to EP, so EP's ``parameters`` and
 The controller snapshots every component at the start of a step. If anything up to and
 including ``post_solve`` raises, or the driver reports failure, it restores the
 snapshot: every array and metadata value is then bit-identical to before the step (EP's
-``parameters`` and ``missing_variables`` included, which only ``plan.backward()``
-writes, after ``post_solve``), ``controller.t`` is the step's start and
+``parameters`` and ``missing_variables`` included, whose crossing rows the transfer plan
+holds), ``controller.t`` is the step's start and
 ``controller.t_failed`` its end. A retry then reproduces the uninterrupted run bit for
 bit. X3 (``test_segregated_backend.py``) and Review Focus 1 (``test_cycle_coupling.py``)
 check the backend and the cycle's mechanics; these check everything, EP included.
@@ -105,6 +105,34 @@ def test_snapshot_restore_is_bit_identical(split_modules, make_ep_solver, make_m
     controller.step()
     controller.restore(snapshot)
     _assert_same_state(_coupled_state(controller), reference)
+
+
+def test_snapshot_before_any_step_restores_ep_as_constructed(
+    split_modules,
+    make_ep_solver,
+    make_mechanics,
+):
+    """A snapshot at t = 0, before any step, holds EP's crossing rows as constructed,
+    which no backend output reproduces (``outputs["lmbda"]`` is 0 then). Restoring it
+    after two steps puts them back bit for bit, into beat's own arrays."""
+    controller = _controller(split_modules, make_ep_solver, make_mechanics)
+    ode = controller.ep_solver.ode
+    missing_variables, parameters = ode.missing_variables, ode.parameters
+    constructed = missing_variables.copy(), parameters.copy()
+    snapshot = controller.snapshot()
+
+    controller.step()
+    controller.step()
+    assert not np.array_equal(missing_variables, constructed[0])
+    assert not np.array_equal(parameters, constructed[1])
+
+    controller.restore(snapshot)
+    # In place: beat's inner solver holds these arrays by reference.
+    assert ode.missing_variables is missing_variables
+    assert ode.parameters is parameters
+    assert np.array_equal(missing_variables, constructed[0])
+    assert np.array_equal(parameters, constructed[1])
+    assert controller.t == 0.0
 
 
 @pytest.mark.parametrize("scheme", ["monolithic", "segregated", "stabilized"])
@@ -270,6 +298,10 @@ def test_load_restart_refuses_another_configuration(
     with pytest.raises(ValueError, match="state names"):
         ep.load_restart(ep.restart_functions(), reordered)
 
+    rows = controller.plan.restart_functions()
+    with pytest.raises(ValueError, match="transfer_parameter_lmbda"):
+        controller.plan.load_restart(rows[:-1], {})
+
     own = controller.restart_metadata()
     for key in ("dt_mech_ms", "dt_ep_ms"):
         with pytest.raises(ValueError, match=key.removesuffix("_ms")):
@@ -295,14 +327,28 @@ def test_components_and_controller_metadata(split_modules, make_ep_solver, make_
     names = sorted(controller.ode_modules.ep.state, key=controller.ode_modules.ep.state.__getitem__)
 
     components = controller.components()
-    assert [c.namespace for c in components] == ["ep", "mechanics", "activation", "simcardemsx"]
-    assert components[2] is controller.backend
-    assert components[3] is controller
+    assert [c.namespace for c in components] == [
+        "ep",
+        "transfer",
+        "mechanics",
+        "activation",
+        "simcardemsx",
+    ]
+    assert components[1] is controller.plan
+    assert components[3] is controller.backend
+    assert components[4] is controller
     assert [name for name, _ in components[0].restart_functions()] == [
         "v",
         *(f"state_{name}" for name in names),
     ]
     assert components[0].restart_metadata()["state_names"] == names
+    # The rows of beat's arrays that backward() writes, for the zeta split.
+    assert [name for name, _ in controller.plan.restart_functions()] == [
+        "transfer_missing_Zetas",
+        "transfer_missing_Zetaw",
+        "transfer_parameter_lmbda",
+    ]
+    assert controller.plan.restart_metadata() == {}
     assert controller.restart_functions() == []
     assert controller.t_failed is None
 
@@ -325,12 +371,13 @@ def test_components_and_controller_metadata(split_modules, make_ep_solver, make_
     components = with_cycle.components()
     assert [c.namespace for c in components] == [
         "ep",
+        "transfer",
         "mechanics",
         "cycle",
         "activation",
         "simcardemsx",
     ]
-    state = components[2]
+    state = components[3]
     assert isinstance(state, CycleState)
     assert state.restart_functions() == []
     assert state.restart_metadata() == {"initialized": True}

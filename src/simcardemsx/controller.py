@@ -185,11 +185,13 @@ class SimulationController:
 
     def components(self) -> list[Checkpointable]:
         """Everything whose state the coupled run carries from step to step, in the
-        order it is restored: EP, the mechanics problem, the cycle controller (only
-        when the driver is a :class:`~simcardemsx.mechanics.Cycle`), the backend, and
-        the controller itself."""
+        order it is restored: EP, the transfer plan (the rows of EP's arrays that come
+        from the backend), the mechanics problem, the cycle controller (only when the
+        driver is a :class:`~simcardemsx.mechanics.Cycle`), the backend, and the
+        controller itself."""
         components: list[Checkpointable] = [
             EPState(self.ep_solver, self._state_names),
+            self.plan,
             MechanicsState(self.mechanics.problem),
         ]
         if isinstance(self.mechanics, Cycle):
@@ -237,13 +239,15 @@ class SimulationController:
         return take_snapshot(self.components())
 
     def restore(self, snapshot: Snapshot) -> None:
-        """Put a :meth:`snapshot` back, then move the restored backend outputs to EP.
+        """Put a :meth:`snapshot` back into every one of :meth:`components`.
 
-        EP's ``missing_variables`` and ``parameters`` are not in the snapshot: they are
-        rewritten from the backend's outputs (``plan.backward()``), bit for bit.
+        Nothing is moved back to EP (``plan.backward()`` is not called): the rows of
+        EP's ``missing_variables`` and ``parameters`` that come from the backend are
+        the transfer plan's own state, restored with the rest. Moving the backend's
+        outputs back instead would be wrong before the first accepted step, when they
+        are zero and EP holds its initial values.
         """
         restore_snapshot(self.components(), snapshot)
-        self.plan.backward()
 
     def step(
         self,
@@ -261,9 +265,8 @@ class SimulationController:
 
         If anything up to and including ``post_solve`` raises (any ``BaseException``,
         ``KeyboardInterrupt`` included), or ``advance`` returns ``False``, the step is
-        rolled back: the snapshot is restored, so every component is as it was before
-        the step and ``t`` is ``t_n`` (EP's ``missing_variables`` and ``parameters``
-        are only written after ``post_solve``, so they are untouched);
+        rolled back: the snapshot is restored (:meth:`restore`), so every component,
+        EP's arrays included, is as it was before the step and ``t`` is ``t_n``;
         :attr:`t_failed` is set to ``t_n + dt_mech``; and the error is raised. That is
         ``RuntimeError`` if ``advance`` returned ``False``, and otherwise the error
         itself, unchanged. If the restore raises in turn, its error is raised with the
@@ -295,12 +298,7 @@ class SimulationController:
             self.backend.post_solve()
         except BaseException as error:
             try:
-                # Not restore(): nothing above writes EP's missing_variables or
-                # parameters, so they are as before the step already, and moving the
-                # backend's outputs back would change them before the first accepted
-                # step, when EP holds its own initial values (lmbda = 1, say) and
-                # the outputs theirs (0).
-                restore_snapshot(self.components(), snapshot)
+                self.restore(snapshot)
             except BaseException as restore_error:
                 raise restore_error from error
             self.t_failed = t_n + self.dt_mech
