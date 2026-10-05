@@ -191,3 +191,28 @@ def test_resolved_settings_round_trip(tmp_path):
         "path": "/x/y",
         "nested": {"p": "z", "v": [1.5, 2.5]},
     }
+
+
+def test_prepare_output_corrupt_restart_json_raises_value_error(tmp_path):
+    (tmp_path / checkpoint.RESTART_META).write_text("{not json")
+    (tmp_path / "keep.txt").write_text("x")
+    before = sorted(p.name for p in tmp_path.iterdir())
+    with pytest.raises(ValueError):
+        prepare_output(tmp_path, restart=True, overwrite=False, physics={})
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_results_writer_resume_skips_a_name_without_times(tmp_path):
+    mesh = _mesh()
+    f = dolfinx.fem.Function(_p1(mesh))
+    ResultsWriter(tmp_path).write(1.0, {"u": f})
+    writer = ResultsWriter(tmp_path)
+    writer.resume(["u", "never_written"])
+    assert writer._last == {"u": 1.0}
+    ResultsWriter(tmp_path / "empty").resume(["u"])  # no results.bp: sets nothing
+
+
+def test_results_writer_resume_propagates_a_real_read_failure(tmp_path):
+    (tmp_path / RESULTS).write_text("not a bp folder")
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        ResultsWriter(tmp_path).resume(["u"])

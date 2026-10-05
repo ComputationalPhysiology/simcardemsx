@@ -93,8 +93,10 @@ def _decide(
     if restart:
         try:
             check_restart(folder, physics)
-        except (FileNotFoundError, ValueError) as e:
-            return type(e).__name__, str(e)
+        except FileNotFoundError as e:
+            return "FileNotFoundError", str(e)
+        except ValueError as e:  # includes json.JSONDecodeError (a corrupt restart.json)
+            return "error", str(e)
         return "restart", ""
     if _matches(folder, artifacts):
         if not overwrite:
@@ -141,10 +143,12 @@ def prepare_output(
     action, message = comm.bcast(decision, root=0)
     if action == "FileNotFoundError":
         raise FileNotFoundError(message)
-    if action in ("error", "ValueError"):
+    if action == "error":
         raise ValueError(message)
     if action == "restart":
         return action
+    if action not in ("create", "wipe"):
+        raise ValueError(f"Cannot prepare output folder {folder}: unexpected action {action!r}")
 
     failure = None
     if comm.rank == 0:
@@ -226,10 +230,9 @@ class ResultsWriter:
         if not (self.folder / RESULTS).exists():
             return
         for name in names:
-            try:
-                times = read_result_times(self.folder, name, self.comm)
-            except Exception:  # name never written
-                continue
+            # io4dolfinx returns no times for a name never written to an existing file;
+            # any real read failure propagates.
+            times = read_result_times(self.folder, name, self.comm)
             if times.size:
                 self._last[name] = float(times[-1])
 
