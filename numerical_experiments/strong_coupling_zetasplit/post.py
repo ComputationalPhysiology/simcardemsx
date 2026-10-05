@@ -4,9 +4,10 @@ Reads the folder's ``config.resolved.toml``, ``results.bp`` and ``log.csv``, reb
 only the geometry and the spaces the run wrote from (``main.build_geometry``, not the
 coupled problem), and writes ``post/``, replacing it whole:
 
-- ``fields.bp``: VTX on P1 of ``u`` (interpolated from the run's P2), ``v``, and ``lmbda``
-  and ``Ta`` (the backend's quadrature values, averaged onto P1), at every time any of
-  them was saved. A field not saved at a time keeps its last saved value.
+- ``fields.bp``: VTX on P1 of ``u`` (interpolated from the run's displacement space),
+  ``v``, and ``lmbda`` and ``Ta`` (the backend's quadrature values, averaged onto P1),
+  at every time any of them was saved. A field not saved at a time keeps its last
+  saved value.
 - ``traces.csv``: ``t_ms``, then ``v``, ``lmbda`` and ``Ta`` at :data:`POINT` (from the P1
   fields) and as volume means (at the mechanics form's quadrature points, as
   ``log.csv``'s), one row per saved time; a quantity not saved at a time is ``nan``.
@@ -69,25 +70,31 @@ GRID = "#e4e3df"
 
 
 def result_functions(settings: Mapping[str, Any]) -> dict[str, dolfinx.fem.Function]:
-    """One Function per ``results.bp`` name, on the space the run wrote it from.
+    """One Function per ``results.bp`` name, on the space the run wrote it from, as the
+    run's resolved ``settings`` describe it.
 
-    ``v`` and ``cai`` are on the EP ODE space (``main.EP_ODE_ELEMENT``); ``u`` on pulse's
-    displacement space (``main.U_SPACE``, built as pulse builds it); ``lmbda``,
-    ``tension_kPa`` and ``stiffness_kPa`` on the backend's scalar quadrature space at
-    ``main.QUAD_DEGREE`` with basix's default scheme, as both backends build it. All on
-    one mesh, from ``main.build_geometry(settings)``.
+    ``v`` and ``cai`` are on the EP ODE space (``settings["ep"]["ode_element"]``); ``u``
+    on pulse's displacement space (``settings["mechanics"]["u_space"]``, built as pulse
+    builds it); ``lmbda``, ``tension_kPa`` and ``stiffness_kPa`` on the backend's scalar
+    quadrature space at ``settings["mechanics"]["quadrature_degree"]`` with basix's
+    default scheme, as both backends build it. All on one mesh, the slab
+    ``settings["geometry"]`` describes, from ``main.build_geometry(settings)``.
     """
     mesh = slab.build_geometry(settings).mesh
     cell = mesh.basix_cell()
-    ep_space = dolfinx.fem.functionspace(mesh, slab.EP_ODE_ELEMENT)
-    family, degree = slab.U_SPACE.split("_")
+    ep_space = dolfinx.fem.functionspace(mesh, tuple(settings["ep"]["ode_element"]))
+    family, degree = settings["mechanics"]["u_space"].split("_")
     u_space = dolfinx.fem.functionspace(
         mesh,
         basix.ufl.element(family, cell, int(degree), shape=(mesh.topology.dim,)),
     )
     quadrature_space = dolfinx.fem.functionspace(
         mesh,
-        basix.ufl.quadrature_element(cell, value_shape=(), degree=slab.QUAD_DEGREE),
+        basix.ufl.quadrature_element(
+            cell,
+            value_shape=(),
+            degree=settings["mechanics"]["quadrature_degree"],
+        ),
     )
     spaces = {
         **dict.fromkeys(slab.EP_RESULTS, ep_space),
@@ -110,12 +117,14 @@ def write_fields_and_traces(
     post_dir: Path,
     functions: Mapping[str, dolfinx.fem.Function],
     saved: Mapping[str, Mapping[float, np.ndarray]],
+    quadrature_degree: int,
 ) -> dict[str, np.ndarray]:
     """Write ``fields.bp`` and ``traces.csv`` into ``post_dir``; return the traces as
     columns, by :data:`TRACE_FIELDS`.
 
     ``functions`` are :func:`result_functions`'s, and ``saved`` their values by name
-    and time, as :func:`~simcardemsx.results.read_results` returns them.
+    and time, as :func:`~simcardemsx.results.read_results` returns them. The volume
+    means are taken at ``quadrature_degree``, the mechanics form's.
     """
     v, lmbda, tension, u = (functions[name] for name in ("v", "lmbda", "tension_kPa", "u"))
     mesh = v.function_space.mesh
@@ -133,7 +142,7 @@ def write_fields_and_traces(
     average_tension = make_averager(tension, shown["Ta"])
 
     # The volume means use the mechanics form's measure, as log.csv's do.
-    dx = ufl.Measure("dx", domain=mesh, metadata={"quadrature_degree": slab.QUAD_DEGREE})
+    dx = ufl.Measure("dx", domain=mesh, metadata={"quadrature_degree": quadrature_degree})
     volume = dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * dx)).real
     integrals = {name: dolfinx.fem.form(f * dx) for name, f in (("v", v), ("lmbda", lmbda))}
     integrals["Ta"] = dolfinx.fem.form(tension * dx)
@@ -292,7 +301,12 @@ def main(argv: list[str] | None = None) -> None:
     post_dir = folder / "post"
     shutil.rmtree(post_dir, ignore_errors=True)
     post_dir.mkdir()
-    traces = write_fields_and_traces(post_dir, functions, saved)
+    traces = write_fields_and_traces(
+        post_dir,
+        functions,
+        saved,
+        settings["mechanics"]["quadrature_degree"],
+    )
     write_plots(post_dir, traces, log)
 
 

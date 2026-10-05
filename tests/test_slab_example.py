@@ -10,7 +10,9 @@ against 2 ms followed by ``--restart`` to 4 ms, compared bit for bit.
 """
 
 import csv
+import hashlib
 import importlib
+import inspect
 import json
 import os
 import subprocess
@@ -18,10 +20,13 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import beat
 import io4dolfinx
 import numpy as np
+import pulse
 import pytest
 
+from simcardemsx.checkpoint import physics_hash
 from simcardemsx.results import RESULTS, read_resolved_settings, read_results
 
 EXAMPLES = Path(__file__).parent.parent / "numerical_experiments"
@@ -92,13 +97,17 @@ def _run_post(output_dir: Path, *python_args: str) -> subprocess.CompletedProces
     )
 
 
-def _post() -> ModuleType:
-    """``strong_coupling_zetasplit.post``, imported without running anything."""
+def _import(name: str) -> ModuleType:
+    """``strong_coupling_zetasplit.<name>``, imported without running anything."""
     sys.path.insert(0, str(EXAMPLES))
     try:
-        return importlib.import_module("strong_coupling_zetasplit.post")
+        return importlib.import_module(f"strong_coupling_zetasplit.{name}")
     finally:
         sys.path.remove(str(EXAMPLES))
+
+
+def _post() -> ModuleType:
+    return _import("post")
 
 
 def _files(folder: Path) -> dict[str, bytes]:
@@ -228,6 +237,141 @@ def test_slab_restart_matches_the_uninterrupted_run(tmp_path):
     assert (straight / "post" / "traces.csv").read_bytes() == (
         restarted / "post" / "traces.csv"
     ).read_bytes()
+
+
+#: Runs main.py with ``ResultsWriter.write`` failing on the mechanics fields at t = 3 ms:
+#: inside mech_callback, after the step is accepted and its log row and recorder row
+#: are written. The arguments after ``-c <script>`` are main.py's.
+FAIL_IN_OUTPUT = """
+import runpy, sys
+from simcardemsx.results import ResultsWriter
+write = ResultsWriter.write
+def failing(self, t_ms, functions):
+    if "u" in functions and t_ms == 3.0:
+        raise RuntimeError("disk full")
+    write(self, t_ms, functions)
+ResultsWriter.write = failing
+sys.argv = sys.argv[1:]
+runpy.run_path("main.py", run_name="__main__")
+"""
+
+
+@pytest.mark.slow
+def test_slab_failure_in_a_steps_output_restarts_from_the_last_checkpoint(tmp_path):
+    """A failure in a step's output (here ``results.bp``, inside ``mech_callback``)
+    follows an accepted step, so the run writes no end checkpoint at that step's end:
+    its output is incomplete. The restart continues from the last periodic checkpoint
+    and gives the uninterrupted run's files."""
+    straight, failed = tmp_path / "a", tmp_path / "b"
+    result = _run_slab("--t-end", "4", output_dir=straight)
+    assert result.returncode == 0, result.stderr[-3000:]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            FAIL_IN_OUTPUT,
+            "main.py",
+            *CROSSBRIDGE,
+            "--t-end",
+            "4",
+            "--checkpoint-every",
+            "2",
+            "--output-dir",
+            str(failed),
+        ],
+        cwd=EXAMPLE_DIR,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert result.returncode != 0
+    assert "disk full" in result.stderr
+    assert json.loads((failed / "restart.json").read_text())["simcardemsx"]["t_ms"] == 2.0
+    run = json.loads((failed / "run.json").read_text())
+    assert "disk full" in run["failure"]
+    assert run["t_fail_ms"] == 3.0
+
+    result = _run_slab("--t-end", "4", "--restart", output_dir=failed)
+    assert result.returncode == 0, result.stderr[-3000:]
+    for name in RESULT_NAMES:
+        assert _raw_times(failed, name) == _raw_times(straight, name), name
+    a, b = _results(straight), _results(failed)
+    for name in RESULT_NAMES:
+        for t in a[name]:
+            assert np.array_equal(a[name][t], b[name][t]), (name, t)
+    for name in ("log.csv", "steps.csv"):
+        assert (straight / name).read_bytes() == (failed / name).read_bytes(), name
+
+
+def _odefile() -> Path:
+    return EXAMPLES / "odefiles" / "ToRORd_dynCl_endo_caisplit.ode"
+
+
+def test_physics_is_the_inputs_the_run_reads(tmp_path):
+    """The physics hold the material pulse is given (in base units), beat's stimulus
+    timing, and the ``.ode`` file by name and content, not by path; the run length and
+    the output options are not in them."""
+    slab = _import("main")
+    args = slab.parse_args(["--odefile", str(_odefile()), "--scheme", "stabilized"])
+    physics = slab.physics(args)
+
+    material = slab.material_parameters()
+    assert physics["mechanics"]["material"] == {
+        "model": "HolzapfelOgden",
+        "units": "SI base units (Pa)",
+        **{name: float(value.to_base_units()) for name, value in material.items()},
+    }
+    assert physics["mechanics"]["material"]["a"] == 2280.0  # Pa
+    defaults = inspect.signature(beat.stimulation.define_stimulus).parameters
+    stimulus = physics["ep"]["stimulus"]
+    assert stimulus["start_ms"] == defaults["start"].default
+    assert stimulus["duration_ms"] == defaults["duration"].default
+    assert physics["odefile"] == {
+        "name": _odefile().name,
+        "sha256": hashlib.sha256(_odefile().read_bytes()).hexdigest(),
+    }
+    for key in ("t_end", "output_dir", "save_every", "checkpoint_every", "restart"):
+        assert key not in physics
+    assert "output" not in physics
+
+    # The same file elsewhere, and another run length, have the same physics.
+    copy = tmp_path / _odefile().name
+    copy.write_bytes(_odefile().read_bytes())
+    elsewhere = slab.parse_args(
+        ["--odefile", str(copy), "--scheme", "stabilized", "--t-end", "7"],
+    )
+    assert physics_hash(slab.physics(elsewhere)) == physics_hash(physics)
+    other = slab.parse_args(["--odefile", str(_odefile()), "--scheme", "segregated"])
+    assert physics_hash(slab.physics(other)) != physics_hash(physics)
+
+    # What config.resolved.toml holds: the same, plus the path and the output options.
+    resolved = slab.settings(args)
+    assert resolved["odefile"]["path"] == str(_odefile())
+    assert {key: value for key, value in resolved.items() if key not in slab.NOT_PHYSICS} == {
+        **physics,
+        "odefile": {**physics["odefile"], "path": str(_odefile())},
+    }
+
+
+def test_physics_hash_follows_the_material_pulse_is_given(monkeypatch):
+    """A change to a material parameter that the run passes to pulse (here pulse's own
+    default ``a_f``) changes the physics hash."""
+    slab = _import("main")
+    args = slab.parse_args(["--odefile", str(_odefile())])
+    before = slab.physics(args)
+
+    original = pulse.HolzapfelOgden.transversely_isotropic_parameters()
+    changed = {**original, "a_f": pulse.Variable(2.0, "kPa")}
+    monkeypatch.setattr(
+        pulse.HolzapfelOgden,
+        "transversely_isotropic_parameters",
+        staticmethod(lambda: dict(changed)),
+    )
+    after = slab.physics(args)
+    assert after["mechanics"]["material"]["a_f"] == 2000.0
+    assert before["mechanics"]["material"]["a_f"] == float(original["a_f"].to_base_units())
+    assert physics_hash(after) != physics_hash(before)
 
 
 @pytest.mark.slow

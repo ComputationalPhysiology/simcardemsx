@@ -37,6 +37,7 @@ nothing else. If the checkpoint is at or past ``--t-end`` it takes no step.
 import argparse
 import functools
 import hashlib
+import inspect
 import json
 import logging
 import sys
@@ -79,24 +80,43 @@ from scheme_comparison.record import (  # noqa: E402
 )
 
 logger = logging.getLogger(__name__)
-QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
 DEFAULT_ODEFILE = Path("../odefiles/ToRORd_dynCl_endo_zetasplit.ode")
-SLAB_DX = 0.5  # Resolution of the slab mesh
-#: Where the slab mesh is generated on first use and read after: beside this file, one
-#: directory per resolution, so that ``post.py`` finds it from any working directory.
-MESH_DIR = HERE / "meshes" / f"slab_dx{SLAB_DX}"
-STIM_MARKER = 1
 SCHEMES = ("monolithic", "segregated", "stabilized")
 CROSSBRIDGE_MODELS = ("Land2017", "RDQ18", "RDQ20MF", "Lewalle2024")
-DT_EP = 0.05  # ms
 T_END = 40.0  # ms
 
+# The model: every value below is read by the run, and recorded by model_settings().
+DT_EP = 0.05  # ms
+SLAB_DX = 0.5  # Resolution of the slab mesh, mm
+#: The slab, as cardiac_geometries generates it: size and resolution in mm, fibre angles.
+SLAB: dict[str, Any] = {
+    "lx": 2.0,
+    "ly": 1.0,
+    "lz": 0.5,
+    "dx": SLAB_DX,
+    "fiber_angle_endo": 0,
+    "fiber_angle_epi": 0,
+    "fiber_space": "DG_1",
+}
+MESH_UNIT = "mm"
+QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
 #: The spaces of ``results.bp``, which ``post.py`` rebuilds: the EP ODE space, P1 (the
 #: transfer plan averages what crosses back onto P1 or DG0 only), holds ``v`` and
 #: ``cai``; pulse's displacement space, given to the problem, holds ``u``; and the
 #: backend's scalar quadrature space at ``QUAD_DEGREE`` holds the rest.
 EP_ODE_ELEMENT = ("P", 1)
 U_SPACE = "P_2"
+#: The stimulus: beat's PDE stimulus with this amplitude, on the cells with no vertex
+#: past this corner (mm), tagged STIM_MARKER. The EP model's own stimulus is switched
+#: off. Its start and duration are beat's defaults.
+STIM_AMPLITUDE = 50_000.0  # uA/cm**3
+STIM_BOX_MM = (1.5, 1.5, 1.5)
+STIM_MARKER = 1
+#: The compressibility model, a class of ``pulse.compressibility``.
+COMPRESSIBILITY = "Incompressible"
+#: The boundary conditions, as dirichlet_bc in main() codes them.
+BCS = {"X0": "u_x = 0", "Y0": "u_y = 0", "Z0": "u_z = 0", "base": "free"}
+
 EP_RESULTS = ("v", "cai")
 MECHANICS_RESULTS = ("u", "lmbda", "tension_kPa", "stiffness_kPa")
 LOG_FIELDS = ("t_ms", "newton_iterations", "lmbda_mean", "Ta_mean_kPa")
@@ -113,73 +133,60 @@ NOT_PHYSICS = (
     "restart",
     "overwrite",
 )
-#: ``default_config()["sim"]``'s entries that are not physics either: the run length,
-#: the output, and the ``.ode`` file's path (``physics`` holds its resolved path and
-#: hash in its place).
-NOT_PHYSICS_SIM = ("modelfile", "outdir", "sim_dur", "save_frequency_ep", "save_frequency_mech")
 
 
-def default_config():
+def material_parameters() -> dict[str, Any]:
+    """Holzapfel-Ogden's parameters as the run gives them to pulse: pulse's own
+    transversely isotropic defaults, as ``pulse.Variable``s."""
+    parameters: dict[str, Any] = dict(pulse.HolzapfelOgden.transversely_isotropic_parameters())
+    return parameters
+
+
+def model_settings() -> dict[str, Any]:
+    """The model as the run reads it, as plain values: the time step of EP, the slab,
+    EP's ODE space, conductivities, chi, C_m and stimulus, and the mechanics' spaces,
+    compressibility, material (in base units: Pa) and boundary conditions.
+
+    The stimulus's start and duration are read off beat's ``define_stimulus`` and the
+    material off pulse, so a change to either library's defaults changes these too.
+    """
+    stimulus_defaults = inspect.signature(beat.stimulation.define_stimulus).parameters
     return {
+        "dt_ep": DT_EP,
+        "geometry": {**SLAB, "mesh_unit": MESH_UNIT},
         "ep": {
-            "conductivities": {
+            "ode_element": list(EP_ODE_ELEMENT),
+            "ode_parameters": {"i_Stim_Amplitude": 0.0},
+            "theta": 1,
+            "chi_per_mm": 140.0,
+            "C_m_uF_per_mm2": 0.01,
+            "conductivities_S_per_m": {
                 "sigma_el": 0.62,
                 "sigma_et": 0.24,
                 "sigma_il": 0.17,
                 "sigma_it": 0.019,
             },
             "stimulus": {
-                "amplitude": 50000.0,
-                "duration": 2,
-                "start": 0.0,
-                "xmax": 1.5,
-                "xmin": 0.0,
-                "ymax": 1.5,
-                "ymin": 0.0,
-                "zmax": 1.5,
-                "zmin": 0.0,
+                "amplitude_uA_per_cm3": STIM_AMPLITUDE,
+                "start_ms": stimulus_defaults["start"].default,
+                "duration_ms": stimulus_defaults["duration"].default,
+                "box_mm": list(STIM_BOX_MM),
+                "marker": STIM_MARKER,
             },
-            "chi": 140.0,
-            "C_m": 0.01,
         },
         "mechanics": {
+            "quadrature_degree": QUAD_DEGREE,
+            "u_space": U_SPACE,
+            "compressibility": COMPRESSIBILITY,
             "material": {
-                "a": 2.28,
-                "a_f": 1.686,
-                "a_fs": 0.0,
-                "a_s": 0.0,
-                "b": 9.726,
-                "b_f": 15.779,
-                "b_fs": 0.0,
-                "b_s": 0.0,
+                "model": "HolzapfelOgden",
+                "units": "SI base units (Pa)",
+                **{
+                    name: float(value.to_base_units())
+                    for name, value in material_parameters().items()
+                },
             },
-            "bcs": [
-                {"V": "u_x", "expression": 0, "marker": 1, "param_numbers": 0, "type": "Dirichlet"},
-                {"V": "u_y", "expression": 0, "marker": 3, "param_numbers": 0, "type": "Dirichlet"},
-                {"V": "u_z", "expression": 0, "marker": 5, "param_numbers": 0, "type": "Dirichlet"},
-            ],
-        },
-        "sim": {
-            "N": 1,
-            "dt": 0.05,
-            "mech_mesh": "meshes/mesh_mech_0.5dx_0.5Lx_1.0Ly_2.0Lz",
-            "markerfile": "meshes/mesh_mech_0.5dx_0.5Lx_1.0Ly_2.0Lz_surface_ffun",
-            "modelfile": "../odefiles/ToRORd_dynCl_endo_zetasplit.ode",
-            "outdir": "output",
-            "sim_dur": 40,
-            "save_frequency_ep": 20,
-            "save_frequency_mech": 1,
-        },
-        "output": {
-            "all_ep": ["v"],
-            "all_mech": ["Ta", "lambda"],
-            "point_ep": [
-                {"name": "v", "x": 0, "y": 0, "z": 0},
-            ],
-            "point_mech": [
-                {"name": "Ta", "x": 0, "y": 0, "z": 0},
-                {"name": "lambda", "x": 0, "y": 0, "z": 0},
-            ],
+            "bcs": dict(BCS),
         },
     }
 
@@ -189,7 +196,13 @@ def disable_logger():
         logging.getLogger(lib).setLevel(logging.WARNING)
 
 
-def create_stim_tags(mesh, stim_marker=STIM_MARKER, stimx=1.5, stimy=1.5, stimz=1.5):
+def create_stim_tags(
+    mesh,
+    stim_marker=STIM_MARKER,
+    stimx=STIM_BOX_MM[0],
+    stimy=STIM_BOX_MM[1],
+    stimz=STIM_BOX_MM[2],
+):
     tol = 1e-6
 
     def S1_subdomain(x):
@@ -330,79 +343,91 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def settings(args: argparse.Namespace) -> dict[str, Any]:
-    """Every argument (paths as ``str``), and :func:`default_config` with its ``sim``
-    entries set from them: what ``config.resolved.toml`` holds.
+    """What ``config.resolved.toml`` holds: every argument, with ``odefile`` as its
+    path (as given), file name and sha256, and :func:`model_settings`.
 
-    TOML has no null, so an argument that is ``None`` is not in the file.
+    TOML has no null, so an argument that is ``None`` is not in the file. Raises
+    ``FileNotFoundError`` if the ``.ode`` file does not exist.
     """
-    config = default_config()
-    config["sim"].update(
-        modelfile=str(args.odefile),
-        outdir=str(args.output_dir),
-        dt=DT_EP,
-        N=round(args.dt_mech / DT_EP),
-        sim_dur=args.t_end,
-    )
     arguments = {
         key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
     }
-    return {**arguments, **config}
+    odefile = Path(args.odefile)
+    arguments["odefile"] = {
+        "path": str(odefile),
+        "name": odefile.name,
+        "sha256": hashlib.sha256(odefile.read_bytes()).hexdigest(),
+    }
+    return {**arguments, **model_settings()}
 
 
 def physics(args: argparse.Namespace) -> dict[str, Any]:
     """What a restart must share with the checkpointed run: :func:`settings` without the
-    run length and the output (:data:`NOT_PHYSICS`, ``default_config``'s ``output`` and
-    :data:`NOT_PHYSICS_SIM`), and with ``odefile`` as its resolved path and its sha256.
+    run length and the output options (:data:`NOT_PHYSICS`), and without the ``.ode``
+    file's path, so that the same file at another path still restarts. Solver options
+    are not in it, as in the CLIs.
 
     Raises ``FileNotFoundError`` if the ``.ode`` file does not exist.
     """
     result = settings(args)
     for key in NOT_PHYSICS:
         del result[key]
-    del result["output"]
-    for key in NOT_PHYSICS_SIM:
-        del result["sim"][key]
-    odefile = Path(args.odefile)
-    result["odefile"] = {
-        "path": str(odefile.resolve()),
-        "sha256": hashlib.sha256(odefile.read_bytes()).hexdigest(),
-    }
+    del result["odefile"]["path"]
     return result
 
 
+def mesh_dir(dx: float) -> Path:
+    """Where the slab mesh of resolution ``dx`` is generated on first use and read after:
+    beside this file, so that ``post.py`` finds it from any working directory."""
+    return HERE / "meshes" / f"slab_dx{dx}"
+
+
 def build_geometry(run_settings: Mapping[str, Any]) -> cardiac_geometries.geometry.Geometry:
-    """The slab, read from :data:`MESH_DIR` (generated there first if it is missing),
-    with the stimulus region, the box up to ``run_settings["ep"]["stimulus"]``'s
-    ``xmax``, ``ymax`` and ``zmax``, as its cell tags (``cfun``, marker
-    :data:`STIM_MARKER`), and the mechanics quadrature degree."""
+    """The slab ``run_settings["geometry"]`` describes, read from :func:`mesh_dir`
+    (generated there first if it is missing), with the stimulus region as its cell tags
+    (``cfun``) and the mechanics quadrature degree.
+
+    Raises ``ValueError`` if the mesh found there is of another slab.
+    """
     comm = MPI.COMM_WORLD
+    slab = {key: run_settings["geometry"][key] for key in SLAB}
+    directory = mesh_dir(slab["dx"])
     # One directory per resolution: the mesh is only generated when its directory is
-    # missing, so a single directory would silently reuse a slab of another resolution.
-    if not MESH_DIR.is_dir():
+    # missing, and is checked against the slab asked for when it is not.
+    if not directory.is_dir():
         cardiac_geometries.mesh.slab(
-            outdir=MESH_DIR,
-            lx=2.0,
-            ly=1.0,
-            lz=0.5,
-            dx=SLAB_DX,
+            outdir=directory,
+            lx=slab["lx"],
+            ly=slab["ly"],
+            lz=slab["lz"],
+            dx=slab["dx"],
             create_fibers=True,
-            fiber_angle_endo=0,
-            fiber_angle_epi=0,
-            fiber_space="DG_1",
+            fiber_angle_endo=slab["fiber_angle_endo"],
+            fiber_angle_epi=slab["fiber_angle_epi"],
+            fiber_space=slab["fiber_space"],
             comm=comm,
             use_dolfinx=True,
         )
+    info = json.loads((directory / "info.json").read_text())
+    # cardiac_geometries records the size as Lx, Ly and Lz.
+    cached = {key: info[{"lx": "Lx", "ly": "Ly", "lz": "Lz"}.get(key, key)] for key in SLAB}
+    if cached != slab:
+        raise ValueError(
+            f"The mesh in {directory} is of the slab {cached}, not {slab}: delete the "
+            "directory to generate it again",
+        )
 
-    geo = cardiac_geometries.geometry.Geometry.from_file(comm=comm, path=MESH_DIR / "geometry.bp")
+    geo = cardiac_geometries.geometry.Geometry.from_file(comm=comm, path=directory / "geometry.bp")
     stimulus = run_settings["ep"]["stimulus"]
+    stimx, stimy, stimz = stimulus["box_mm"]
     geo.cfun = create_stim_tags(
         geo.mesh,
-        stim_marker=STIM_MARKER,
-        stimx=stimulus["xmax"],
-        stimy=stimulus["ymax"],
-        stimz=stimulus["zmax"],
+        stim_marker=stimulus["marker"],
+        stimx=stimx,
+        stimy=stimy,
+        stimz=stimz,
     )
-    geo.quadrature_degree = QUAD_DEGREE
+    geo.quadrature_degree = run_settings["mechanics"]["quadrature_degree"]
     return geo
 
 
@@ -475,35 +500,42 @@ def main(argv: list[str] | None = None):
 
     # P1: values going back to EP are averaged onto the EP ODE space, which the
     # transfer plan supports for P1 and DG0 only.
-    ep_ode_space = dolfinx.fem.functionspace(ep_mesh, EP_ODE_ELEMENT)
+    ep_settings = run_settings["ep"]
+    mechanics_settings = run_settings["mechanics"]
+    quadrature_degree = mechanics_settings["quadrature_degree"]
+    ep_ode_space = dolfinx.fem.functionspace(ep_mesh, tuple(ep_settings["ode_element"]))
 
     # ---------------------------------------------------------
     # 3. Setup EP Solver (fenicsx-beat)
     # ---------------------------------------------------------
-    config = run_settings
-    mesh_unit = "mm"
-    chi = config["ep"]["chi"] * beat.units.ureg("mm**-1")
-    C_m = config["ep"]["C_m"] * beat.units.ureg("uF/mm**2")
+    # Every value is read from the run's settings, which config.resolved.toml records.
+    mesh_unit = run_settings["geometry"]["mesh_unit"]
+    chi = ep_settings["chi_per_mm"] * beat.units.ureg("mm**-1")
+    C_m = ep_settings["C_m_uF_per_mm2"] * beat.units.ureg("uF/mm**2")
+    sigma = ep_settings["conductivities_S_per_m"]
 
     M = beat.conductivities.define_conductivity_tensor(
         chi=chi,
         f0=ep_geo.f0,
-        g_il=config["ep"]["conductivities"]["sigma_il"] * beat.units.ureg("S/m"),
-        g_it=config["ep"]["conductivities"]["sigma_it"] * beat.units.ureg("S/m"),
-        g_el=config["ep"]["conductivities"]["sigma_el"] * beat.units.ureg("S/m"),
-        g_et=config["ep"]["conductivities"]["sigma_et"] * beat.units.ureg("S/m"),
+        g_il=sigma["sigma_il"] * beat.units.ureg("S/m"),
+        g_it=sigma["sigma_it"] * beat.units.ureg("S/m"),
+        g_el=sigma["sigma_el"] * beat.units.ureg("S/m"),
+        g_et=sigma["sigma_et"] * beat.units.ureg("S/m"),
     )
 
     time_ep = dolfinx.fem.Constant(ep_mesh, 0.0)
 
+    stimulus = ep_settings["stimulus"]
     I_s = beat.stimulation.define_stimulus(
         mesh=ep_mesh,
         chi=chi,
         time=time_ep,
         subdomain_data=stim_tags,
-        marker=STIM_MARKER,
+        marker=stimulus["marker"],
         mesh_unit=mesh_unit,
-        amplitude=50_000.0 * beat.units.ureg("uA/cm**3"),
+        amplitude=stimulus["amplitude_uA_per_cm3"] * beat.units.ureg("uA/cm**3"),
+        start=stimulus["start_ms"],
+        duration=stimulus["duration_ms"],
     )
 
     pde = beat.MonodomainModel(
@@ -523,7 +555,7 @@ def main(argv: list[str] | None = None):
     # place, and they differ between points.
     y_ep = np.tile(ep_module.init_state_values()[:, None], (1, num_points_ep))
     p_ep = np.tile(
-        ep_module.init_parameter_values(i_Stim_Amplitude=0.0)[:, None],
+        ep_module.init_parameter_values(**ep_settings["ode_parameters"])[:, None],
         (1, num_points_ep),
     )
     ep_missing = getattr(ep_module, "missing", {})
@@ -540,14 +572,13 @@ def main(argv: list[str] | None = None):
         num_missing_variables=len(ep_missing),
     )
 
-    ep_solver = beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=1)
+    ep_solver = beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=ep_settings["theta"])
 
     # ---------------------------------------------------------
     # 4. Setup Mechanics Solver (fenicsx-pulse)
     # ---------------------------------------------------------
-    material_params = pulse.HolzapfelOgden.transversely_isotropic_parameters()
-    material = pulse.HolzapfelOgden(f0=mech_geo.f0, s0=mech_geo.s0, **material_params)
-    comp_model = pulse.compressibility.Incompressible()
+    material = pulse.HolzapfelOgden(f0=mech_geo.f0, s0=mech_geo.s0, **material_parameters())
+    comp_model = getattr(pulse.compressibility, mechanics_settings["compressibility"])()
 
     # The contraction model, stepped inside Newton. Its states live on a quadrature
     # space of the same degree as the mechanics form (the controller checks this).
@@ -557,7 +588,7 @@ def main(argv: list[str] | None = None):
             mech_geo.f0,
             mesh,
             args.crossbridge,
-            quadrature_degree=QUAD_DEGREE,
+            quadrature_degree=quadrature_degree,
             SL_ref=args.sl_ref,
             stabilized=args.scheme == "stabilized",
         )
@@ -566,7 +597,7 @@ def main(argv: list[str] | None = None):
             modules.mechanics,
             mesh,
             mech_geo.f0,
-            quadrature_degree=QUAD_DEGREE,
+            quadrature_degree=quadrature_degree,
             scheme=args.scheme,
         )
 
@@ -610,7 +641,7 @@ def main(argv: list[str] | None = None):
 
     geometry = pulse.Geometry.from_cardiac_geometries(
         mech_geo,
-        metadata={"quadrature_degree": QUAD_DEGREE},
+        metadata={"quadrature_degree": quadrature_degree},
     )
     petsc_options = pulse.StaticProblem.default_parameters()["petsc_options"]
     # Absolute tolerance, tightened from pulse's default 1e-6: at resting calcium the
@@ -627,7 +658,7 @@ def main(argv: list[str] | None = None):
         parameters={
             "base_bc": pulse.problem.BaseBC.free,
             "petsc_options": petsc_options,
-            "u_space": U_SPACE,
+            "u_space": mechanics_settings["u_space"],
         },
     )
 
@@ -640,10 +671,10 @@ def main(argv: list[str] | None = None):
         backend=backend,
         ode_modules=modules,
         dt_mech=dt_mech,
-        dt_ep=DT_EP,
+        dt_ep=run_settings["dt_ep"],
     )
 
-    a = pulse.HolzapfelOgden.transversely_isotropic_parameters()["a"]
+    a = material_parameters()["a"]
     recorder = Recorder(
         backend,
         outdir,
@@ -768,11 +799,20 @@ def main(argv: list[str] | None = None):
                 checkpointer.write()
         timings["loop_s"] = time.perf_counter() - start_loop
     except BaseException as e:
-        # BaseException: an interrupt is recorded too. A step that raised was rolled
-        # back, leaving the controller's t at its start; t_failed is its end.
+        # BaseException: an interrupt is recorded too. A step that raised before its
+        # mech_callback was rolled back, leaving the controller's t at its start, and
+        # t_failed is its end. Anything raised after that, in mech_callback (the log row,
+        # results.bp, the recorder) or in the periodic checkpoint, follows an accepted
+        # step: t_failed is None, and controller.t is that step's end, whose output may
+        # be half written.
         failure = failure_of(e)
-        t_fail = controller.t_failed if controller.t_failed is not None else controller.t
-        logger.exception(f"The coupled step ending at t = {t_fail} ms failed")
+        rolled_back = controller.t_failed is not None
+        t_fail = controller.t_failed if rolled_back else controller.t
+        logger.exception(
+            f"The coupled step ending at t = {t_fail} ms failed"
+            if rolled_back
+            else f"Writing the output of the step ending at t = {t_fail} ms failed",
+        )
         raise
     finally:
         timings.setdefault("loop_s", time.perf_counter() - start_loop)
@@ -781,8 +821,18 @@ def main(argv: list[str] | None = None):
         logger.info(f"Timings: {timings}")
 
         def write_checkpoint() -> None:
-            # At the end of every run, finished or failed (a failed step was rolled back
-            # to its start). At a time already checkpointed, only restart.json is new.
+            # At the end of a run that finished, or whose last step failed and was
+            # rolled back to its start (t_failed is set). Not after a failure in a
+            # step's output or in a checkpoint: that step's log row, results.bp fields
+            # or recorder row may be missing, and a checkpoint at its end would leave
+            # them missing for good. The last periodic checkpoint is the restart point
+            # then. At a time already checkpointed, only restart.json is new.
+            if failure is not None and controller.t_failed is None:
+                logger.warning(
+                    f"No checkpoint at t = {controller.t} ms: the failure followed an "
+                    "accepted step, whose output may be incomplete",
+                )
+                return
             if backend.step_pending:
                 logger.warning(f"No checkpoint at t = {controller.t} ms: a step is pending")
                 return

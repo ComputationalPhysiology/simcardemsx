@@ -121,12 +121,13 @@ def test_generated_activation_names_and_metadata(split_modules):
 
 def _in_another_order(backend) -> tuple[dict[str, np.ndarray], dict]:
     """``backend``'s restart values and metadata as a process that ordered the module's
-    states in reverse would have written them: ``state_names`` reversed, and
-    ``states_prev``'s components with them."""
+    states otherwise would have written them: ``state_names`` rotated by one, and
+    ``states_prev``'s components with them. A rotation, unlike a reversal, is not its
+    own inverse, so a restore that applied the inverse permutation would not pass."""
     values = _snapshot(backend)
     metadata = json.loads(json.dumps(backend.restart_metadata()))
     names = metadata["state_names"]
-    reordered = names[::-1]
+    reordered = names[1:] + names[:1]
     components = values["activation_states_prev"].reshape(-1, len(names))
     values["activation_states_prev"] = components[:, [names.index(n) for n in reordered]].ravel()
     metadata["state_names"] = reordered
