@@ -35,7 +35,6 @@ from typing import Any
 
 from mpi4py import MPI
 
-import basix.ufl
 import dolfinx
 import numpy as np
 import ufl
@@ -46,6 +45,7 @@ HERE = Path(__file__).resolve().parent
 # demo_io sits beside this example's directory, not in the installed package.
 sys.path.insert(0, str(HERE.parent))
 from demo_io import plots_available, write_p1_fields  # noqa: E402
+from demo_io import result_functions as demo_result_functions  # noqa: E402
 
 #: The artery each ventricle ejects into: its outflow valve is open when the
 #: ventricle's pressure exceeds this one's.
@@ -198,36 +198,12 @@ def result_functions(
     mesh: dolfinx.mesh.Mesh,
 ) -> dict[str, dolfinx.fem.Function]:
     """One Function per ``results.bp`` name, on the space the run wrote it from, on
-    ``mesh`` (:func:`reference_mesh`), as the run's resolved ``settings`` describe it.
-
-    ``v`` and ``cai`` are on the EP ODE space (``settings["ep"]["ode_element"]``); ``u``
-    on pulse's displacement space (``settings["mechanics"]["u_space"]``, built as pulse
-    builds it); ``lmbda``, ``tension_kPa`` and ``stiffness_kPa`` on the backend's scalar
-    quadrature space at ``settings["mechanics"]["quadrature_degree"]``.
+    ``mesh`` (:func:`reference_mesh`), as the run's resolved ``settings`` describe it
+    (:func:`demo_io.result_functions`).
     """
     from circulation_biv import main as biv
 
-    cell = mesh.basix_cell()
-    ep_space = dolfinx.fem.functionspace(mesh, tuple(settings["ep"]["ode_element"]))
-    family, degree = settings["mechanics"]["u_space"].split("_")
-    u_space = dolfinx.fem.functionspace(
-        mesh,
-        basix.ufl.element(family, cell, int(degree), shape=(mesh.topology.dim,)),
-    )
-    quadrature_space = dolfinx.fem.functionspace(
-        mesh,
-        basix.ufl.quadrature_element(
-            cell,
-            value_shape=(),
-            degree=settings["mechanics"]["quadrature_degree"],
-        ),
-    )
-    spaces = {
-        **dict.fromkeys(biv.EP_RESULTS, ep_space),
-        "u": u_space,
-        **dict.fromkeys(("lmbda", "tension_kPa", "stiffness_kPa"), quadrature_space),
-    }
-    return {name: dolfinx.fem.Function(space, name=name) for name, space in spaces.items()}
+    return demo_result_functions(mesh, settings, biv.EP_RESULTS)
 
 
 def write_fields_and_stats(

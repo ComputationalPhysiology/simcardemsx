@@ -17,12 +17,16 @@ The run side, in the order a demo's ``main`` uses it:
 - :func:`failure_at` gives what ``run.json`` records of an exception from the loop.
 - :func:`finish` writes, in order: the end checkpoint (:func:`write_end_checkpoint`),
   the demo's own files, and ``run.json`` last, with the provenance, the checkpoint
-  history and whether the run was a restart.
+  history and whether the run was a restart: through the scheme comparison's
+  ``Recorder``, or, for a demo without one, through a ``write_run`` callable.
 
 The post side, for each demo's ``post.py``:
 
+- :func:`result_functions`: one Function per ``results.bp`` name, on the space the run
+  wrote it from, as the run's resolved settings describe the spaces.
 - :func:`write_p1_fields`: VTX on P1 of a run's ``results.bp`` fields, the quadrature
-  fields averaged and the others interpolated, with a callback at each time.
+  and other discontinuous fields averaged and the others interpolated, with a callback
+  at each time.
 - :class:`Panel` and :func:`figure`: quantities over time, stacked over a shared time
   axis; :func:`plots_available` warns and says so when matplotlib is missing.
 - :func:`cell_containing`: the cell holding a point, for point traces.
@@ -35,8 +39,10 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
+import basix.ufl
 import dolfinx
 import numpy as np
+import ufl
 from scheme_comparison.record import Recorder, failure_of, finish_after_artifacts
 
 from simcardemsx.averaging import make_averager
@@ -51,6 +57,8 @@ logger = logging.getLogger(__name__)
 #: :data:`simcardemsx.results.ARTIFACTS`, and so what ``--overwrite`` also deletes:
 #: ``steps.csv``, ``snapshots.npz`` and the recorder's checkpoint sidecars.
 RECORDER_ARTIFACTS = ("steps.csv", "snapshots.npz", "restart_recorder_*.npz")
+#: The ``results.bp`` names on the backend's quadrature space, which every demo saves.
+ACTIVATION_RESULTS = ("lmbda", "tension_kPa", "stiffness_kPa")
 
 
 # ----------------------------------------------------------------------
@@ -188,8 +196,27 @@ def write_end_checkpoint(checkpointer: Checkpointer, failure: str | None) -> Non
     checkpointer.write()
 
 
+class _WriteRun:
+    """:func:`~scheme_comparison.record.finish_after_artifacts`' last step for a demo
+    with no ``Recorder``: ``write_run(extra)``. The failure, its time and the timings
+    are the demo's own to write, so only the extras are passed on."""
+
+    def __init__(self, write_run: Callable[[dict[str, Any]], None]):
+        self.write_run = write_run
+
+    def finish(
+        self,
+        *,
+        failure: str | None,
+        t_fail_ms: float | None,
+        timings: Mapping[str, float],
+        extra: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.write_run(dict(extra or {}))
+
+
 def finish(
-    recorder: Recorder,
+    recorder: Recorder | None,
     checkpointer: Checkpointer,
     artifacts: Sequence[tuple[str, Callable[[], object]]],
     *,
@@ -198,18 +225,29 @@ def finish(
     timings: Mapping[str, float],
     here: Path,
     restart: bool,
+    write_run: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     """The end of a run, for the ``finally`` of its loop.
 
     In order, each guarded so that a failure cannot stop the rest: the end checkpoint
     (:func:`write_end_checkpoint`), then the demo's own ``artifacts`` (``(name, write)``
     pairs). Then ``run.json``, last, through
-    :func:`~scheme_comparison.record.finish_after_artifacts`, with ``provenance``
-    (:func:`~simcardemsx.provenance.provenance` taken in ``here``), ``history`` (the
-    checkpointer's: every process that wrote the run) and ``restart``.
+    :func:`~scheme_comparison.record.finish_after_artifacts`, with the extras
+    ``provenance`` (:func:`~simcardemsx.provenance.provenance` taken in ``here``),
+    ``history`` (the checkpointer's: every process that wrote the run) and ``restart``.
+
+    ``run.json`` is written by exactly one of ``recorder`` (``Recorder.finish``, with
+    the extras merged into its own record) and ``write_run``, which a demo with no
+    ``Recorder`` gives: it is called with the extras, as a dict, and writes the rest of
+    ``run.json`` itself. As with a recorder, it is not guarded, and an error from an
+    artifact is raised after it if the loop did not fail. Raises ``TypeError`` if both
+    or neither are given.
     """
+    if (recorder is None) == (write_run is None):
+        raise TypeError("finish takes exactly one of a recorder and write_run")
+    finisher = recorder if recorder is not None else _WriteRun(cast(Callable, write_run))
     finish_after_artifacts(
-        recorder,
+        finisher,
         [("checkpoint", lambda: write_end_checkpoint(checkpointer, failure)), *artifacts],
         failure=failure,
         t_fail_ms=t_fail_ms,
@@ -227,6 +265,76 @@ def finish(
 # ----------------------------------------------------------------------
 
 
+def result_functions(
+    mesh: dolfinx.mesh.Mesh,
+    settings: Mapping[str, Any],
+    ep_names: Sequence[str],
+) -> dict[str, dolfinx.fem.Function]:
+    """One Function per ``results.bp`` name, on ``mesh``, on the space the run wrote it
+    from, as the run's resolved ``settings`` describe it.
+
+    ``ep_names`` (EP's, ``v`` and ``cai``) are on the EP ODE space
+    (``settings["ep"]["ode_element"]``); ``u`` on pulse's displacement space
+    (``settings["mechanics"]["u_space"]``, e.g. ``"P_2"``, built as pulse builds it);
+    :data:`ACTIVATION_RESULTS` on the backend's scalar quadrature space at
+    ``settings["mechanics"]["quadrature_degree"]``, with basix's default scheme, as both
+    backends build it.
+    """
+    cell = mesh.basix_cell()
+    ep_space = dolfinx.fem.functionspace(mesh, tuple(settings["ep"]["ode_element"]))
+    family, degree = settings["mechanics"]["u_space"].split("_")
+    u_space = dolfinx.fem.functionspace(
+        mesh,
+        basix.ufl.element(family, cell, int(degree), shape=(mesh.topology.dim,)),
+    )
+    quadrature_space = dolfinx.fem.functionspace(
+        mesh,
+        basix.ufl.quadrature_element(
+            cell,
+            value_shape=(),
+            degree=settings["mechanics"]["quadrature_degree"],
+        ),
+    )
+    spaces = {
+        **dict.fromkeys(ep_names, ep_space),
+        "u": u_space,
+        **dict.fromkeys(ACTIVATION_RESULTS, quadrature_space),
+    }
+    return {name: dolfinx.fem.Function(space, name=name) for name, space in spaces.items()}
+
+
+def _lumped_averager(
+    source: dolfinx.fem.Function,
+    target: dolfinx.fem.Function,
+) -> Callable[[], None]:
+    """:func:`~simcardemsx.averaging.make_averager`'s lumped nodal average onto a P1
+    ``target``, component by component, for a vector-valued ``source``: each component
+    of each node is the volume-weighted mean of that component over the cells around
+    it. A quadrature ``source`` is integrated at its own points, as there."""
+    space = target.function_space
+    element = source.function_space.ufl_element()
+    quadrature = element.family_name == "quadrature"
+    dx = ufl.dx(
+        domain=space.mesh,
+        metadata={"quadrature_degree": element.degree} if quadrature else None,
+    )
+    v = ufl.TestFunction(space)
+    ones = ufl.as_vector([1.0] * int(np.prod(space.value_shape)))
+    numerator = dolfinx.fem.form(ufl.inner(source, v) * dx)
+    denominator = dolfinx.fem.assemble_vector(dolfinx.fem.form(ufl.inner(ones, v) * dx))
+    denominator.scatter_reverse(dolfinx.la.InsertMode.add)
+    denominator.scatter_forward()
+
+    def refresh() -> None:
+        values = dolfinx.fem.assemble_vector(numerator)
+        values.scatter_reverse(dolfinx.la.InsertMode.add)
+        values.scatter_forward()
+        target.x.array[:] = values.array / denominator.array
+        target.x.scatter_forward()
+
+    return refresh
+
+
 def write_p1_fields(
     path: Path,
     functions: Mapping[str, dolfinx.fem.Function],
@@ -241,8 +349,12 @@ def write_p1_fields(
     ``saved`` their values by name and time, as
     :func:`~simcardemsx.results.read_results` returns them. ``shown`` maps each name in
     the VTX file to the name it shows: a P1 Function (vector-valued if the field is)
-    holds it, averaged (:func:`~simcardemsx.averaging.make_averager`) from a quadrature
-    field and interpolated from any other.
+    holds it. A quadrature field, and any other discontinuous one (DG, such as a
+    cellwise mask or fibre field), is averaged onto it: the lumped nodal average of
+    :func:`~simcardemsx.averaging.make_averager`, the volume-weighted mean over the cells
+    around each node, component by component for a vector. A point interpolation of a
+    discontinuous field would take each node's value from whichever neighbouring cell it
+    visits last. A continuous field is interpolated.
 
     At each time, in order, every one of ``functions`` saved at it takes its saved
     values (the others keep theirs, so a field not saved at a time keeps its last saved
@@ -259,10 +371,13 @@ def write_p1_fields(
             dolfinx.fem.functionspace(space.mesh, ("P", 1, shape) if shape else ("P", 1)),
             name=name,
         )
-        if space.ufl_element().family_name == "quadrature":
-            refresh.append(make_averager(source, target))
-        else:
+        element = space.ufl_element()
+        if element.family_name != "quadrature" and not element.discontinuous:
             refresh.append(functools.partial(target.interpolate, source))
+        elif shape:
+            refresh.append(_lumped_averager(source, target))
+        else:
+            refresh.append(make_averager(source, target))
         p1[name] = target
 
     mesh = next(iter(p1.values())).function_space.mesh

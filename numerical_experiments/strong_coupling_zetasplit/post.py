@@ -29,7 +29,6 @@ from typing import Any
 
 from mpi4py import MPI
 
-import basix.ufl
 import dolfinx
 import numpy as np
 import ufl
@@ -47,6 +46,7 @@ from demo_io import (  # noqa: E402
     plots_available,
     write_p1_fields,
 )
+from demo_io import result_functions as demo_result_functions  # noqa: E402
 
 from strong_coupling_zetasplit import main as slab  # noqa: E402
 
@@ -72,37 +72,11 @@ PLOTS = (
 
 def result_functions(settings: Mapping[str, Any]) -> dict[str, dolfinx.fem.Function]:
     """One Function per ``results.bp`` name, on the space the run wrote it from, as the
-    run's resolved ``settings`` describe it.
-
-    ``v`` and ``cai`` are on the EP ODE space (``settings["ep"]["ode_element"]``); ``u``
-    on pulse's displacement space (``settings["mechanics"]["u_space"]``, built as pulse
-    builds it); ``lmbda``, ``tension_kPa`` and ``stiffness_kPa`` on the backend's scalar
-    quadrature space at ``settings["mechanics"]["quadrature_degree"]`` with basix's
-    default scheme, as both backends build it. All on one mesh, the slab
-    ``settings["geometry"]`` describes, from ``main.build_geometry(settings)``.
+    run's resolved ``settings`` describe it (:func:`demo_io.result_functions`). All on
+    one mesh, the slab ``settings["geometry"]`` describes, from
+    ``main.build_geometry(settings)``.
     """
-    mesh = slab.build_geometry(settings).mesh
-    cell = mesh.basix_cell()
-    ep_space = dolfinx.fem.functionspace(mesh, tuple(settings["ep"]["ode_element"]))
-    family, degree = settings["mechanics"]["u_space"].split("_")
-    u_space = dolfinx.fem.functionspace(
-        mesh,
-        basix.ufl.element(family, cell, int(degree), shape=(mesh.topology.dim,)),
-    )
-    quadrature_space = dolfinx.fem.functionspace(
-        mesh,
-        basix.ufl.quadrature_element(
-            cell,
-            value_shape=(),
-            degree=settings["mechanics"]["quadrature_degree"],
-        ),
-    )
-    spaces = {
-        **dict.fromkeys(slab.EP_RESULTS, ep_space),
-        "u": u_space,
-        **dict.fromkeys(("lmbda", "tension_kPa", "stiffness_kPa"), quadrature_space),
-    }
-    return {name: dolfinx.fem.Function(space, name=name) for name, space in spaces.items()}
+    return demo_result_functions(slab.build_geometry(settings).mesh, settings, slab.EP_RESULTS)
 
 
 def write_fields_and_traces(

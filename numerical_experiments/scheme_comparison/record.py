@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import dolfinx
 import numpy as np
@@ -294,8 +294,22 @@ def failure_of(exc: BaseException) -> str:
     return " <- ".join(parts)
 
 
+class RunFinisher(Protocol):
+    """What :func:`finish_after_artifacts` writes ``run.json`` with: a :class:`Recorder`,
+    or anything with the same ``finish``."""
+
+    def finish(
+        self,
+        *,
+        failure: str | None,
+        t_fail_ms: float | None,
+        timings: Mapping[str, float],
+        extra: Mapping[str, Any] | None = None,
+    ) -> None: ...
+
+
 def finish_after_artifacts(
-    recorder: Recorder,
+    recorder: RunFinisher,
     artifacts: Sequence[tuple[str, Callable[[], object]]],
     *,
     failure: str | None,
