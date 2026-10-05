@@ -60,24 +60,13 @@ from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.checkpoint import Checkpointer
 from simcardemsx.controller import SimulationController
 from simcardemsx.ode_model import load_ode_modules
-from simcardemsx.provenance import provenance
-from simcardemsx.results import (
-    ARTIFACTS,
-    CsvLog,
-    ResultsWriter,
-    prepare_output,
-    stride,
-    write_resolved_settings,
-)
+from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
 HERE = Path(__file__).resolve().parent
-# scheme_comparison sits next to this example, not in the installed package.
+# scheme_comparison and demo_io sit next to this example, not in the installed package.
 sys.path.insert(0, str(HERE.parent))
-from scheme_comparison.record import (  # noqa: E402
-    Recorder,
-    failure_of,
-    finish_after_artifacts,
-)
+import demo_io  # noqa: E402
+from scheme_comparison.record import Recorder  # noqa: E402
 
 logger = logging.getLogger(__name__)
 DEFAULT_ODEFILE = Path("../odefiles/ToRORd_dynCl_endo_zetasplit.ode")
@@ -121,7 +110,7 @@ EP_RESULTS = ("v", "cai")
 MECHANICS_RESULTS = ("u", "lmbda", "tension_kPa", "stiffness_kPa")
 LOG_FIELDS = ("t_ms", "newton_iterations", "lmbda_mean", "Ta_mean_kPa")
 #: Everything a run writes into its output folder, and so what --overwrite deletes.
-OUTPUT_ARTIFACTS = (*ARTIFACTS, "steps.csv", "snapshots.npz", "restart_recorder_*.npz")
+OUTPUT_ARTIFACTS = (*ARTIFACTS, *demo_io.RECORDER_ARTIFACTS)
 #: The arguments that do not define the physics: the run's length and its output.
 NOT_PHYSICS = (
     "t_end",
@@ -446,27 +435,22 @@ def main(argv: list[str] | None = None):
 
     # Everything that can refuse the run does so here: before any file is touched, and
     # before anything expensive is generated, built or compiled.
-    def steps(option: str, every: float, dt: float) -> int:
-        try:
-            return stride(every, dt)
-        except ValueError as error:
-            raise ValueError(f"{option}: {error}") from error
-
-    try:
-        steps("--dt-mech", dt_mech, DT_EP)
-        save_ep_every = steps("--save-every-ep", args.save_every_ep, DT_EP)
-        save_every = steps("--save-every", args.save_every, dt_mech)
-        checkpoint_every = steps("--checkpoint-every", args.checkpoint_every, dt_mech)
-        run_physics = physics(args)
-        prepare_output(
-            outdir,
-            restart=args.restart,
-            overwrite=args.overwrite,
-            physics=run_physics,
-            artifacts=OUTPUT_ARTIFACTS,
-        )
-    except (ValueError, FileNotFoundError) as error:
-        raise SystemExit(str(error)) from error
+    strides, run_physics = demo_io.prepare_run(
+        outdir,
+        restart=args.restart,
+        overwrite=args.overwrite,
+        strides={
+            "--dt-mech": (dt_mech, DT_EP),
+            "--save-every-ep": (args.save_every_ep, DT_EP),
+            "--save-every": (args.save_every, dt_mech),
+            "--checkpoint-every": (args.checkpoint_every, dt_mech),
+        },
+        physics=lambda: physics(args),
+        artifacts=OUTPUT_ARTIFACTS,
+    )
+    save_ep_every = strides["--save-every-ep"]
+    save_every = strides["--save-every"]
+    checkpoint_every = strides["--checkpoint-every"]
 
     comm = MPI.COMM_WORLD
     run_settings = settings(args)
@@ -749,18 +733,21 @@ def main(argv: list[str] | None = None):
             },
         )
 
-    if args.restart:
-        # A refused or failed restore leaves the folder as it was: nothing below it,
-        # neither the end checkpoint nor run.json, is reached.
-        t_restart = checkpointer.restore()
-        log.resume(t_restart)
-        results.resume([*EP_RESULTS, *MECHANICS_RESULTS])
-        logger.info(f"Restarted from the checkpoint at t = {t_restart} ms")
-    else:
-        log.start()
+    def write_initial() -> None:
         save_ep(controller.t)
         results.write(controller.t, mechanics_fields)
         log_step(controller.t, 0)
+
+    # A refused or failed restore leaves the folder as it was: nothing below it, neither
+    # the end checkpoint nor run.json, is reached.
+    demo_io.start_or_resume(
+        checkpointer,
+        log,
+        results,
+        restart=args.restart,
+        result_names=[*EP_RESULTS, *MECHANICS_RESULTS],
+        write_initial=write_initial,
+    )
 
     # ---------------------------------------------------------
     # 6. Define Callbacks & Run Simulation
@@ -782,9 +769,7 @@ def main(argv: list[str] | None = None):
 
     # The run is round(t_end / dt_mech) steps from t = 0, so a restart at or past it
     # takes none.
-    remaining_steps = round(args.t_end / dt_mech) - controller.mech_step_idx
-    if remaining_steps <= 0:
-        logger.info(f"The checkpoint, at t = {controller.t} ms, is at or past t_end: no step")
+    remaining_steps = demo_io.steps_to_take(controller, args.t_end)
 
     # --- THE MAIN LOOP ---
     start_loop = time.perf_counter()
@@ -800,19 +785,9 @@ def main(argv: list[str] | None = None):
         timings["loop_s"] = time.perf_counter() - start_loop
     except BaseException as e:
         # BaseException: an interrupt is recorded too. A step that raised before its
-        # mech_callback was rolled back, leaving the controller's t at its start, and
-        # t_failed is its end. Anything raised after that, in mech_callback (the log row,
-        # results.bp, the recorder) or in the periodic checkpoint, follows an accepted
-        # step: t_failed is None, and controller.t is that step's end, whose output may
-        # be half written.
-        failure = failure_of(e)
-        rolled_back = controller.t_failed is not None
-        t_fail = controller.t_failed if rolled_back else controller.t
-        logger.exception(
-            f"The coupled step ending at t = {t_fail} ms failed"
-            if rolled_back
-            else f"Writing the output of the step ending at t = {t_fail} ms failed",
-        )
+        # mech_callback was rolled back (t_failed is set); anything raised after that
+        # follows an accepted step, whose output may be half written.
+        failure, t_fail = demo_io.failure_at(controller, e)
         raise
     finally:
         timings.setdefault("loop_s", time.perf_counter() - start_loop)
@@ -820,41 +795,21 @@ def main(argv: list[str] | None = None):
         timings["newton_its"] = newton_its
         logger.info(f"Timings: {timings}")
 
-        def write_checkpoint() -> None:
-            # At the end of a run that finished, or whose last step failed and was
-            # rolled back to its start (t_failed is set). Not after a failure in a
-            # step's output or in a checkpoint: that step's log row, results.bp fields
-            # or recorder row may be missing, and a checkpoint at its end would leave
-            # them missing for good. The last periodic checkpoint is the restart point
-            # then. At a time already checkpointed, only restart.json is new.
-            if failure is not None and controller.t_failed is None:
-                logger.warning(
-                    f"No checkpoint at t = {controller.t} ms: the failure followed an "
-                    "accepted step, whose output may be incomplete",
-                )
-                return
-            if backend.step_pending:
-                logger.warning(f"No checkpoint at t = {controller.t} ms: a step is pending")
-                return
-            checkpointer.write()
-
         def write_timings() -> None:
             if comm.rank == 0:
                 (outdir / "timings.json").write_text(json.dumps(timings, indent=4))
 
-        # The checkpoint and timings.json first, each guarded, and run.json (the mark of
-        # a finished run, for scheme_comparison/run.py) last.
-        finish_after_artifacts(
+        # The end checkpoint and timings.json first, each guarded, and run.json (the mark
+        # of a finished run, for scheme_comparison/run.py) last.
+        demo_io.finish(
             recorder,
-            [("checkpoint", write_checkpoint), ("timings.json", write_timings)],
+            checkpointer,
+            [("timings.json", write_timings)],
             failure=failure,
             t_fail_ms=t_fail,
             timings=timings,
-            extra={
-                "provenance": provenance(HERE),
-                "history": checkpointer.history,
-                "restart": args.restart,
-            },
+            here=HERE,
+            restart=args.restart,
         )
 
 

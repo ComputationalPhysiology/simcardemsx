@@ -23,10 +23,9 @@ Serial only.
 import argparse
 import shutil
 import sys
-import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 from mpi4py import MPI
 
@@ -35,12 +34,20 @@ import dolfinx
 import numpy as np
 import ufl
 
-from simcardemsx.averaging import make_averager
 from simcardemsx.results import CsvLog, read_resolved_settings, read_results
 
 HERE = Path(__file__).resolve().parent
-# The example's main sits next to this file; importing it runs nothing.
+# The example's main sits next to this file, and demo_io beside its directory; importing
+# them runs nothing.
 sys.path.insert(0, str(HERE.parent))
+from demo_io import (  # noqa: E402
+    Panel,
+    cell_containing,
+    figure,
+    plots_available,
+    write_p1_fields,
+)
+
 from strong_coupling_zetasplit import main as slab  # noqa: E402
 
 #: Where the traces are taken: ``DataCollector``'s point, a corner of the slab.
@@ -61,12 +68,6 @@ PLOTS = (
     "mech_point_traces.png",
     "log.png",
 )
-
-# The plots' colours: one series per panel, so one hue.
-SERIES = "#2a78d6"
-INK = "#0b0b0b"
-INK_SECONDARY = "#52514e"
-GRID = "#e4e3df"
 
 
 def result_functions(settings: Mapping[str, Any]) -> dict[str, dolfinx.fem.Function]:
@@ -104,15 +105,6 @@ def result_functions(settings: Mapping[str, Any]) -> dict[str, dolfinx.fem.Funct
     return {name: dolfinx.fem.Function(space, name=name) for name, space in spaces.items()}
 
 
-def _cell_containing(mesh: dolfinx.mesh.Mesh, point: np.ndarray) -> int:
-    tree = dolfinx.geometry.bb_tree(mesh, mesh.topology.dim)
-    candidates = dolfinx.geometry.compute_collisions_points(tree, point)
-    cells = dolfinx.geometry.compute_colliding_cells(mesh, candidates, point).links(0)
-    if len(cells) == 0:
-        raise ValueError(f"The point {point[0].tolist()} is not in the mesh")
-    return int(cells[0])
-
-
 def write_fields_and_traces(
     post_dir: Path,
     functions: Mapping[str, dolfinx.fem.Function],
@@ -126,20 +118,8 @@ def write_fields_and_traces(
     and time, as :func:`~simcardemsx.results.read_results` returns them. The volume
     means are taken at ``quadrature_degree``, the mechanics form's.
     """
-    v, lmbda, tension, u = (functions[name] for name in ("v", "lmbda", "tension_kPa", "u"))
+    v, lmbda, tension = (functions[name] for name in ("v", "lmbda", "tension_kPa"))
     mesh = v.function_space.mesh
-    P1 = dolfinx.fem.functionspace(mesh, ("P", 1))
-    shown = {
-        "u": dolfinx.fem.Function(
-            dolfinx.fem.functionspace(mesh, ("P", 1, (mesh.topology.dim,))),
-            name="u",
-        ),
-        "v": v,
-        "lmbda": dolfinx.fem.Function(P1, name="lmbda"),
-        "Ta": dolfinx.fem.Function(P1, name="Ta"),
-    }
-    average_lmbda = make_averager(lmbda, shown["lmbda"])
-    average_tension = make_averager(tension, shown["Ta"])
 
     # The volume means use the mechanics form's measure, as log.csv's do.
     dx = ufl.Measure("dx", domain=mesh, metadata={"quadrature_degree": quadrature_degree})
@@ -148,7 +128,7 @@ def write_fields_and_traces(
     integrals["Ta"] = dolfinx.fem.form(tension * dx)
 
     point = np.array([POINT], dtype=np.float64)
-    cell = _cell_containing(mesh, point)
+    cell = cell_containing(mesh, point)
 
     def at_point(f: dolfinx.fem.Function) -> float:
         return float(np.ravel(f.eval(point, np.array([cell], dtype=np.int32)))[0])
@@ -156,30 +136,26 @@ def write_fields_and_traces(
     def mean(name: str) -> float:
         return dolfinx.fem.assemble_scalar(integrals[name]).real / volume
 
-    times = sorted({t for by_time in saved.values() for t in by_time})
     rows: list[dict[str, float]] = []
-    writer = dolfinx.io.VTXWriter(mesh.comm, post_dir / "fields.bp", list(shown.values()))
-    try:
-        for t in times:
-            for name, f in functions.items():
-                if t in saved[name]:
-                    f.x.array[:] = saved[name][t]
-            shown["u"].interpolate(u)
-            average_lmbda()
-            average_tension()
-            writer.write(t)
 
-            row = dict.fromkeys(TRACE_FIELDS, np.nan)
-            row["t_ms"] = t
-            if t in saved["v"]:
-                row["v_point_mV"], row["v_mean_mV"] = at_point(v), mean("v")
-            if t in saved["lmbda"]:
-                row["lmbda_point"], row["lmbda_mean"] = at_point(shown["lmbda"]), mean("lmbda")
-            if t in saved["tension_kPa"]:
-                row["Ta_point_kPa"], row["Ta_mean_kPa"] = at_point(shown["Ta"]), mean("Ta")
-            rows.append(row)
-    finally:
-        writer.close()
+    def trace(t: float, p1: Mapping[str, dolfinx.fem.Function]) -> None:
+        row = dict.fromkeys(TRACE_FIELDS, np.nan)
+        row["t_ms"] = t
+        if t in saved["v"]:
+            row["v_point_mV"], row["v_mean_mV"] = at_point(v), mean("v")
+        if t in saved["lmbda"]:
+            row["lmbda_point"], row["lmbda_mean"] = at_point(p1["lmbda"]), mean("lmbda")
+        if t in saved["tension_kPa"]:
+            row["Ta_point_kPa"], row["Ta_mean_kPa"] = at_point(p1["Ta"]), mean("Ta")
+        rows.append(row)
+
+    write_p1_fields(
+        post_dir / "fields.bp",
+        functions,
+        saved,
+        {"u": "u", "v": "v", "lmbda": "lmbda", "Ta": "tension_kPa"},
+        trace,
+    )
 
     traces = CsvLog(post_dir / "traces.csv", TRACE_FIELDS)
     traces.start()
@@ -188,72 +164,29 @@ def write_fields_and_traces(
     return {name: np.array([row[name] for row in rows]) for name in TRACE_FIELDS}
 
 
-class Panel(NamedTuple):
-    """One quantity over time: a line, or with ``counts`` a dot per value on an integer
-    axis. ``nan`` values (times the quantity was not saved at) are left out."""
-
-    title: str
-    t: np.ndarray
-    values: np.ndarray
-    counts: bool = False
-
-
-def _figure(path: Path, panels: Sequence[Panel]) -> None:
-    """The panels stacked over a shared time axis, one series each."""
-    from matplotlib.figure import Figure
-    from matplotlib.ticker import MaxNLocator
-
-    fig = Figure(figsize=(7.0, 0.6 + 2.2 * len(panels)), layout="constrained")
-    axes = fig.subplots(len(panels), 1, sharex=True, squeeze=False)[:, 0]
-    for ax, panel in zip(axes, panels):
-        keep = np.isfinite(panel.values)
-        t, values = panel.t[keep], panel.values[keep]
-        if panel.counts:
-            ax.plot(t, values, linestyle="none", marker="o", markersize=5, color=SERIES)
-            ax.yaxis.set_major_locator(MaxNLocator(integer=True))
-            ax.set_ylim(bottom=0)
-        else:
-            ax.plot(t, values, color=SERIES, linewidth=1.5)
-            # Plain tick labels: an offset ("1e-5+9.999e-1") would sit on the title.
-            ax.ticklabel_format(axis="y", useOffset=False)
-        ax.set_title(panel.title, loc="left", fontsize=10, color=INK)
-        ax.grid(True, color=GRID, linewidth=0.6)
-        ax.set_axisbelow(True)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
-        for side in ("left", "bottom"):
-            ax.spines[side].set_color(INK_SECONDARY)
-        ax.tick_params(colors=INK_SECONDARY, labelcolor=INK_SECONDARY, labelsize=8)
-    axes[-1].set_xlabel("t (ms)", color=INK_SECONDARY)
-    fig.savefig(path, dpi=150)
-
-
 def write_plots(
     post_dir: Path,
     traces: Mapping[str, np.ndarray],
     log: Sequence[Mapping[str, float]],
 ) -> None:
     """Write :data:`PLOTS` into ``post_dir``, or warn and skip them without matplotlib."""
-    try:
-        import matplotlib  # noqa: F401
-    except ImportError:
-        warnings.warn("matplotlib is not available: the plots are skipped", stacklevel=2)
+    if not plots_available():
         return
     where = f"at ({', '.join(f'{x:g}' for x in POINT)})"
     t = traces["t_ms"]
-    _figure(
+    figure(
         post_dir / "ep_volume_averages.png",
         [Panel("v, volume mean (mV)", t, traces["v_mean_mV"])],
     )
-    _figure(post_dir / "ep_point_traces.png", [Panel(f"v {where} (mV)", t, traces["v_point_mV"])])
-    _figure(
+    figure(post_dir / "ep_point_traces.png", [Panel(f"v {where} (mV)", t, traces["v_point_mV"])])
+    figure(
         post_dir / "mech_volume_averages.png",
         [
             Panel("Ta, volume mean (kPa)", t, traces["Ta_mean_kPa"]),
             Panel("λ, volume mean", t, traces["lmbda_mean"]),
         ],
     )
-    _figure(
+    figure(
         post_dir / "mech_point_traces.png",
         [
             Panel(f"Ta {where} (kPa)", t, traces["Ta_point_kPa"]),
@@ -266,7 +199,7 @@ def write_plots(
 
     # log.csv's row at t = 0 is the initial state, with no solve behind it.
     t_log, solved = column("t_ms"), column("t_ms") > 0
-    _figure(
+    figure(
         post_dir / "log.png",
         [
             Panel(
