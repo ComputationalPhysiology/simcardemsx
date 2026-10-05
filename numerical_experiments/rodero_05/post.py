@@ -8,7 +8,8 @@ replacing it whole:
 
 - ``summary.json`` and ``pv_loops.png``: what the run writes at its end, by the same
   functions (:func:`summarise`, :func:`plot`), from ``log.csv`` alone. ``failure`` is
-  ``run.json``'s, and the Land placement ``config.resolved.toml``'s.
+  ``run.json``'s (:func:`run_failure`: a run whose ``run.json`` still says ``running``
+  did not finish), and the Land placement ``config.resolved.toml``'s.
 - ``fields.bp``: VTX on P1 of ``u`` (interpolated from the run's displacement space),
   ``v``, and ``lmbda`` and ``Ta`` (the backend's quadrature values of ``lmbda`` and of
   the masked ``tension_kPa``, averaged onto P1), at every time any of them was saved.
@@ -421,6 +422,19 @@ def plot_ecg(rows: Sequence[Mapping[str, float]], path: Path) -> None:
     fig.savefig(path, dpi=150)
 
 
+def run_failure(run: Mapping[str, Any] | None) -> str | None:
+    """The summary's ``failure``, from ``run.json`` (``None`` if there is none): its
+    ``failure``, or, while its ``status`` is still ``running``, a note that the run did
+    not finish. A run killed outright (SIGKILL, or the machine going down) never
+    rewrites ``run.json``, and its summary must not say that Newton converged at every
+    step of a run that stopped."""
+    if run is None:
+        return None
+    if run.get("status") == "running":
+        return "the run did not finish: run.json's status is still 'running'"
+    return run.get("failure")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
@@ -439,7 +453,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = read_resolved_settings(folder / "config.resolved.toml")
     columns = read_columns(folder / "log.csv")
     run = folder / "run.json"
-    failure = json.loads(run.read_text()).get("failure") if run.exists() else None
+    failure = run_failure(json.loads(run.read_text()) if run.exists() else None)
     case_dir = Path(settings["case_dir"]["resolved"])
     try:
         case = load_case(case_dir, tref_scale=settings["tref"])

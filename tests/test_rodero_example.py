@@ -351,3 +351,17 @@ def test_summarise_reports_a_failure_and_an_early_end(synthetic_log):
     assert summary["failure"] == "RuntimeError('x')"
     assert summary["criteria"]["reached_t_end"] is False
     assert summary["criteria"]["newton_converged_every_step"] is False
+
+
+def test_a_run_that_never_finished_is_not_reported_converged(synthetic_log):
+    """A run killed outright leaves ``run.json`` at ``status: running``; post.py's summary
+    then reports it as a failure, not as converged at every step."""
+    assert post.run_failure(None) is None
+    assert post.run_failure({"status": "finished", "failure": None}) is None
+    assert post.run_failure({"status": "failed", "failure": "RuntimeError('x')"}) == (
+        "RuntimeError('x')"
+    )
+    failure = post.run_failure({"status": "running", "failure": None})
+    assert "did not finish" in failure
+    summary = post.summarise(post.read_columns(synthetic_log), failure, {}, t_end_ms=10.0)
+    assert summary["criteria"]["newton_converged_every_step"] is False
