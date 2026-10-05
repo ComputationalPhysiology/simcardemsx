@@ -365,3 +365,55 @@ def test_a_run_that_never_finished_is_not_reported_converged(synthetic_log):
     assert "did not finish" in failure
     summary = post.summarise(post.read_columns(synthetic_log), failure, {}, t_end_ms=10.0)
     assert summary["criteria"]["newton_converged_every_step"] is False
+
+
+# ---------------------------------------------------------------------------
+# The cell type at a point, for active_stats.csv
+# ---------------------------------------------------------------------------
+
+
+def _one_tetrahedron() -> dolfinx.mesh.Mesh:
+    import basix.ufl
+    import ufl
+
+    x = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    element = ufl.Mesh(basix.ufl.element("Lagrange", "tetrahedron", 1, shape=(3,)))
+    return dolfinx.mesh.create_mesh(MPI.COMM_SELF, np.array([[0, 1, 2, 3]]), element, x)
+
+
+def test_a_point_between_endo_and_mid_is_never_epi():
+    """One tetrahedron with endo (0) vertices at the origin and on the y axis and mid (2)
+    vertices on the x and z axes, no epi (1). No quadrature point (degree 4) is labelled
+    epi, although the interpolated type number passes through 1 between them, and every
+    DG1 point, which sits at a vertex, gets its vertex's type, as physcardems labels its
+    DG1 dofs."""
+    import basix.ufl
+
+    mesh = _one_tetrahedron()
+    P1 = dolfinx.fem.functionspace(mesh, ("Lagrange", 1))
+    celltype = dolfinx.fem.Function(P1)
+    at_vertex = {(0.0, 0.0, 0.0): 0, (1.0, 0.0, 0.0): 2, (0.0, 1.0, 0.0): 0, (0.0, 0.0, 1.0): 2}
+
+    def vertex_type(point: np.ndarray) -> int:
+        # Dof coordinates carry round-off (and -0.0).
+        return at_vertex[tuple(float(v) for v in np.round(point, 9) + 0.0)]
+
+    celltype.x.array[:] = [vertex_type(p) for p in P1.tabulate_dof_coordinates()]
+
+    quadrature = dolfinx.fem.functionspace(
+        mesh,
+        basix.ufl.quadrature_element(mesh.basix_cell(), value_shape=(), degree=4),
+    )
+    labels = post.celltype_at_points(celltype, quadrature)
+    assert labels.size > 1
+    assert set(np.unique(labels)) == {0, 2}
+    # Not vacuous: rounding the interpolated type number labels some of them epi.
+    interpolated = dolfinx.fem.Function(quadrature)
+    interpolated.interpolate(
+        dolfinx.fem.Expression(celltype, quadrature.element.interpolation_points),
+    )
+    assert np.any(np.rint(interpolated.x.array) == 1)
+
+    DG1 = dolfinx.fem.functionspace(mesh, ("DG", 1))
+    expected = [vertex_type(p) for p in DG1.tabulate_dof_coordinates()]
+    np.testing.assert_array_equal(post.celltype_at_points(celltype, DG1), expected)

@@ -19,9 +19,11 @@ replacing it whole:
   ``tension_kPa`` were saved: ``t_ms``; the 5th, 50th and 95th percentiles of ``Ta``
   over the myocardium's quadrature points (where the case's DG0 mask is 1); and, for
   each ToR-ORd cell type, the median ``Ta`` and λ over the myocardium's quadrature
-  points of that type. The cell type at a quadrature point is the case's P1 cell type
-  interpolated there and rounded, as physcardems rounds it on DG1. A cell type with no
-  such point is ``nan``.
+  points of that type (:func:`celltype_at_points`). A quadrature point's cell type is
+  the one whose P1 indicator (1 at the case's nodes of that type, 0 at the others),
+  interpolated there, is largest: between nodes of two types it is one of those two.
+  At a node it is the node's own type, as physcardems labels its DG1 dofs, which sit at
+  the vertices. A cell type with no such point is ``nan``.
 - ``ecg.csv`` (:data:`ECG_FIELDS`) and ``ecg.png``: the pseudo-ECG, one row per time
   ``v`` was saved at (``--save-every-ep``). ``beat.ECGRecovery(v=v, sigma_b=1.0,
   C_m=1.0, M=1.0)``: the membrane current is recovered as ``I_m = div(grad v)`` (an L2
@@ -292,10 +294,34 @@ def _at_quadrature_points(
     source: dolfinx.fem.Function,
     space: dolfinx.fem.FunctionSpace,
 ) -> np.ndarray:
-    """``source`` interpolated at the points of the quadrature ``space``."""
+    """``source`` interpolated at the points of the scalar ``space`` (a quadrature
+    space, say)."""
     target = dolfinx.fem.Function(space)
     target.interpolate(dolfinx.fem.Expression(source, space.element.interpolation_points))
     return target.x.array.copy()
+
+
+def celltype_at_points(
+    celltype: dolfinx.fem.Function,
+    space: dolfinx.fem.FunctionSpace,
+) -> np.ndarray:
+    """The ToR-ORd cell type at each point of the scalar ``space`` (the backend's
+    quadrature space, say), from ``celltype``, the case's cell type per P1 node.
+
+    For each type in :data:`CELLTYPES`, its P1 indicator (1 at the nodes of that type,
+    0 elsewhere) is interpolated at the points, and each point gets the type whose
+    indicator is largest; a tie goes to the lower type number. At a node this is the
+    node's own type, which is how physcardems labels its DG1 dofs (at the vertices).
+    Between nodes of two types it is one of those two. Rounding the interpolated type
+    number instead would label a point between an endo (0) and a mid (2) node epi (1).
+    """
+    types = np.array(sorted(CELLTYPES))
+    indicator = dolfinx.fem.Function(celltype.function_space)
+    weights = []
+    for c in types:
+        indicator.x.array[:] = (np.rint(celltype.x.array) == c).astype(float)
+        weights.append(_at_quadrature_points(indicator, space))
+    return types[np.argmax(np.stack(weights), axis=0)]
 
 
 class ActiveStats:
@@ -308,7 +334,7 @@ class ActiveStats:
         mesh = space.mesh
         celltype = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 1)))
         celltype.x.array[:] = case.celltype
-        self.celltype = np.rint(_at_quadrature_points(celltype, space)).astype(int)
+        self.celltype = celltype_at_points(celltype, space)
 
     def row(
         self,
