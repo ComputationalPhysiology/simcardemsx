@@ -79,8 +79,10 @@ class SimulationController:
         The time reached, in ms: the end of the last step that completed. A step that
         fails leaves it at that step's start.
     t_failed:
-        The end, in ms, of the step that :meth:`step` last rolled back, and ``None``
-        if the last step did not fail. Every step resets it to ``None`` first.
+        The end, in ms, of the step that :meth:`step` last rolled back: the ``t`` it
+        would have reached, ``t_n + ep_steps_per_mech * dt_ep``. ``None`` if the last
+        step did not fail, or failed and its restore raised too. Every step resets it
+        to ``None`` first.
 
     Raises
     ------
@@ -261,19 +263,25 @@ class SimulationController:
         new ``t``; ``backend.begin_step(t_n, dt_mech)``, which prepares the step from
         the old ``t``; ``self.mechanics.advance(t_n, dt_mech)``;
         ``backend.post_solve()``, which accepts the step; the backend's outputs back
-        into EP's arrays; ``mech_callback(t, mech_step_idx, newton_iterations)``.
+        into EP's arrays; the step counter; ``mech_callback(t, mech_step_idx,
+        newton_iterations)``.
 
-        If anything up to and including ``post_solve`` raises (any ``BaseException``,
+        If anything before ``mech_callback`` raises (any ``BaseException``,
         ``KeyboardInterrupt`` included), or ``advance`` returns ``False``, the step is
         rolled back: the snapshot is restored (:meth:`restore`), so every component,
         EP's arrays included, is as it was before the step and ``t`` is ``t_n``;
-        :attr:`t_failed` is set to ``t_n + dt_mech``; and the error is raised. That is
+        :attr:`t_failed` is set to the ``t`` the step would have reached, ``t_n +
+        ep_steps_per_mech * dt_ep`` (the EP loop's arithmetic, which ``t_n + dt_mech``
+        can differ from in the last bit); and the error is raised. That is
         ``RuntimeError`` if ``advance`` returned ``False``, and otherwise the error
         itself, unchanged. If the restore raises in turn, its error is raised with the
-        step's as its cause. Nothing is rolled back once ``post_solve`` has returned.
+        step's as its cause. An error from ``mech_callback`` is not rolled back: the
+        step is complete by then.
         """
         self.t_failed = None
         t_n = self.t
+        # As the last EP micro-step below computes it, bit for bit.
+        t_end = t_n + self.ep_steps_per_mech * self.dt_ep
         logger.info(f"--- Solving coupled step from t = {t_n} ---")
         snapshot = self.snapshot()
 
@@ -293,20 +301,19 @@ class SimulationController:
             if not ok:
                 raise RuntimeError(
                     "The mechanics solve did not converge for the step from "
-                    f"t = {t_n} to t = {self.t}",
+                    f"t = {t_n} to t = {t_end}",
                 )
             self.backend.post_solve()
+            self.plan.backward()
+            self.mech_step_idx += 1
         except BaseException as error:
             try:
                 self.restore(snapshot)
             except BaseException as restore_error:
                 raise restore_error from error
-            self.t_failed = t_n + self.dt_mech
+            self.t_failed = t_end
             logger.info(f"Rolled the coupled step back to t = {self.t}")
             raise
-
-        self.plan.backward()
-        self.mech_step_idx += 1
 
         if mech_callback:
             mech_callback(

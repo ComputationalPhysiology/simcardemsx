@@ -16,6 +16,7 @@ bit. X3 (``test_segregated_backend.py``) and Review Focus 1 (``test_cycle_coupli
 check the backend and the cycle's mechanics; these check everything, EP included.
 """
 
+import re
 from dataclasses import dataclass, field
 
 from mpi4py import MPI
@@ -63,6 +64,7 @@ def _controller(
     *,
     scheme: str = "monolithic",
     driver=None,
+    dt_mech: float = DT_MECH,
 ) -> SimulationController:
     """Gate 5's controller. ``driver(problem)`` builds the mechanics driver; without it
     the controller wraps the problem in :class:`Solve`."""
@@ -75,7 +77,7 @@ def _controller(
         scheme=scheme,
     )
     mechanics = problem if driver is None else driver(problem)
-    return SimulationController(mechanics, ep_solver, backend, modules, DT_MECH, DT_EP)
+    return SimulationController(mechanics, ep_solver, backend, modules, dt_mech, DT_EP)
 
 
 def _changed(a, b) -> set[str]:
@@ -227,6 +229,61 @@ def test_failed_first_step_leaves_ep_as_it_was(split_modules, make_ep_solver, ma
     uninterrupted.step()
     uninterrupted.step()
     _assert_same_state(_coupled_state(controller), _coupled_state(uninterrupted))
+
+
+def test_t_failed_is_where_the_step_would_have_ended(
+    split_modules,
+    make_ep_solver,
+    make_mechanics,
+):
+    """``t_failed`` (and the ``RuntimeError``'s end time) is the ``t`` that an
+    uninterrupted run reaches after that step, bit for bit: the EP loop's
+    ``t_n + n * dt_ep``, not ``t_n + dt_mech``. The examples record it, and at
+    dt_mech 0.15 and dt_ep 0.05 the two differ in the last bit on the first step."""
+    dt_mech = 0.15
+    assert 0.0 + 3 * DT_EP != 0.0 + dt_mech  # 0.15000000000000002 and 0.15
+
+    uninterrupted = _controller(split_modules, make_ep_solver, make_mechanics, dt_mech=dt_mech)
+    uninterrupted.step()
+
+    controller = _controller(
+        split_modules,
+        make_ep_solver,
+        make_mechanics,
+        dt_mech=dt_mech,
+        driver=lambda problem: _FailOnce(Solve(problem), at_step=1),
+    )
+    with pytest.raises(RuntimeError, match=re.escape(f"to t = {uninterrupted.t!r}")):
+        controller.step()
+    assert controller.t_failed == uninterrupted.t
+    assert controller.t == 0.0
+
+
+def test_a_failure_moving_values_back_to_ep_rolls_back(
+    split_modules,
+    make_ep_solver,
+    make_mechanics,
+    monkeypatch,
+):
+    """An interrupt after ``post_solve``, while the outputs move back to EP, rolls the
+    step back too: only ``mech_callback`` comes after the step is complete."""
+    controller = _controller(split_modules, make_ep_solver, make_mechanics)
+    controller.step()
+    before = _coupled_state(controller)
+    backward = controller.plan.backward
+
+    def interrupted() -> None:
+        backward()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(controller.plan, "backward", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        controller.step()
+    monkeypatch.undo()
+
+    _assert_same_state(_coupled_state(controller), before)
+    assert controller.t == 1.0
+    assert controller.t_failed == 2.0
 
 
 def test_a_failing_rollback_keeps_both_errors(

@@ -880,10 +880,11 @@ def _coupled_state(
     followed by ``extra``.
 
     The arrays are each component's restart Functions, as ``"{namespace}/{name}"``, and
-    EP's ``parameters`` and ``missing_variables`` (``"ep/parameters"``,
-    ``"ep/missing_variables"``), which no component holds: ``plan.backward()`` rewrites
-    them. The metadata is by namespace, round-tripped through JSON, as a checkpoint
-    stores it.
+    EP's whole ``parameters`` and ``missing_variables`` arrays (``"ep/parameters"``,
+    ``"ep/missing_variables"``). The rows of those that come from the backend are the
+    transfer plan's restart Functions (``"transfer/..."``); the whole arrays are added
+    so that the other rows are checked too. The metadata is by namespace,
+    round-tripped through JSON, as a checkpoint stores it.
     """
     arrays: dict[str, np.ndarray] = {}
     metadata: dict[str, Any] = {}

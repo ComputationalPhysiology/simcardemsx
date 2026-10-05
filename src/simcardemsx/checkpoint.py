@@ -38,11 +38,17 @@ class Checkpointable(Protocol):
     Attributes
     ----------
     namespace
-        Prefix of this component's restart function names (``activation_...``), so
-        that names stay unique across components. Names must be unique within it.
+        The component's key in a snapshot and in a checkpoint's metadata. It must be
+        unique among the components saved together.
 
     Notes
     -----
+    Restart function names must be unique across all the components saved together,
+    not only within one. simcardemsx's own components prefix theirs with their
+    namespace (``activation_...``, ``transfer_...``), and pulse's are
+    ``mechanics_...``. EP's are beat's own (``v``, ``state_<name>``) and are not
+    prefixed.
+
     ``restart_metadata`` must be JSON-able: plain floats, ints, bools, strings, lists
     and dicts, with no numpy scalars.
 
