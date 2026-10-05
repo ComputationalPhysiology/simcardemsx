@@ -708,8 +708,8 @@ def test_failed_step_accepts_nothing(split_modules, make_ep_solver, make_mechani
     on quadrature. Two converged steps come first, so that the model and both stretches
     have left their initial values. The next step's solve runs for real and its driver
     reports failure, so ``begin_step`` has advanced a trial and the solve has moved
-    ``u``; the controller must raise without calling ``post_solve`` or moving anything
-    back to EP. The failed step's EP micro-steps are not rolled back, for any driver.
+    ``u``; the controller must raise without calling ``post_solve``, and its rollback
+    (``tests/test_rollback.py``, gate R2) must discard the trial and leave EP as it was.
     """
     modules = split_modules["caisplit"]
     ep_solver = make_ep_solver(modules.ep, _unit_cube(3))
@@ -744,8 +744,13 @@ def test_failed_step_accepts_nothing(split_modules, make_ep_solver, make_mechani
     for name, value in before.items():
         assert np.array_equal(after[name], value), name
 
-    # The failed step did have something to accept: its trial, pending still.
-    backend.post_solve()
+    # The failed step did have something to accept, its trial, which the rollback
+    # discarded: a stray post_solve raises, and the retry accepts that trial.
+    assert not backend.step_pending
+    with pytest.raises(RuntimeError, match="begin_step"):
+        backend.post_solve()
+    driver.fail = False
+    controller.step()
     assert not np.array_equal(backend.model.CaTRPN, before["model.CaTRPN"])
 
 

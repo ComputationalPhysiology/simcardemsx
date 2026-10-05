@@ -1,10 +1,11 @@
+import json
 import types
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from types import ModuleType
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from mpi4py import MPI
 
@@ -18,6 +19,9 @@ import pytest
 import ufl
 
 from simcardemsx.backends import GeneratedActivation
+from simcardemsx.checkpoint import Checkpointable
+from simcardemsx.controller import SimulationController
+from simcardemsx.mechanics import MechanicsDriver
 from simcardemsx.ode_model import ODEModules, load_ode_modules
 
 ODEFILES_DIR = Path(__file__).parent.parent / "numerical_experiments" / "odefiles"
@@ -836,3 +840,73 @@ def _ellipsoid_ep_mechanics(
         states[i_LV].x.array[:] = unloaded
         states[i_LA].x.array[:] = V_LA
     return ep_solver, problem, backend
+
+
+@dataclass
+class _FailOnce:
+    """A mechanics driver that fails one step after moving the mechanics.
+
+    It delegates to ``driver``, except on its ``at_step``-th call to ``advance``
+    (counting from 1): that call runs the inner ``advance``, so ``u`` has moved, and
+    then returns ``False``. It fails once; the retry of that step delegates. Wrap a
+    plain problem as ``_FailOnce(simcardemsx.mechanics.Solve(problem), at_step)``.
+    """
+
+    driver: MechanicsDriver
+    at_step: int
+    calls: int = 0
+
+    @property
+    def problem(self) -> pulse.StaticProblem:
+        """The inner driver's problem."""
+        return self.driver.problem
+
+    def advance(self, t_n: float, dt: float) -> bool:
+        self.calls += 1
+        converged = self.driver.advance(t_n, dt)
+        return converged and self.calls != self.at_step
+
+
+#: What :func:`_coupled_state` returns: the arrays by ``"{namespace}/{name}"``, and the
+#: metadata by namespace.
+_CoupledState = tuple[dict[str, np.ndarray], dict[str, Any]]
+
+
+def _coupled_state(
+    controller: SimulationController,
+    extra: Sequence[Checkpointable] = (),
+) -> _CoupledState:
+    """Copies of everything a restore must reproduce, of ``controller.components()``
+    followed by ``extra``.
+
+    The arrays are each component's restart Functions, as ``"{namespace}/{name}"``, and
+    EP's ``parameters`` and ``missing_variables`` (``"ep/parameters"``,
+    ``"ep/missing_variables"``), which no component holds: ``plan.backward()`` rewrites
+    them. The metadata is by namespace, round-tripped through JSON, as a checkpoint
+    stores it.
+    """
+    arrays: dict[str, np.ndarray] = {}
+    metadata: dict[str, Any] = {}
+    for component in [*controller.components(), *extra]:
+        for name, f in component.restart_functions():
+            key = f"{component.namespace}/{name}"
+            assert key not in arrays, key
+            arrays[key] = f.x.array.copy()
+        metadata[component.namespace] = json.loads(json.dumps(component.restart_metadata()))
+    ode = controller.ep_solver.ode
+    assert isinstance(ode, beat.odesolver.DolfinODESolver)
+    arrays["ep/parameters"] = ode.parameters.copy()
+    if ode.missing_variables is not None:
+        arrays["ep/missing_variables"] = ode.missing_variables.copy()
+    return arrays, metadata
+
+
+def _assert_same_state(a: _CoupledState, b: _CoupledState) -> None:
+    """Two states from :func:`_coupled_state` are equal: the same keys, each array bit
+    for bit, and the same metadata."""
+    arrays_a, metadata_a = a
+    arrays_b, metadata_b = b
+    assert sorted(arrays_a) == sorted(arrays_b)
+    for key, value in arrays_a.items():
+        assert np.array_equal(value, arrays_b[key]), key
+    assert metadata_a == metadata_b

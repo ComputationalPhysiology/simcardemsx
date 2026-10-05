@@ -7,20 +7,36 @@ What crosses is derived from the EP module and the backend's ``missing``/``provi
 :class:`~simcardemsx.backends.GeneratedActivation` or
 :class:`~simcardemsx.backends.CrossbridgeSegregated`. The deprecated
 :class:`~simcardemsx.backends.ZetaSplitUFL` remains usable directly against ``pulse``.
+
+A step that fails is rolled back: the controller takes a
+:class:`~simcardemsx.checkpoint.Snapshot` of all its components at the start of each
+step, and restores it if the step does not complete.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 import beat
 import pulse
 
-from .mechanics import as_driver
+from .checkpoint import (
+    Checkpointable,
+    CycleState,
+    EPState,
+    MechanicsState,
+    Snapshot,
+    restore_snapshot,
+    take_snapshot,
+)
+from .mechanics import Cycle, as_driver
 from .transfer_plan import TransferPlan, resolve
 
 if TYPE_CHECKING:
+    import dolfinx
+
     from .backends.base import CoupledBackend
     from .mechanics import MechanicsDriver
     from .ode_model import ODEModules
@@ -33,6 +49,9 @@ _DT_RTOL = 1e-9
 
 class SimulationController:
     """Advance EP and mechanics together, one mechanics time step at a time.
+
+    The controller is itself a :class:`~simcardemsx.checkpoint.Checkpointable`
+    (namespace ``"simcardemsx"``): its state is its clock and step counters.
 
     Parameters
     ----------
@@ -53,6 +72,15 @@ class SimulationController:
     dt_mech, dt_ep:
         Mechanics and EP time steps, in ms. ``dt_mech`` must be a whole multiple of
         ``dt_ep``.
+
+    Attributes
+    ----------
+    t:
+        The time reached, in ms: the end of the last step that completed. A step that
+        fails leaves it at that step's start.
+    t_failed:
+        The end, in ms, of the step that :meth:`step` last rolled back, and ``None``
+        if the last step did not fail. Every step resets it to ``None`` first.
 
     Raises
     ------
@@ -141,9 +169,81 @@ class SimulationController:
             backend,
         )
 
+        #: The EP states' names, in the order of the ODE's state array.
+        self._state_names = sorted(ode_modules.ep.state, key=ode_modules.ep.state.__getitem__)
+
         self.t = 0.0
         self.ep_step_idx = 0
         self.mech_step_idx = 0
+        self.t_failed: float | None = None
+
+    # ------------------------------------------------------------------
+    # Components, snapshots and restore
+    # ------------------------------------------------------------------
+
+    namespace = "simcardemsx"
+
+    def components(self) -> list[Checkpointable]:
+        """Everything whose state the coupled run carries from step to step, in the
+        order it is restored: EP, the mechanics problem, the cycle controller (only
+        when the driver is a :class:`~simcardemsx.mechanics.Cycle`), the backend, and
+        the controller itself."""
+        components: list[Checkpointable] = [
+            EPState(self.ep_solver, self._state_names),
+            MechanicsState(self.mechanics.problem),
+        ]
+        if isinstance(self.mechanics, Cycle):
+            components.append(CycleState(self.mechanics.controller))
+        # Both CoupledBackends are Checkpointable; the protocol does not say so.
+        components += [cast(Checkpointable, self.backend), self]
+        return components
+
+    def restart_functions(self) -> list[tuple[str, dolfinx.fem.Function]]:
+        """None: the controller's state is all metadata."""
+        return []
+
+    def restart_metadata(self) -> dict[str, Any]:
+        """The clock and the step counters, and the time steps they count (ms)."""
+        return {
+            "t_ms": self.t,
+            "ep_step_idx": self.ep_step_idx,
+            "mech_step_idx": self.mech_step_idx,
+            "dt_mech_ms": self.dt_mech,
+            "dt_ep_ms": self.dt_ep,
+        }
+
+    def load_restart(
+        self,
+        functions: Sequence[tuple[str, dolfinx.fem.Function]],
+        metadata: Mapping[str, Any],
+    ) -> None:
+        """Set the clock and the step counters.
+
+        Raises ``ValueError`` if the metadata's ``dt_mech`` or ``dt_ep`` differ from
+        this controller's, since the counters count steps of those sizes.
+        """
+        for key, own in (("dt_mech_ms", self.dt_mech), ("dt_ep_ms", self.dt_ep)):
+            if metadata[key] != own:
+                raise ValueError(
+                    f"The checkpoint was written with {key.removesuffix('_ms')} = "
+                    f"{metadata[key]} ms, this controller has {own} ms",
+                )
+        self.t = float(metadata["t_ms"])
+        self.ep_step_idx = int(metadata["ep_step_idx"])
+        self.mech_step_idx = int(metadata["mech_step_idx"])
+
+    def snapshot(self) -> Snapshot:
+        """Copies of the state of every one of :meth:`components`."""
+        return take_snapshot(self.components())
+
+    def restore(self, snapshot: Snapshot) -> None:
+        """Put a :meth:`snapshot` back, then move the restored backend outputs to EP.
+
+        EP's ``missing_variables`` and ``parameters`` are not in the snapshot: they are
+        rewritten from the backend's outputs (``plan.backward()``), bit for bit.
+        """
+        restore_snapshot(self.components(), snapshot)
+        self.plan.backward()
 
     def step(
         self,
@@ -152,35 +252,61 @@ class SimulationController:
     ) -> None:
         """Advance the coupled system by one mechanics time step, from ``t`` to ``t + dt_mech``.
 
-        In order: the EP micro-steps (``ep_callback(t, ep_step_idx)`` after each); EP
-        values forward into the backend's inputs, at the new ``t``;
-        ``backend.begin_step(t_n, dt_mech)``, which prepares the step from the old ``t``;
-        ``self.mechanics.advance(t_n, dt_mech)``; ``backend.post_solve()``, which accepts
-        the step; the backend's outputs back into EP's arrays; ``mech_callback(t,
-        mech_step_idx, newton_iterations)``.
+        In order: a :meth:`snapshot`; the EP micro-steps (``ep_callback(t,
+        ep_step_idx)`` after each); EP values forward into the backend's inputs, at the
+        new ``t``; ``backend.begin_step(t_n, dt_mech)``, which prepares the step from
+        the old ``t``; ``self.mechanics.advance(t_n, dt_mech)``;
+        ``backend.post_solve()``, which accepts the step; the backend's outputs back
+        into EP's arrays; ``mech_callback(t, mech_step_idx, newton_iterations)``.
 
-        Raises ``RuntimeError`` if the mechanics driver's ``advance`` does not converge.
+        If anything up to and including ``post_solve`` raises (any ``BaseException``,
+        ``KeyboardInterrupt`` included), or ``advance`` returns ``False``, the step is
+        rolled back: the snapshot is restored, so every component is as it was before
+        the step and ``t`` is ``t_n`` (EP's ``missing_variables`` and ``parameters``
+        are only written after ``post_solve``, so they are untouched);
+        :attr:`t_failed` is set to ``t_n + dt_mech``; and the error is raised. That is
+        ``RuntimeError`` if ``advance`` returned ``False``, and otherwise the error
+        itself, unchanged. If the restore raises in turn, its error is raised with the
+        step's as its cause. Nothing is rolled back once ``post_solve`` has returned.
         """
+        self.t_failed = None
         t_n = self.t
         logger.info(f"--- Solving coupled step from t = {t_n} ---")
+        snapshot = self.snapshot()
 
-        for i in range(self.ep_steps_per_mech):
-            t0 = self.t
-            self.t = t_n + (i + 1) * self.dt_ep
-            self.ep_solver.step((t0, self.t))
-            self.ep_step_idx += 1
-            if ep_callback:
-                ep_callback(self.t, self.ep_step_idx)
+        try:
+            for i in range(self.ep_steps_per_mech):
+                t0 = self.t
+                self.t = t_n + (i + 1) * self.dt_ep
+                self.ep_solver.step((t0, self.t))
+                self.ep_step_idx += 1
+                if ep_callback:
+                    ep_callback(self.t, self.ep_step_idx)
 
-        self.plan.forward(self.t)
+            self.plan.forward(self.t)
 
-        self.backend.begin_step(t_n, self.dt_mech)
-        ok = self.mechanics.advance(t_n, self.dt_mech)
-        if not ok:
-            raise RuntimeError(
-                f"The mechanics solve did not converge for the step from t = {t_n} to t = {self.t}",
-            )
-        self.backend.post_solve()
+            self.backend.begin_step(t_n, self.dt_mech)
+            ok = self.mechanics.advance(t_n, self.dt_mech)
+            if not ok:
+                raise RuntimeError(
+                    "The mechanics solve did not converge for the step from "
+                    f"t = {t_n} to t = {self.t}",
+                )
+            self.backend.post_solve()
+        except BaseException as error:
+            try:
+                # Not restore(): nothing above writes EP's missing_variables or
+                # parameters, so they are as before the step already, and moving the
+                # backend's outputs back would change them before the first accepted
+                # step, when EP holds its own initial values (lmbda = 1, say) and
+                # the outputs theirs (0).
+                restore_snapshot(self.components(), snapshot)
+            except BaseException as restore_error:
+                raise restore_error from error
+            self.t_failed = t_n + self.dt_mech
+            logger.info(f"Rolled the coupled step back to t = {self.t}")
+            raise
+
         self.plan.backward()
         self.mech_step_idx += 1
 

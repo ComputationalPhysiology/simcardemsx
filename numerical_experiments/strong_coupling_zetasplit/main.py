@@ -617,10 +617,10 @@ def main(argv: list[str] | None = None):
             header="t (ms), mesh mean of backend.lmbda_prev",
         )
     except BaseException as e:
-        # BaseException: an interrupt is recorded too. The controller's t is the end of
-        # the step that raised.
+        # BaseException: an interrupt is recorded too. A step that raised was rolled
+        # back, leaving the controller's t at its start; t_failed is its end.
         failure = failure_of(e)
-        t_fail = controller.t
+        t_fail = controller.t_failed if controller.t_failed is not None else controller.t
         logger.exception(f"The coupled step ending at t = {t_fail} ms failed")
         raise
     finally:

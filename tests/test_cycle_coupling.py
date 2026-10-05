@@ -225,8 +225,8 @@ def test_failed_cycle_step_leaves_backend_unaccepted(split_modules, lv_ellipsoid
     ``Cycle.advance`` does, and the controller must raise without calling
     ``backend.post_solve()`` or moving anything back to EP.
 
-    The failed step's EP micro-steps have run, and are not rolled back: that is the
-    controller's behaviour for any driver, not this one's.
+    The controller then rolls the whole step back, its EP micro-steps included: that is
+    its behaviour for any driver, not this one's (gate R2, ``tests/test_rollback.py``).
     """
     controller, cycle = _coupled(split_modules["zetasplit"], lv_ellipsoid)
     controller.step()

@@ -827,7 +827,8 @@ def main(argv: list[str] | None = None) -> None:
         # that stopped early as converged. The solves of the step it stopped in, which
         # no row records.
         unrecorded = solves.attempts[sum(len(a) for a in attempts) :]
-        failure = f"{type(error).__name__} at t = {controller.t} ms: {error}; solves {unrecorded}"
+        t_failed = controller.t_failed if controller.t_failed is not None else controller.t
+        failure = f"{type(error).__name__} at t = {t_failed} ms: {error}; solves {unrecorded}"
         logger.exception("The run stopped before t_end")
         raise
     finally:

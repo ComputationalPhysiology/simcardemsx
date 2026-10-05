@@ -885,7 +885,7 @@ def main(argv: list[str] | None = None):
             controller.step(mech_callback=on_mech_step)
     except BaseException as e:
         # BaseException: an interrupt is recorded too.
-        failed_at = controller.t
+        failed_at = controller.t_failed if controller.t_failed is not None else controller.t
         failure = failure_of(e)
         logger.exception(f"The coupled step ending at t = {failed_at} ms failed")
         raise
