@@ -568,3 +568,4 @@ Zetaw
 zk
 zmax
 zmin
+gpgsign

@@ -12,7 +12,6 @@ import csv
 import datetime
 import json
 import logging
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,7 @@ import numpy as np
 import ufl
 
 from scheme_comparison import metrics
+from simcardemsx import provenance
 
 COLUMNS = [
     "t_ms",
@@ -41,25 +41,14 @@ logger = logging.getLogger(__name__)
 HERE = Path(__file__).resolve().parent
 
 
-def _git(args: list[str], cwd: Path) -> str | None:
-    """``git <args>``'s stdout in ``cwd``, or None if git fails (best effort)."""
-    try:
-        out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
-    except Exception:
-        return None
-    return out.stdout if out.returncode == 0 else None
-
-
 def _git_commit(cwd: Path = HERE) -> str | None:
     """The commit checked out in ``cwd``, or None."""
-    out = _git(["rev-parse", "HEAD"], cwd)
-    return (out.strip() or None) if out is not None else None
+    return provenance.git_commit(cwd)
 
 
 def _git_dirty(cwd: Path = HERE) -> bool | None:
     """Whether a tracked file differs from that commit (untracked files ignored), or None."""
-    out = _git(["status", "--porcelain", "--untracked-files=no"], cwd)
-    return bool(out.strip()) if out is not None else None
+    return provenance.git_dirty(cwd)
 
 
 REQUIRED_RUN_INFO = ("geometry", "split", "scheme", "dt_mech_ms", "t_end_ms", "regime")
