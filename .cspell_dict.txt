@@ -569,3 +569,5 @@ zk
 zmax
 zmin
 gpgsign
+checkpointable
+checkpointer

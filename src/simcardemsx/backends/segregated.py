@@ -39,11 +39,13 @@ from __future__ import annotations
 import copy
 import logging
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import basix.ufl
 import crossbridge
 import dolfinx
+import numpy as np
 import pulse
 import ufl
 
@@ -465,3 +467,99 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
 
     def P(self, F: ufl.core.expr.Expr, dev: bool = False) -> ufl.core.expr.Expr:
         return F * self.S(F.T * F, dev=dev)
+
+    # ------------------------------------------------------------------
+    # Checkpoint / restart (simcardemsx.checkpoint.Checkpointable)
+    # ------------------------------------------------------------------
+
+    namespace = "activation"
+
+    @property
+    def step_pending(self) -> bool:
+        """Whether :meth:`begin_step` has prepared a trial that :meth:`post_solve` has
+        not yet accepted."""
+        return self._trial is not None
+
+    def _holder_space(self, bs: int) -> dolfinx.fem.FunctionSpace:
+        """The space of a Function holding ``bs`` values per point: :attr:`space` itself
+        for ``bs == 1``, else the same element with ``value_shape=(bs,)``. Cached."""
+        if bs == 1:
+            return self.space
+        cache = self.__dict__.setdefault("_holder_spaces", {})
+        if bs not in cache:
+            if self.quadrature_degree is not None:
+                element: Any = basix.ufl.quadrature_element(
+                    self.mesh.basix_cell(),
+                    value_shape=(bs,),
+                    degree=self.quadrature_degree,
+                )
+            else:
+                element = ("DG", 1, (bs,))
+            cache[bs] = dolfinx.fem.functionspace(self.mesh, element)
+        return cache[bs]
+
+    def _holder(self, name: str, array: np.ndarray) -> dolfinx.fem.Function:
+        """A Function holding ``array`` of shape ``(..., num_cells)``, cell axis last."""
+        bs = int(np.prod(array.shape[:-1]))
+        f = dolfinx.fem.Function(self._holder_space(bs), name=name)
+        f.x.array.reshape(array.shape[-1], bs)[:] = array.reshape(bs, array.shape[-1]).T
+        return f
+
+    @staticmethod
+    def _unpack(f: dolfinx.fem.Function, shape: tuple[int, ...]) -> np.ndarray:
+        bs = int(np.prod(shape[:-1]))
+        return f.x.array.reshape(shape[-1], bs).T.reshape(shape).copy()
+
+    def restart_functions(self) -> list[tuple[str, dolfinx.fem.Function]]:
+        """The accepted state as Functions, in a fixed order.
+
+        The model's arrays are copied into freshly allocated holders on every call, so
+        this is valid while a step is pending (the model is still the accepted one);
+        the checkpointer refuses to write then, through :attr:`step_pending`.
+        """
+        lmbda_old = dolfinx.fem.Function(self.space, name="lmbda_old")
+        lmbda_old.x.array[:] = self._lmbda_old
+        functions = [
+            ("activation_lmbda_prev", self.lmbda_prev),
+            ("activation_lmbda_old", lmbda_old),
+            ("activation_tension_kPa", self._tension_kPa),
+            ("activation_stiffness_kPa", self._stiffness_kPa),
+            ("activation_output_J_TRPN", self.J_TRPN),
+        ]
+        state = self.model.get_state()
+        for key in sorted(k for k, v in state.items() if isinstance(v, np.ndarray)):
+            name = f"activation_model_{key}"
+            functions.append((name, self._holder(name, state[key])))
+        return functions
+
+    def restart_metadata(self) -> dict[str, Any]:
+        state = self.model.get_state()
+        return {
+            "backend": "CrossbridgeSegregated",
+            "model": type(self.model).__name__,
+            "stabilized": self.stabilized,
+            "model_scalars": {k: v for k, v in state.items() if not isinstance(v, np.ndarray)},
+        }
+
+    def load_restart(
+        self,
+        functions: Sequence[tuple[str, dolfinx.fem.Function]],
+        metadata: Mapping[str, Any],
+    ) -> None:
+        """Take the accepted state back; a pending step is discarded."""
+        own = self.restart_metadata()
+        for key in ("backend", "model", "stabilized"):
+            if metadata.get(key) != own[key]:
+                raise ValueError(
+                    f"Checkpoint has {key}={metadata.get(key)!r}, this backend has {own[key]!r}",
+                )
+        by_name = dict(functions)
+        state = self.model.get_state()
+        new: dict[str, Any] = dict(metadata["model_scalars"])
+        for key, value in state.items():
+            if isinstance(value, np.ndarray):
+                new[key] = self._unpack(by_name[f"activation_model_{key}"], value.shape)
+        self._lmbda_old = by_name["activation_lmbda_old"].x.array.copy()
+        self.model.set_state(new)
+        self._trial = None
+        self._average_tension()

@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import logging
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, NamedTuple
 
 import basix.ufl
@@ -588,4 +588,45 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
             self._lmbda_frozen.x.array[:] = lmbda
             self._dLambda_frozen.x.array[:] = self._dLambda_next.x.array
 
+        self._average_tension()
+
+    # ------------------------------------------------------------------
+    # Checkpoint / restart (simcardemsx.checkpoint.Checkpointable)
+    # ------------------------------------------------------------------
+
+    namespace = "activation"
+
+    @property
+    def step_pending(self) -> bool:
+        """Always ``False``: ``begin_step`` only sets ``t`` and ``dt``, and nothing is
+        half-accepted between it and :meth:`post_solve`."""
+        return False
+
+    def restart_functions(self) -> list[tuple[str, dolfinx.fem.Function]]:
+        """The backend's own Functions that carry the accepted state."""
+        return [
+            ("activation_states_prev", self.states_prev),
+            ("activation_lmbda_prev", self.lmbda_prev),
+            ("activation_lmbda_frozen", self._lmbda_frozen),
+            ("activation_dLambda_frozen", self._dLambda_frozen),
+            ("activation_tension_kPa", self._tension_kPa),
+            ("activation_stiffness_kPa", self._stiffness_kPa),
+            *((f"activation_output_{name}", self.outputs[name]) for name in sorted(self.outputs)),
+        ]
+
+    def restart_metadata(self) -> dict[str, Any]:
+        return {"backend": "GeneratedActivation", "scheme": self.scheme}
+
+    def load_restart(
+        self,
+        functions: Sequence[tuple[str, dolfinx.fem.Function]],
+        metadata: Mapping[str, Any],
+    ) -> None:
+        """Check the metadata and re-average ``active_tension``; the Functions in
+        ``functions`` are the backend's own, already filled by the caller."""
+        if dict(metadata) != self.restart_metadata():
+            raise ValueError(
+                f"Checkpoint was written by {dict(metadata)}, "
+                f"this backend is {self.restart_metadata()} (scheme must match)",
+            )
         self._average_tension()
