@@ -44,7 +44,6 @@ from collections.abc import Mapping
 import basix.ufl
 import crossbridge
 import dolfinx
-import numpy as np
 import pulse
 import ufl
 
@@ -230,7 +229,7 @@ class CrossbridgeSegregated(pulse.active_model.ActiveModel):
         self.lmbda_prev.x.array[:] = 1.0
         self.outputs["lmbda"] = self.lmbda_prev
         # λ_{n-1}, for the shortening velocity.
-        self._lmbda_old = np.ones(num_cells)
+        self._lmbda_old = self.lmbda_prev.x.array.copy()
 
         # The stress form itself is pulse's, not reimplemented here: one
         # implementation of Psi_a = Ta*dl + Ka*dl^2/2, tested upstream. When
