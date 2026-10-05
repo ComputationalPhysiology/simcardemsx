@@ -736,6 +736,7 @@ def _ellipsoid_ep_mechanics(
     tension_scale: dolfinx.fem.Function | ufl.core.expr.Expr | None = None,
     mech_parameters: Mapping[str, float] | None = None,
     quadrature_degree: int = ELLIPSOID_QUADRATURE_DEGREE,
+    circulation_scheme: str = "backward_euler",
 ) -> tuple[beat.MonodomainSplittingSolver, pulse.DynamicProblem, GeneratedActivation]:
     """EP and a ``pulse.DynamicProblem`` on the same LV ellipsoid (:func:`lv_ellipsoid`).
 
@@ -762,6 +763,8 @@ def _ellipsoid_ep_mechanics(
     ``pulse.cycle.CycleController`` to switch between constraints; the caller builds
     and initializes that controller. Newton's budget is then
     :data:`CYCLE_SNES_MAX_IT` iterations. With neither, there is no cavity at all.
+    ``circulation_scheme`` (``"backward_euler"`` or ``"bdf2"``) is the problem's
+    ``circulation_scheme`` parameter; only a circulation reads it.
 
     Raises
     ------
@@ -815,6 +818,7 @@ def _ellipsoid_ep_mechanics(
         "base_bc": pulse.problem.BaseBC.fixed,
         "dt": pulse.Variable(ELLIPSOID_DT_MS * 1e-3, "s"),
         "petsc_options": petsc_options,
+        "circulation_scheme": circulation_scheme,
     }
 
     if cycle:
