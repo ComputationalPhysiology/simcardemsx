@@ -60,14 +60,16 @@ Known differences from physcardems, kept rather than removed:
   sets ``Zetas``/``Zetaw`` from the steady states; those are 0.0 for every cell type,
   as ``Cd`` is, the same as the defaults, and :func:`check_mechanics_initial_states`
   stops the run if a case says otherwise.
-- ``log.csv``'s phase columns are the phase each step was solved under;
-  physcardems' are the phase after the step's switch, i.e. for the next step.
+- ``log.csv``'s ``phase_*`` columns are the phase each step was solved under;
+  physcardems' are the phase after the step's switch, i.e. for the next step, which
+  are the ``next_phase_*`` columns here.
 - det F is sampled at the degree-4 quadrature points, and ``n_detF_nonpositive``
   counts the points where it is not positive; physcardems samples each cell's
   vertices and centroid, and counts cells.
 - ``log.csv`` has no ``J_max`` or ``wall_ep_s`` column, both of which physcardems'
-  has, and physcardems' ``active_stats.csv`` (``Ta`` percentiles, and ``Ta`` and
-  lambda medians per cell type) is not written.
+  has. ``post.py`` writes physcardems' ``active_stats.csv`` without its
+  ``frac_h_zero`` column, and the pseudo-ECG from the saved ``v`` (see ``post.py``),
+  not during the run.
 - physcardems' pulse raised on a solve that did not converge
   (``snes_error_if_not_converged``), and its cycle controller caught that and
   retried. pulse 0.10's ``solve`` returns ``False`` instead, when the SNES converged reason is
@@ -78,19 +80,32 @@ Known differences from physcardems, kept rather than removed:
   of physcardems' cycle controller this run uses: not the ``ejection_pressure``
   valve override, the legacy filling laws or the FILLING stall counter, none of which
   em_tref7 sets or, with a prescribed inflow, reaches.
-- Left out: the pseudo-ECG, checkpoints and restarts, the VTX field output and the
-  mid-ventricular slice statistics, and ``sf_IKs`` (read by physcardems, never used).
+- A restart continues ``log.csv`` and ``results.bp`` from the checkpoint; physcardems'
+  starts its logs empty.
+- Left out: the mid-ventricular slice statistics, and ``sf_IKs`` (read by physcardems,
+  never used).
 
-Output, in ``--output-dir``:
+Output, in ``--output-dir``, in the upstream CLIs' layout (:mod:`simcardemsx.results`):
 
-- ``log.csv``: one row after the unloaded solve (``t_ms`` 0) and one per mechanics step:
-  the maximum and minimum ``Ta`` and the range of lambda over the myocardium's
-  quadrature points; per cavity the phase the step was solved under
-  (0 PRELOAD, 1 IVC, 2 EJECTION, 3 IVR, 4 FILLING), V, P, the Windkessel's compliance
+- ``config.resolved.toml``: :func:`settings`, with where the Land parameters went,
+  rewritten by every run, fresh or restarted.
+- ``results.bp``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
+  ``lmbda``, ``tension_kPa`` and ``stiffness_kPa`` (the last three on the backend's
+  quadrature points; the tension masked) every ``--save-every`` ms, all from t = 0.
+- ``log.csv`` (:data:`LOG_FIELDS`): one row after the unloaded solve (``t_ms`` 0) and
+  one per mechanics step, appended as the run goes: the maximum and minimum ``Ta`` and
+  the range of lambda over the myocardium's quadrature points; per cavity the phase the
+  step was solved under and the phase after it (``phase_*``, ``next_phase_*``: 0
+  PRELOAD, 1 IVC, 2 EJECTION, 3 IVR, 4 FILLING), V, P, the Windkessel's compliance
   pressure P_c and the outflow Q; the minimum of det F over every quadrature point, and
   how many are not positive; the last solve's Newton iterations, SNES converged reason
-  and linear iterations, and how many solves the step took (2 = one retry); EP's
-  membrane potential range; the step's wall time.
+  and linear iterations, how many solves the step took (2 = one retry) and the first
+  solve's iterations and reason; EP's membrane potential range; the step's wall time.
+  ``pulse.cycle`` retries a solve at most once, so the first and last solves are every
+  solve, and the summary is computed from ``log.csv`` alone.
+- ``restart.bp`` and ``restart.json``: a checkpoint every ``--checkpoint-every`` ms,
+  after every step at which a cavity's phase switched (as physcardems does), and at the
+  end of the run.
 - ``pv_loops.png``: the PV loops with EF, where EDV is the volume at the last switch
   into IVC and ESV the minimum since; pressures, volumes, ``Ta`` and phases in time.
 - ``summary.json``: EDV, ESV, EF and peak pressure per ventricle; the phase switches;
@@ -100,17 +115,40 @@ Output, in ``--output-dir``:
   summary is also rewritten while the run goes on), and
   ``newton_converged_every_step`` is false if the run stopped on any exception,
   ``KeyboardInterrupt`` included, which ``failure`` then names. A step whose retry
-  converged counts as converged; ``newton`` reports the retries.
-- ``timings.json``: wall time in the EP ODE and PDE steps and the mechanics solves, the
-  set-up (code generation, loading, form compilation, the unloaded solve), the loop,
-  and the whole run.
+  converged counts as converged; ``newton`` reports the retries. After a restart it
+  covers the whole run, from ``log.csv``.
+- ``timings.json``: this process's wall time in the EP ODE and PDE steps and the
+  mechanics solves, the set-up (code generation, loading, form compilation, the
+  unloaded solve), the loop, and the whole run (after a restart, only the part it ran).
+- ``run.json``: the provenance of this process (git commit, versions, ranks, time),
+  ``history`` (that of every process that wrote the run), ``restart``, ``status``
+  (``running`` from the start of the loop, then ``finished`` or ``failed``),
+  ``failure``, ``t_fail_ms`` and ``reached_t_end``. Written when the loop starts, and
+  again last of all at the end, failure included.
+
+``post.py`` writes the summary and the plot again from these, by the same functions,
+with VTX fields, ``Ta`` and lambda statistics per cell type and the pseudo-ECG, into
+``post/``.
+
+The folder rules are the CLIs'. A run refuses a folder that holds any of these files,
+unless ``--overwrite`` (which deletes only them) or ``--restart`` is given. The default
+folder may hold the results of a run from before these rules, so a plain re-run into it
+is refused too. ``--restart`` continues from the checkpoint, and refuses one written
+with other physics (:func:`physics`): it may change ``--t-end``, the output options and
+the solver options, nothing else. If the checkpoint is at or past ``--t-end`` it takes
+no step. A restart skips the unloaded solve and the start of the cycle, which the
+checkpoint replaces. The lagged LU is not part of a checkpoint: a restarted run
+factorizes afresh at its first solve, so it differs from the uninterrupted run within
+the solver tolerances, not bit for bit.
 
 Serial only. The 800 ms run takes hours; ``--t-end 20`` is the smoke test (physcardems'
 ``em_tref7_short.toml``).
 """
 
 import argparse
-import csv
+import dataclasses
+import hashlib
+import inspect
 import json
 import logging
 import sys
@@ -128,27 +166,51 @@ import ufl
 from pulse.cycle import CycleController, Phase
 
 from simcardemsx.backends import GeneratedActivation
+from simcardemsx.checkpoint import Checkpointer, write_json
 from simcardemsx.controller import SimulationController
 from simcardemsx.mechanics import Cycle
 from simcardemsx.ode_model import ODEModules, load_ode_modules
+from simcardemsx.provenance import provenance
+from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
 HERE = Path(__file__).resolve().parent
-# case.py sits next to this script, not in the installed package. As rodero_05.case,
-# with numerical_experiments/ on the path, it has the name mypy gives it too.
+# case.py and post.py sit next to this script, and demo_io beside its directory, not in
+# the installed package. As rodero_05.case, with numerical_experiments/ on the path, it
+# has the name mypy gives it too.
 sys.path.insert(0, str(HERE.parent))
-from rodero_05.case import CELLTYPES, PCL_MS, QUADRATURE_DEGREE, TAGS, Case, load_case
+import demo_io  # noqa: E402
+
+from rodero_05 import case as case_data  # noqa: E402
+from rodero_05.case import (  # noqa: E402
+    CELLTYPES,
+    PCL_MS,
+    QUADRATURE_DEGREE,
+    TAGS,
+    Case,
+    files_sha256,
+    load_case,
+)
+from rodero_05.post import CHAMBERS, plot, summarise  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 ODEFILE = HERE.parent / "odefiles" / "ToRORd_dynCl_endo_zetasplit.ode"
 DEFAULT_CASE_DIR = HERE.parent.parent / "third-party" / "physcardems" / "cases" / "rodero_05"
 
-CHAMBERS = ("LV", "RV")
-
 #: Time steps and end time, in ms (run script, lines 44-46).
 DT_MECH = 2.0
 DT_EP = 0.05
 T_END = 800.0
+
+#: The spaces of ``results.bp``, which ``post.py`` rebuilds: the EP ODE space, P1 (the
+#: transfer plan averages what crosses back onto P1 or DG0 only), holds ``v`` and
+#: ``cai``; pulse's displacement space, given to the problem, holds ``u``; and the
+#: backend's scalar quadrature space at ``QUADRATURE_DEGREE`` holds the rest.
+EP_ODE_ELEMENT = ("Lagrange", 1)
+U_SPACE = "P_2"
+#: The EP half's parameters every node shares; ``celltype`` and ``i_Stim_Start`` are
+#: each node's own (run script, lines 236-241).
+EP_ODE_PARAMETERS = {"i_Stim_Period": PCL_MS, "lmbda": 1.0, "dLambda": 0.0}
 
 #: Holzapfel-Ogden, moduli in kPa and exponents dimensionless (run script, line 68).
 MATERIAL_PARAMS = {
@@ -194,11 +256,60 @@ PETSC_OPTIONS: dict[str, Any] = {
 C_M_UF_PER_CM2 = 1.0
 
 #: How often, in mechanics steps, the summary, plot and timings are rewritten during
-#: the run (``log.csv`` is rewritten after every step).
+#: the run (``log.csv`` is appended after every step).
 WRITE_EVERY = 25
+
+EP_RESULTS = ("v", "cai")
+MECHANICS_RESULTS = ("u", *demo_io.ACTIVATION_RESULTS)
+
+
+def _cavity_fields(c: str) -> tuple[str, ...]:
+    return (
+        f"phase_{c}",
+        f"next_phase_{c}",
+        f"V_{c}_mL",
+        f"P_{c}_kPa",
+        f"Pc_{c}_kPa",
+        f"Q_{c}_mL_s",
+    )
+
+
+#: ``log.csv``'s columns (see the module docstring).
+LOG_FIELDS = (
+    "t_ms",
+    "Ta_max_kPa",
+    "Ta_min_kPa",
+    "lmbda_min",
+    "lmbda_max",
+    *(name for c in CHAMBERS for name in _cavity_fields(c)),
+    "detF_min",
+    "n_detF_nonpositive",
+    "newton_iterations",
+    "snes_reason",
+    "linear_iterations",
+    "solve_attempts",
+    "first_iterations",
+    "first_reason",
+    "v_min_mV",
+    "v_max_mV",
+    "wall_s",
+)
+#: Everything a run writes into its output folder, and so what --overwrite deletes.
+OUTPUT_ARTIFACTS = (*ARTIFACTS, "summary.json", "pv_loops.png")
+#: The arguments that do not define the physics: the run's length and its output.
+NOT_PHYSICS = (
+    "t_end",
+    "output_dir",
+    "save_every",
+    "save_every_ep",
+    "checkpoint_every",
+    "restart",
+    "overwrite",
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, with ``save_every`` resolved from its default."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -212,7 +323,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--tref",
         type=float,
-        default=7.0,
+        default=case_data.TREF_SCALE,
         help="Scale of Land's Tref, 120 kPa (default: %(default)s, em_tref7). The "
         "steady states do not depend on it.",
     )
@@ -227,9 +338,217 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=HERE / "output",
-        help="Output directory (default: %(default)s).",
+        help="Output directory (default: %(default)s). It must hold no results of an "
+        "earlier run, unless --overwrite or --restart is given.",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--save-every",
+        type=float,
+        default=None,
+        help="Save u, lmbda, tension_kPa and stiffness_kPa to results.bp every this many "
+        f"ms, a whole multiple of the {DT_MECH} ms mechanics step (default: {DT_MECH}).",
+    )
+    parser.add_argument(
+        "--save-every-ep",
+        type=float,
+        default=1.0,
+        help=f"Save EP's v and cai to results.bp every this many ms, a whole multiple of "
+        f"the {DT_EP} ms EP step; post.py's pseudo-ECG has one row per save "
+        "(default: %(default)s).",
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=float,
+        default=50.0,
+        help="Write a checkpoint (restart.bp, restart.json) every this many ms, a whole "
+        f"multiple of the {DT_MECH} ms mechanics step, after every phase switch and at the "
+        "end of the run (default: %(default)s).",
+    )
+    flags = parser.add_mutually_exclusive_group()
+    flags.add_argument(
+        "--restart",
+        action="store_true",
+        help="Continue the run in the output directory from its checkpoint. Refused if "
+        "the physics differ from the checkpoint's; --t-end and the output options may.",
+    )
+    flags.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace the results in the output directory. Only this example's own files "
+        "are deleted.",
+    )
+    args = parser.parse_args(argv)
+    if args.save_every is None:
+        args.save_every = DT_MECH
+    return args
+
+
+# ---------------------------------------------------------------------------
+# The model, as the run reads it
+# ---------------------------------------------------------------------------
+
+
+def material_parameters() -> dict[str, dict[str, pulse.Variable]]:
+    """The mechanics' material as :func:`material` and :func:`make_problem` give it to
+    pulse, as ``pulse.Variable``s, before the valve plugs' stiffness scale multiplies
+    the moduli: :data:`MATERIAL_PARAMS` for Holzapfel-Ogden, ``Compressible2``'s
+    ``kappa`` (:data:`KAPPA_PA`), and the viscosity's ``eta``, pulse's default."""
+    return {
+        "HolzapfelOgden": {
+            name: pulse.Variable(value, "kPa" if name in MODULI else "dimensionless")
+            for name, value in MATERIAL_PARAMS.items()
+        },
+        "Compressible2": {"kappa": pulse.Variable(KAPPA_PA, "Pa")},
+        "Viscous": {"eta": pulse.viscoelasticity.Viscous().eta},
+    }
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def model_settings(tref: float) -> dict[str, Any]:
+    """The model as the run reads it, as plain values: the time steps; what ``case.py``
+    copies from physcardems (where the files are, the cell types, tags, valve-plug
+    stiffness, reference scaling, pacing period, Land parameters and their calibration,
+    and EP's scales); the Land parameters at ``tref``; EP (its ODE space and shared
+    parameters, theta, conductivities and C_m); the mechanics (spaces, quadrature
+    degree, material in SI base units, boundary conditions, cavities, density and the
+    generalized-alpha parameters); the activation backend; and each cavity's cycle as
+    passed to ``pulse.cycle``, in SI.
+
+    beat's theta and conductivities, pulse's viscosity, density and generalized-alpha
+    parameters, and the backend's scheme and formulation are read off the libraries,
+    whose defaults the run uses, so a change to those defaults changes these too.
+    """
+    material = material_parameters()
+    dynamic = pulse.DynamicProblem.default_parameters()
+    backend = inspect.signature(GeneratedActivation).parameters
+    conductivities = beat.conductivities.default_conductivities("Niederer")
+    return {
+        "dt_mech": DT_MECH,
+        "dt_ep": DT_EP,
+        "case": {
+            "geometry_dir": case_data.GEOMETRY_DIR,
+            "steady_state_glob": case_data.STEADY_STATE_GLOB,
+            "celltypes": {str(c): name for c, name in CELLTYPES.items()},
+            "tags": dict(TAGS),
+            "myocardium_tags": list(case_data.MYOCARDIUM_TAGS),
+            "valve_stiffness_scale": case_data.VALVE_STIFFNESS_SCALE,
+            "reference_scale": case_data.REFERENCE_SCALE,
+            "pcl_ms": PCL_MS,
+            "land_base": dict(case_data.LAND_BASE),
+            "land_overrides": dict(case_data.LAND_OVERRIDES),
+            "land_scales": dict(case_data.LAND_SCALES),
+            "mechanics_only_keys": list(case_data.MECHANICS_ONLY_KEYS),
+            "ep_scales": dict(case_data.EP_SCALES),
+        },
+        "land": case_data.land_parameters(tref),
+        "ep": {
+            "ode_element": list(EP_ODE_ELEMENT),
+            "ode_parameters": dict(EP_ODE_PARAMETERS),
+            "per_node": "steady state, celltype and i_Stim_Start (the LAT) of the case",
+            "pde_stimulus": "none",
+            "theta": inspect.signature(beat.MonodomainSplittingSolver).parameters["theta"].default,
+            "conductivities": {
+                "name": "Niederer",
+                "units": "SI base units (S/m, 1/m)",
+                **{
+                    name: float(value.to_base_units().magnitude)
+                    for name, value in conductivities.items()
+                },
+            },
+            "C_m_uF_per_cm2": C_M_UF_PER_CM2,
+        },
+        "mechanics": {
+            "quadrature_degree": QUADRATURE_DEGREE,
+            "u_space": U_SPACE,
+            "material": {
+                "units": "SI base units (Pa, Pa s)",
+                **{
+                    model: {name: float(value.to_base_units()) for name, value in values.items()}
+                    for model, values in material.items()
+                },
+                "moduli_scaled_by_stiffness": list(MODULI),
+                "use_heaviside": not FIBRE_COMPRESSION_RESISTANCE,
+                "use_subplus": not FIBRE_COMPRESSION_RESISTANCE,
+            },
+            "robin": {"EPI": {"spring_Pa_per_m": EPI_SPRING, "damper_Pa_s_per_m": EPI_DAMPING}},
+            "dirichlet": "none",
+            "cavities": {c: "controlled" for c in CHAMBERS},
+            "rho_kg_per_m3": float(dynamic["rho"].to_base_units()),
+            "alpha_m": dynamic["alpha_m"],
+            "alpha_f": dynamic["alpha_f"],
+        },
+        "activation": {
+            "backend": "GeneratedActivation",
+            "scheme": backend["scheme"].default,
+            "formulation": backend["formulation"].default,
+            "tension_scale": "the myocardium mask (DG0): 0 in the valve plugs",
+            "initial_states": "the .ode's defaults",
+        },
+        "cycle": {
+            name: dataclasses.asdict(params)
+            for name, params in case_data.cycle_parameters().items()
+        },
+    }
+
+
+def solver_settings() -> dict[str, Any]:
+    """physcardems' solver options, as the run gives them to pulse on top of its
+    defaults, and the cycle's preconditioner lag. Not physics. PETSc's flags (``None``)
+    are written as ``""``: TOML has no null."""
+    return {
+        "petsc_options": {k: "" if v is None else v for k, v in PETSC_OPTIONS.items()},
+        "preconditioner_lag": PRECONDITIONER_LAG,
+    }
+
+
+def settings(
+    args: argparse.Namespace,
+    land_placement: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """What ``config.resolved.toml`` holds: every argument, with ``case_dir`` as its path
+    (as given), its resolved path and the sha256 of the files the run reads from it
+    (``case.files_sha256``), ``odefile`` (the ``.ode`` file's path, file name and
+    sha256), :func:`model_settings`, ``solver`` (:func:`solver_settings`), and, if
+    given, ``land_placement``: which Land parameters went to which half of the split
+    (derived from the ``.ode`` file and the Land parameters, so not physics of its own).
+
+    TOML has no null, so an argument that is ``None`` is not in the file. Raises
+    ``FileNotFoundError`` if the ``.ode`` file or a file of the case is missing.
+    """
+    arguments = {
+        key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
+    }
+    case_dir = Path(args.case_dir)
+    arguments["case_dir"] = {
+        "path": str(case_dir),
+        "resolved": str(case_dir.resolve()),
+        "files_sha256": files_sha256(case_dir),
+    }
+    arguments["odefile"] = {"path": str(ODEFILE), "name": ODEFILE.name, "sha256": _sha256(ODEFILE)}
+    result = {**arguments, **model_settings(args.tref), "solver": solver_settings()}
+    if land_placement is not None:
+        result["land_placement"] = land_placement
+    return result
+
+
+def physics(args: argparse.Namespace) -> dict[str, Any]:
+    """What a restart must share with the checkpointed run: :func:`settings` without the
+    run length and the output options (:data:`NOT_PHYSICS`), the solver options, the
+    ``.ode`` file's path and the case directory's path as given. The case directory is
+    in it by its resolved path and the sha256 of its files' contents (cheap: about 10
+    MB), the ``.ode`` file by its name and sha256.
+
+    Raises ``FileNotFoundError`` if the ``.ode`` file or a file of the case is missing.
+    """
+    result = settings(args)
+    for key in (*NOT_PHYSICS, "solver"):
+        del result[key]
+    del result["odefile"]["path"]
+    del result["case_dir"]["path"]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +625,7 @@ def make_ep_solver(
     lambda and the backend's outputs back into these arrays in place.
     """
     mesh = case.geometry.mesh
-    W = dolfinx.fem.functionspace(mesh, ("Lagrange", 1))
+    W = dolfinx.fem.functionspace(mesh, EP_ODE_ELEMENT)
     num_points = W.dofmap.index_map.size_local + W.dofmap.index_map.num_ghosts
     celltype = case.celltype
     if celltype.size != num_points:
@@ -322,7 +641,7 @@ def make_ep_solver(
         missing[:, celltype == c] = np.array([steady[s] for s in missing_names])[:, None]
 
     parameters = np.repeat(
-        ep_module.init_parameter_values(i_Stim_Period=PCL_MS, lmbda=1.0, dLambda=0.0)[:, None],
+        ep_module.init_parameter_values(**EP_ODE_PARAMETERS)[:, None],
         num_points,
         axis=1,
     )
@@ -363,27 +682,27 @@ def make_ep_solver(
 
 
 def material(case: Case) -> pulse.HolzapfelOgden:
-    """Holzapfel-Ogden, each modulus a DG0 field: the modulus times the case's stiffness
-    scale (x 3 in the valve plugs).
+    """Holzapfel-Ogden with :func:`material_parameters`, each modulus a DG0 field: the
+    modulus times the case's stiffness scale (x 3 in the valve plugs).
 
     physcardems multiplies the whole passive stress by the scale (its ``ScaledModel``);
     Holzapfel-Ogden's stress is linear in its four moduli, so this is the same stress,
     through pulse's own spatial material parameters.
     """
     scale = case.stiffness_scale
+    parameters = material_parameters()["HolzapfelOgden"]
 
     def parameter(name: str) -> pulse.Variable:
-        value = MATERIAL_PARAMS[name]
         if name not in MODULI:
-            return pulse.Variable(value, "dimensionless")
+            return parameters[name]
         field = dolfinx.fem.Function(scale.function_space, name=name)
-        field.x.array[:] = value * scale.x.array
+        field.x.array[:] = parameters[name].value * scale.x.array
         return pulse.Variable(field, "kPa")
 
     return pulse.HolzapfelOgden(
         f0=case.f0,
         s0=case.s0,
-        **{name: parameter(name) for name in MATERIAL_PARAMS},
+        **{name: parameter(name) for name in parameters},
         use_heaviside=not FIBRE_COMPRESSION_RESISTANCE,
         use_subplus=not FIBRE_COMPRESSION_RESISTANCE,
     )
@@ -393,11 +712,12 @@ def make_problem(case: Case, backend: GeneratedActivation) -> pulse.DynamicProbl
     """The run script's mechanics (lines 264-303), its two cavities controlled."""
     geometry = case.geometry
     mesh = geometry.mesh
+    parameters = material_parameters()
     model = pulse.CardiacModel(
         material=material(case),
         active=backend,
-        compressibility=pulse.compressibility.Compressible2(kappa=pulse.Variable(KAPPA_PA, "Pa")),
-        viscoelasticity=pulse.viscoelasticity.Viscous(),
+        compressibility=pulse.compressibility.Compressible2(**parameters["Compressible2"]),
+        viscoelasticity=pulse.viscoelasticity.Viscous(**parameters["Viscous"]),
     )
 
     def constant(value: float) -> dolfinx.fem.Constant:
@@ -422,7 +742,11 @@ def make_problem(case: Case, backend: GeneratedActivation) -> pulse.DynamicProbl
             pulse.problem.Cavity(marker=c, control=pulse.problem.CavityControl(mesh))
             for c in CHAMBERS
         ],
-        parameters={"dt": pulse.Variable(DT_MECH * 1e-3, "s"), "petsc_options": petsc_options},
+        parameters={
+            "dt": pulse.Variable(DT_MECH * 1e-3, "s"),
+            "u_space": U_SPACE,
+            "petsc_options": petsc_options,
+        },
     )
 
 
@@ -472,146 +796,6 @@ def accumulate_time(fn: Callable, totals: dict[str, float], key: str) -> Callabl
 
 
 # ---------------------------------------------------------------------------
-# Output
-# ---------------------------------------------------------------------------
-
-
-def ejection_fraction(phase: np.ndarray, V: np.ndarray) -> dict[str, float] | None:
-    """EDV at the last switch into IVC, ESV the smallest volume since, and EF.
-
-    ``phase`` is the phase each row was solved under, so the switch is decided at the
-    row before the first IVC row of the last run of IVC rows, and that row's volume is
-    the one IVC then holds. ``None`` if the cycle never reached IVC.
-    """
-    is_ivc = phase == Phase.ISOVOLUMIC_CONTRACTION
-    starts = np.flatnonzero(is_ivc[1:] & ~is_ivc[:-1]) + 1
-    if starts.size == 0:
-        return None
-    switch = starts[-1] - 1
-    EDV, ESV = float(V[switch]), float(V[switch:].min())
-    return {"EDV_mL": EDV, "ESV_mL": ESV, "EF_percent": 100.0 * (EDV - ESV) / EDV}
-
-
-def phase_sequence(phase: np.ndarray) -> list[str]:
-    """The distinct phases in the order they were solved under."""
-    names = [Phase(int(p)).name for p in phase]
-    return [name for i, name in enumerate(names) if i == 0 or name != names[i - 1]]
-
-
-def summarise(
-    columns: dict[str, np.ndarray],
-    switches: list[dict[str, Any]],
-    attempts: list[list[dict[str, Any]]],
-    failure: str | None,
-    land_placement: dict[str, list[str]],
-    t_end_ms: float,
-) -> dict[str, Any]:
-    """The acceptance numbers of the run so far; ``t_end_ms`` is where it is to end."""
-    summary: dict[str, Any] = {"t_end_ms": float(columns["t_ms"][-1]), "failure": failure}
-    five_phases = [p.name for p in Phase]
-    for c in CHAMBERS:
-        P = columns[f"P_{c}_kPa"]
-        sequence = phase_sequence(columns[f"phase_{c}"])
-        summary[c] = {
-            "ejection": ejection_fraction(columns[f"phase_{c}"], columns[f"V_{c}_mL"]),
-            "peak_P_kPa": float(P.max()),
-            "peak_P_mmHg": float(P.max() * 1e3 / 133.322),
-            "t_peak_P_ms": float(columns["t_ms"][np.argmax(P)]),
-            "phases": sequence,
-            "five_phases_in_order": sequence[:5] == five_phases,
-        }
-    summary["phase_switches"] = switches
-
-    # Every step after the unloaded solve (row 0).
-    steps = attempts[1:]
-    final = [a[-1] for a in steps]
-    reasons: dict[str, int] = {}
-    for a in final:
-        reasons[str(a["reason"])] = reasons.get(str(a["reason"]), 0) + 1
-    iterations = np.array([a["iterations"] for a in final]) if final else np.zeros(0)
-    summary["newton"] = {
-        "steps": len(steps),
-        "unloaded_solve": attempts[0][-1] if attempts else None,
-        "iterations_min": int(iterations.min()) if iterations.size else None,
-        "iterations_mean": float(iterations.mean()) if iterations.size else None,
-        "iterations_max": int(iterations.max()) if iterations.size else None,
-        # 2 and 3: converged on the residual (absolute, relative); 4: on the step size.
-        "final_reasons": reasons,
-        "retries": sum(len(a) - 1 for a in steps),
-        "steps_with_retry_ms": [float(t) for t, a in zip(columns["t_ms"][1:], steps) if len(a) > 1],
-        "all_attempts_reasons": sorted({str(x["reason"]) for a in steps for x in a}),
-    }
-    detF = columns["detF_min"]
-    summary["detF_min"] = float(detF.min())
-    summary["t_detF_min_ms"] = float(columns["t_ms"][np.argmin(detF)])
-    summary["Ta_min_kPa"] = float(columns["Ta_min_kPa"].min())
-    summary["Ta_max_kPa"] = float(columns["Ta_max_kPa"].max())
-    summary["lmbda_min"] = float(columns["lmbda_min"].min())
-    summary["lmbda_max"] = float(columns["lmbda_max"].max())
-    summary["criteria"] = {
-        "reached_t_end": bool(np.isclose(columns["t_ms"][-1], t_end_ms)),
-        "newton_converged_every_step": failure is None,
-        "detF_positive_every_step": bool(np.all(columns["n_detF_nonpositive"] == 0)),
-        **{f"{c}_five_phases_in_order": summary[c]["five_phases_in_order"] for c in CHAMBERS},
-    }
-    summary["land_placement"] = land_placement
-    return summary
-
-
-def plot(columns: dict[str, np.ndarray], summary: dict[str, Any], path: Path) -> None:
-    import matplotlib  # type: ignore[import-not-found]
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt  # type: ignore[import-not-found]
-
-    fig = plt.figure(layout="constrained", figsize=(12, 9))
-    grid = fig.add_gridspec(3, 2)
-    ax_loop = fig.add_subplot(grid[:2, 0])
-    ax_p = fig.add_subplot(grid[0, 1])
-    ax_v = fig.add_subplot(grid[1, 1], sharex=ax_p)
-    ax_ta = fig.add_subplot(grid[2, 1], sharex=ax_p)
-    ax_j = fig.add_subplot(grid[2, 0], sharex=ax_p)
-    t = columns["t_ms"]
-    titles = []
-    for c, colour in (("LV", "crimson"), ("RV", "steelblue")):
-        V, P = columns[f"V_{c}_mL"], columns[f"P_{c}_kPa"]
-        ax_loop.plot(V, P, color=colour, label=c)
-        ax_p.plot(t, P, color=colour, label=f"P {c}")
-        ax_p.plot(t, columns[f"Pc_{c}_kPa"], color=colour, linestyle="--", label=f"P_c {c}")
-        ax_v.plot(t, V, color=colour, label=c)
-        ejection = summary[c]["ejection"]
-        titles.append(
-            f"{c} EF --"
-            if ejection is None
-            else f"{c} EF {ejection['EF_percent']:.1f}% (EDV {ejection['EDV_mL']:.1f}, "
-            f"ESV {ejection['ESV_mL']:.1f} mL)",
-        )
-    ax_loop.set_xlabel("V [mL]")
-    ax_loop.set_ylabel("P [kPa]")
-    ax_loop.set_title(" | ".join(titles), fontsize=10)
-    ax_loop.legend()
-    ax_p.set_ylabel("P [kPa]")
-    ax_p.legend(fontsize="x-small", ncol=2)
-    ax_v.set_ylabel("V [mL]")
-    ax_v.legend(fontsize="x-small")
-    ax_ta.plot(t, columns["Ta_max_kPa"], color="0.2", label="max Ta")
-    ax_ta.plot(t, columns["Ta_min_kPa"], color="0.6", label="min Ta")
-    ax_ta.set_ylabel("Ta [kPa]")
-    ax_ta.set_xlabel("t [ms]")
-    ax_phase = ax_ta.twinx()
-    for c, colour in (("LV", "crimson"), ("RV", "steelblue")):
-        ax_phase.step(t, columns[f"phase_{c}"], where="pre", color=colour, alpha=0.5)
-    ax_phase.set_yticks([p.value for p in Phase])
-    ax_phase.set_yticklabels(["PRE", "IVC", "EJ", "IVR", "FILL"], fontsize="x-small")
-    ax_ta.legend(fontsize="x-small", loc="upper left")
-    ax_j.plot(t, columns["detF_min"], color="0.2")
-    ax_j.set_ylabel("min det F")
-    ax_j.set_xlabel("t [ms]")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
 # The run
 # ---------------------------------------------------------------------------
 
@@ -626,10 +810,27 @@ def main(argv: list[str] | None = None) -> None:
 
     comm = MPI.COMM_WORLD
     if comm.size > 1:
-        raise RuntimeError("rodero_05 runs in serial only, as physcardems' run does")
+        raise SystemExit("rodero_05 runs in serial only, as physcardems' run does")
     outdir: Path = args.output_dir
-    outdir.mkdir(parents=True, exist_ok=True)
-    num_steps = round(args.t_end / DT_MECH)
+
+    # Everything that can refuse the run does so here: before any file is touched, and
+    # before anything expensive is generated, loaded, built or compiled.
+    strides, run_physics = demo_io.prepare_run(
+        outdir,
+        restart=args.restart,
+        overwrite=args.overwrite,
+        strides={
+            "--save-every-ep": (args.save_every_ep, DT_EP),
+            "--save-every": (args.save_every, DT_MECH),
+            "--checkpoint-every": (args.checkpoint_every, DT_MECH),
+        },
+        physics=lambda: physics(args),
+        artifacts=OUTPUT_ARTIFACTS,
+    )
+    save_ep_every = strides["--save-every-ep"]
+    save_every = strides["--save-every"]
+    checkpoint_every = strides["--checkpoint-every"]
+    t_end_ms = round(args.t_end / DT_MECH) * DT_MECH
 
     # ---------------------------------------------------------
     # 1. The case, the generated code, and where parameters go
@@ -638,6 +839,9 @@ def main(argv: list[str] | None = None) -> None:
     case = load_case(args.case_dir, tref_scale=args.tref, comm=comm)
     placed = place_land(case.land, modules)
     land_placement = {half: sorted(values) for half, values in placed.items()}
+    # Every run's, a restart's too: the latest run's settings win, as in the CLIs.
+    if comm.rank == 0:
+        write_resolved_settings(outdir / "config.resolved.toml", settings(args, land_placement))
     logger.info(f"Land parameters into the EP half: {placed['ep']}")
     logger.info(f"Land parameters into the mechanics half: {placed['mechanics']}")
     logger.info(f"EP scales: {case.ep_scales}")
@@ -674,6 +878,7 @@ def main(argv: list[str] | None = None) -> None:
         preconditioner_lag=PRECONDITIONER_LAG,
     )
     ep_solver = make_ep_solver(case, modules.ep, placed["ep"])
+    # Cycle(cycle) itself, not wrapped: the controller then checkpoints the cycle too.
     controller = SimulationController(Cycle(cycle), ep_solver, backend, modules, DT_MECH, DT_EP)
 
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0}
@@ -694,18 +899,22 @@ def main(argv: list[str] | None = None) -> None:
     ode = ep_solver.ode
     assert isinstance(ode, beat.odesolver.DolfinODESolver)  # make_ep_solver's
 
+    checkpointer = Checkpointer(controller, outdir, physics=run_physics)
+    results = ResultsWriter(outdir)
+    log = CsvLog(outdir / "log.csv", LOG_FIELDS)
+    #: log.csv's rows, from t = 0: the summary and the plot are drawn from them.
     rows: list[dict[str, float]] = []
-    attempts: list[list[dict[str, Any]]] = []
-    switches: list[dict[str, Any]] = []
 
     def record(t: float, during: dict[str, Phase], first_attempt: int, wall: float) -> None:
+        """Append ``log.csv``'s row for the step ending at ``t``, solved under the
+        phases ``during``, whose solves are those from ``first_attempt`` on."""
         # The quadrature tension, masked and in kPa, before active_tension's P1 average.
         Ta = backend.tension_kPa.x.array[in_myocardium]
         lmbda = backend.outputs["lmbda"].x.array[in_myocardium]
         J = detF.eval(mesh, cells)
         v = ode.values[v_index]
         step_attempts = solves.attempts[first_attempt:]
-        last = step_attempts[-1]
+        first, last = step_attempts[0], step_attempts[-1]
         row: dict[str, float] = {
             "t_ms": t,
             "Ta_max_kPa": float(Ta.max()),
@@ -717,6 +926,7 @@ def main(argv: list[str] | None = None) -> None:
             r = cycle.records[c]
             row |= {
                 f"phase_{c}": int(during[c]),
+                f"next_phase_{c}": int(r.phase),
                 f"V_{c}_mL": r.V * 1e6,
                 f"P_{c}_kPa": r.P * 1e-3,
                 f"Pc_{c}_kPa": r.P_c * 1e-3,
@@ -729,113 +939,201 @@ def main(argv: list[str] | None = None) -> None:
             "snes_reason": last["reason"],
             "linear_iterations": last["linear_iterations"],
             "solve_attempts": len(step_attempts),
+            "first_iterations": first["iterations"],
+            "first_reason": first["reason"],
             "v_min_mV": float(v.min()),
             "v_max_mV": float(v.max()),
             "wall_s": wall,
         }
+        log.append(row)
         rows.append(row)
-        attempts.append(step_attempts)
-        for c in CHAMBERS:
-            if cycle.records[c].phase != during[c]:
-                switches.append(
-                    {
-                        "chamber": c,
-                        "from": during[c].name,
-                        "to": cycle.records[c].phase.name,
-                        "t_ms": t,
-                    },
-                )
 
-    def write_outputs(failure: str | None, final: bool) -> None:
-        with open(outdir / "log.csv", "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
-        if not final and len(rows) % WRITE_EVERY != 1:
-            return
-        columns = {key: np.array([row[key] for row in rows]) for key in rows[0]}
-        summary = summarise(
-            columns,
-            switches,
-            attempts,
-            failure,
-            land_placement,
-            t_end_ms=num_steps * DT_MECH,
-        )
-        (outdir / "summary.json").write_text(json.dumps(summary, indent=2))
-        (outdir / "timings.json").write_text(json.dumps(timings, indent=2))
-        plot(columns, summary, outdir / "pv_loops.png")
-        if final:
-            logger.info(f"Summary: {json.dumps(summary, indent=2)}")
-            logger.info(f"Timings: {timings}")
+    # results.bp's fields. EP's are P1 copies of rows of the ODE's state array, refreshed
+    # before each save; the others are the problem's and the backend's own Functions.
+    ep_space = dolfinx.fem.functionspace(mesh, EP_ODE_ELEMENT)
+    ep_fields = {name: dolfinx.fem.Function(ep_space, name=name) for name in EP_RESULTS}
+    ep_rows = {name: modules.ep.state_index(name) for name in EP_RESULTS}
+    mechanics_fields = {
+        "u": problem.u,
+        "lmbda": backend.outputs["lmbda"],
+        "tension_kPa": backend.tension_kPa,
+        "stiffness_kPa": backend.stiffness_kPa,
+    }
+
+    def save_ep(t: float) -> None:
+        for name, f in ep_fields.items():
+            f.x.array[:] = ode.values[ep_rows[name]]
+        results.write(t, ep_fields)
 
     # ---------------------------------------------------------
-    # 4. The unloaded solve
+    # 4. The unloaded solve, or the checkpoint
     # ---------------------------------------------------------
     # EP's resting cross-bridge states into the backend, which is then solved with
     # every cavity at zero pressure (a new CavityControl is in pressure mode at 0) and
     # its own step the identity (dt = 0), and accepted: the tissue starts at rest at
-    # this stretch, which also goes to EP.
+    # this stretch, which also goes to EP. A restart takes all of it, and the cycle's
+    # state, from the checkpoint instead.
     start = time.perf_counter()
-    controller.plan.forward(0.0)
-    if not problem.solve():
-        raise RuntimeError("The unloaded solve did not converge")
-    backend.post_solve()
-    controller.plan.backward()
-    cycle.initialize(0.0)
-    record(0.0, {c: cycle.cycles[c].phase for c in CHAMBERS}, 0, time.perf_counter() - start)
+    if not args.restart:
+        controller.plan.forward(0.0)
+        if not problem.solve():
+            raise RuntimeError("The unloaded solve did not converge")
+        backend.post_solve()
+        controller.plan.backward()
+        cycle.initialize(0.0)
+    unloaded = {c: cycle.cycles[c].phase for c in CHAMBERS}
+
+    def write_initial() -> None:
+        save_ep(controller.t)
+        results.write(controller.t, mechanics_fields)
+        record(controller.t, unloaded, 0, time.perf_counter() - start)
+
+    # A refused or failed restore leaves the folder as it was, apart from
+    # config.resolved.toml: nothing below it, neither the end checkpoint nor run.json,
+    # is reached. A restart gets the rows up to its checkpoint from log.csv.
+    rows.extend(
+        demo_io.start_or_resume(
+            checkpointer,
+            log,
+            results,
+            restart=args.restart,
+            result_names=[*EP_RESULTS, *MECHANICS_RESULTS],
+            write_initial=write_initial,
+        ),
+    )
     timings["setup_s"] = time.perf_counter() - start_total
-    logger.info(
-        f"Unloaded solve: {rows[0]['newton_iterations']} iterations; LV "
-        f"{rows[0]['V_LV_mL']:.1f} mL, RV {rows[0]['V_RV_mL']:.1f} mL; resting Ta "
-        f"{rows[0]['Ta_min_kPa']:.2f} to {rows[0]['Ta_max_kPa']:.2f} kPa; lambda "
-        f"{rows[0]['lmbda_min']:.3f} to {rows[0]['lmbda_max']:.3f}; set-up "
-        f"{timings['setup_s']:.0f} s",
+    if not args.restart:
+        logger.info(
+            f"Unloaded solve: {rows[0]['newton_iterations']} iterations; LV "
+            f"{rows[0]['V_LV_mL']:.1f} mL, RV {rows[0]['V_RV_mL']:.1f} mL; resting Ta "
+            f"{rows[0]['Ta_min_kPa']:.2f} to {rows[0]['Ta_max_kPa']:.2f} kPa; lambda "
+            f"{rows[0]['lmbda_min']:.3f} to {rows[0]['lmbda_max']:.3f}; set-up "
+            f"{timings['setup_s']:.0f} s",
+        )
+
+    # ---------------------------------------------------------
+    # 5. Output: summary, plot, timings, run.json
+    # ---------------------------------------------------------
+    failure: str | None = None
+    t_fail: float | None = None
+
+    def write_summary(final: bool = False) -> None:
+        columns = {key: np.array([float(row[key]) for row in rows]) for key in LOG_FIELDS}
+        summary = summarise(columns, failure, land_placement, t_end_ms)
+        if comm.rank == 0:
+            (outdir / "summary.json").write_text(json.dumps(summary, indent=2))
+            plot(columns, summary, outdir / "pv_loops.png")
+        if final:
+            logger.info(f"Summary: {json.dumps(summary, indent=2)}")
+
+    def write_timings() -> None:
+        if comm.rank == 0:
+            (outdir / "timings.json").write_text(json.dumps(timings, indent=2))
+
+    def write_run(extra: dict[str, Any], status: str) -> None:
+        """``run.json``: the provenance of this process, then the run's own keys."""
+        reached = failure is None and abs(controller.t - t_end_ms) <= 1e-9 * max(1.0, t_end_ms)
+        write_json(
+            outdir / "run.json",
+            {
+                **extra["provenance"],
+                "history": extra["history"],
+                "restart": extra["restart"],
+                "status": status,
+                "failure": failure,
+                "t_fail_ms": t_fail,
+                "reached_t_end": reached,
+            },
+            comm,
+        )
+
+    write_run(
+        {"provenance": provenance(HERE), "history": checkpointer.history, "restart": args.restart},
+        "running",
     )
 
     # ---------------------------------------------------------
-    # 5. Run
+    # 6. Run
     # ---------------------------------------------------------
-    failure: str | None = None
+    # The step under way: the phases it is solved under, its first solve, its start.
+    step: dict[str, Any] = {}
+
+    # The controller counts steps from 1. A step that fails is rolled back, but the EP
+    # saves of its micro-steps stay in results.bp: a restart from the step's start
+    # recomputes them, so it does not save them again.
+    def on_ep_step(t: float, ep_step_idx: int) -> None:
+        if ep_step_idx % save_ep_every == 0:
+            save_ep(t)
+
+    def on_mech_step(t: float, mech_step_idx: int, newton_iterations: int) -> None:
+        during = step["during"]
+        record(t, during, step["first_attempt"], time.perf_counter() - step["start"])
+        if mech_step_idx % save_every == 0:
+            results.write(t, mechanics_fields)
+        row = rows[-1]
+        logger.info(
+            f"t={row['t_ms']:6.1f} ms | Ta [{row['Ta_min_kPa']:6.2f}, "
+            f"{row['Ta_max_kPa']:6.2f}] kPa, lambda [{row['lmbda_min']:.3f}, "
+            f"{row['lmbda_max']:.3f}] | "
+            + " | ".join(
+                f"{c} {during[c].name[:8]:8s} V={row[f'V_{c}_mL']:6.1f} P={row[f'P_{c}_kPa']:6.2f}"
+                for c in CHAMBERS
+            )
+            + f" | its={row['newton_iterations']} reason={row['snes_reason']} "
+            f"solves={row['solve_attempts']} | detF min {row['detF_min']:.3f} | "
+            f"{row['wall_s']:.1f} s",
+        )
+
+    # The run is round(t_end / dt) steps from t = 0, so a restart at or past it takes none.
+    remaining_steps = demo_io.steps_to_take(controller, args.t_end)
     start_loop = time.perf_counter()
     try:
-        for _ in range(num_steps):
-            during = {c: cycle.cycles[c].phase for c in CHAMBERS}
-            first_attempt = len(solves.attempts)
-            start = time.perf_counter()
-            controller.step()
-            record(controller.t, during, first_attempt, time.perf_counter() - start)
-            row = rows[-1]
-            logger.info(
-                f"t={row['t_ms']:6.1f} ms | Ta [{row['Ta_min_kPa']:6.2f}, "
-                f"{row['Ta_max_kPa']:6.2f}] kPa, lambda [{row['lmbda_min']:.3f}, "
-                f"{row['lmbda_max']:.3f}] | "
-                + " | ".join(
-                    f"{c} {during[c].name[:8]:8s} V={row[f'V_{c}_mL']:6.1f} "
-                    f"P={row[f'P_{c}_kPa']:6.2f}"
-                    for c in CHAMBERS
-                )
-                + f" | its={row['newton_iterations']} reason={row['snes_reason']} "
-                f"solves={row['solve_attempts']} | detF min {row['detF_min']:.3f} | "
-                f"{row['wall_s']:.1f} s",
+        for _ in range(remaining_steps):
+            step.update(
+                during={c: cycle.cycles[c].phase for c in CHAMBERS},
+                first_attempt=len(solves.attempts),
+                start=time.perf_counter(),
             )
+            controller.step(ep_callback=on_ep_step, mech_callback=on_mech_step)
+            # As physcardems does: periodically, and after every phase switch.
+            switched = any(cycle.records[c].phase != step["during"][c] for c in CHAMBERS)
+            if controller.mech_step_idx % checkpoint_every == 0 or switched:
+                checkpointer.write()
             timings["mech_s"] = solves.seconds
             timings["loop_s"] = time.perf_counter() - start_loop
-            write_outputs(None, final=False)
+            if controller.mech_step_idx % WRITE_EVERY == 0:
+                write_summary()
+                write_timings()
     except BaseException as error:
         # Any exception, KeyboardInterrupt included: the summary must not report a run
-        # that stopped early as converged. The solves of the step it stopped in, which
-        # no row records.
-        unrecorded = solves.attempts[sum(len(a) for a in attempts) :]
-        t_failed = controller.t_failed if controller.t_failed is not None else controller.t
-        failure = f"{type(error).__name__} at t = {t_failed} ms: {error}; solves {unrecorded}"
-        logger.exception("The run stopped before t_end")
+        # that stopped early as converged. A step that raised before its mech_callback
+        # was rolled back (t_failed is set), and no row records its solves, so the
+        # failure lists them.
+        failure, t_fail = demo_io.failure_at(controller, error)
+        if controller.t_failed is not None and step:
+            failure += f"; solves of the failed step: {solves.attempts[step['first_attempt'] :]}"
         raise
     finally:
         timings["mech_s"] = solves.seconds
         timings["loop_s"] = time.perf_counter() - start_loop
         timings["total_s"] = time.perf_counter() - start_total
-        write_outputs(failure, final=True)
+        logger.info(f"Timings: {timings}")
+        # The end checkpoint and this example's own files first, each guarded, and
+        # run.json last.
+        demo_io.finish(
+            None,
+            checkpointer,
+            [
+                ("summary.json and pv_loops.png", lambda: write_summary(final=True)),
+                ("timings.json", write_timings),
+            ],
+            failure=failure,
+            t_fail_ms=t_fail,
+            timings=timings,
+            here=HERE,
+            restart=args.restart,
+            write_run=lambda extra: write_run(extra, "finished" if failure is None else "failed"),
+        )
 
 
 if __name__ == "__main__":

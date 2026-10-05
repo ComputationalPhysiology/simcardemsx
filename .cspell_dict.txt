@@ -578,3 +578,5 @@ checkpointer
 checkpointed
 getpid
 Intracomm
+subplus
+nonpositive
