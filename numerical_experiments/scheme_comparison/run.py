@@ -60,6 +60,8 @@ class Run:
             f"{self.t_end:g}",
             "--snapshot-every",
             f"{self.snapshot_every:g}",
+            # A run is redone from scratch, so the demo may overwrite its folder.
+            "--overwrite",
         ]
         if self.geometry == "slab":
             # The slab's paths are relative to its own directory.

@@ -430,3 +430,102 @@ def test_failure_of_keeps_the_interrupt_behind_a_solver_error(record):
         solve()
     assert record.failure_of(info.value) == "RuntimeError('error code 101') <- KeyboardInterrupt()"
     assert record.failure_of(ValueError("x")) == "ValueError('x')"
+
+
+def _run_restarted(record, split_modules, tmp_path, *, restart: bool):
+    """Four steps of 0.5 ms with snapshots, straight or restarted after step two."""
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    if not restart:
+        _advance(backend, u, 4, 0.5, rec)
+        rec.finish(failure=None, t_fail_ms=None, timings={"mech_s": 1.0})
+        return rec
+    _advance(backend, u, 2, 0.5, rec)
+    rec.write_sidecar(tmp_path, 1.0)
+    rec2 = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    rec2.load_restart([], rec.restart_metadata())
+    rec2.read_sidecar(tmp_path, 1.0)
+    from test_generated_activation import _set_stretch
+
+    for k in (2, 3):
+        t = (k + 1) * 0.5
+        backend.t.value = k * 0.5
+        backend.dt.value = 0.5
+        backend.inputs["cai"].x.array[:] = calcium(t)
+        _set_stretch(u, 1.0 - 0.01 * (k + 1))
+        backend.post_solve()
+        rec2.step(t, 2)
+    rec2.finish(failure=None, t_fail_ms=None, timings={"mech_s": 2.0})
+    return rec2
+
+
+def test_recorder_restart_gives_the_same_files(record, split_modules, tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    _run_restarted(record, split_modules, a, restart=False)
+    _run_restarted(record, split_modules, b, restart=True)
+
+    assert (a / "steps.csv").read_bytes() == (b / "steps.csv").read_bytes()
+    sa, sb = np.load(a / "snapshots.npz"), np.load(b / "snapshots.npz")
+    assert sorted(sa.files) == sorted(sb.files)
+    for name in sa.files:
+        np.testing.assert_array_equal(sa[name], sb[name])
+    ja, jb = (json.loads((d / "run.json").read_text()) for d in (a, b))
+    for j in (ja, jb):
+        j.pop("utc")
+        j.pop("timings")
+    assert ja == jb
+
+
+def test_recorder_sidecars_keep_the_newest_two(record, split_modules, tmp_path):
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    names = []
+    for k, t in enumerate((0.5, 1.0, 1.5)):
+        _advance(backend, u, 1, 0.5, rec)
+        rec.write_sidecar(tmp_path, t)
+        names.append(f"restart_recorder_{t!r}.npz")
+        assert {p.name for p in tmp_path.glob("restart_recorder_*.npz")} == set(names[-2:])
+
+
+def test_recorder_read_sidecar_refuses_another_time_and_changes_nothing(
+    record,
+    split_modules,
+    tmp_path,
+):
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    _advance(backend, u, 2, 0.5, rec)
+    rec.write_sidecar(tmp_path, 1.0)
+    (tmp_path / "restart_recorder_1.0.npz").rename(tmp_path / "restart_recorder_0.5.npz")
+    rows = [list(r) for r in rec.rows]
+    with pytest.raises(ValueError, match="0.5"):
+        rec.read_sidecar(tmp_path, 0.5)
+    assert rec.rows == rows
+    assert rec._t == 1.0
+
+
+def test_finish_merges_extra(record, split_modules, tmp_path):
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(1.0))
+    rec.finish(
+        failure=None,
+        t_fail_ms=None,
+        timings={},
+        extra={"restart": {"from_ms": 1.0}, "failure": "overridden"},
+    )
+    info = json.loads((tmp_path / "run.json").read_text())
+    assert info["restart"] == {"from_ms": 1.0}
+    assert info["failure"] == "overridden"
+    assert info["scheme"] == "monolithic"
+
+
+def test_run_commands_pass_overwrite(tmp_path):
+    sys.path.insert(0, str(EXAMPLES))
+    try:
+        run = importlib.import_module("scheme_comparison.run")
+    finally:
+        sys.path.remove(str(EXAMPLES))
+    for geometry in ("slab", "biv"):
+        r = next(r for r in run.MATRIX["slab" if geometry == "slab" else "biv"])
+        cmd, _ = r.command(tmp_path)
+        assert "--overwrite" in cmd
