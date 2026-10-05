@@ -130,17 +130,16 @@ HASH_SEEDS = ("1", "3")
     strict=True,
     reason="gotranx's sort_assignments adds each assignment's dependencies to its "
     "TopologicalSorter in set order, so the generated state order depends on "
-    "PYTHONHASHSEED; a checkpoint is then refused by a process that generated the other "
-    "order. Remove this mark when gotranx generates the same code in every process.",
+    "PYTHONHASHSEED. Restarts no longer depend on it (a checkpoint is read by name), "
+    "but the fix belongs in gotranx: sort the dependencies. Remove this mark then.",
 )
 def test_generated_state_order_does_not_depend_on_the_hash_seed(tmp_path):
-    """The generated modules' state order is the same in every process.
+    """The generated modules' state order is the same in every process, whatever its
+    ``PYTHONHASHSEED``.
 
-    A checkpoint names the EP states in the order of the module that wrote it, and a
-    restart in another process regenerates the module, so the two orders must agree
-    whatever the process's ``PYTHONHASHSEED``. The two runs generate the same numbers
-    (only the order of the states and of the statements differs), but the restart is
-    refused ("the same names in another order").
+    The two orders give the same numbers (only the order of the states and of the
+    statements differs), and a restart maps a checkpoint's states by name, so nothing in
+    simcardemsx depends on this any more. It tracks gotranx's nondeterminism.
     """
     odefile = (
         Path(__file__).parent.parent

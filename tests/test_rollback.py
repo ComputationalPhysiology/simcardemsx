@@ -350,10 +350,14 @@ def test_load_restart_refuses_another_configuration(
     ep = controller.components()[0]
     assert isinstance(ep, EPState)
 
+    # The same state names in another order are accepted: a checkpoint is read by name,
+    # and another process may generate the states in another order. Another set is not.
     metadata = ep.restart_metadata()
     reordered = {**metadata, "state_names": metadata["state_names"][::-1]}
+    ep.load_restart(ep.restart_functions(), reordered)
+    other = {**metadata, "state_names": [*metadata["state_names"][:-1], "not_a_state"]}
     with pytest.raises(ValueError, match="state names"):
-        ep.load_restart(ep.restart_functions(), reordered)
+        ep.load_restart(ep.restart_functions(), other)
 
     rows = controller.plan.restart_functions()
     with pytest.raises(ValueError, match="transfer_parameter_lmbda"):

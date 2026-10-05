@@ -207,6 +207,47 @@ def test_restart_at_time_zero(tmp_path, build):
     _restart_matches_the_uninterrupted_run(tmp_path, build, P, k=0)
 
 
+def test_restore_accepts_the_same_names_in_another_order(tmp_path, build):
+    """A checkpoint that lists every namespace's function names, and EP's state names,
+    in another order than this run's (as one written by a process whose gotranx ordered
+    the EP states differently does) is restored by name, and continues bit for bit."""
+    a = _steps(build(), N)
+
+    b = _steps(build(), K)
+    Checkpointer(b, tmp_path, physics=P).write()
+    at_checkpoint = _coupled_state(b)
+    meta = json.loads((tmp_path / RESTART_META).read_text())
+    functions = meta["simcardemsx"]["functions"]
+    meta["simcardemsx"]["functions"] = {ns: names[::-1] for ns, names in functions.items()}
+    meta["ep"]["state_names"] = meta["ep"]["state_names"][::-1]
+    (tmp_path / RESTART_META).write_text(json.dumps(meta))
+
+    c = build()
+    assert Checkpointer(c, tmp_path, physics=P).restore() == K * DT_MECH
+    _assert_same_state(_coupled_state(c), at_checkpoint)
+    _steps(c, N - K)
+    _assert_same_state(_coupled_state(a), _coupled_state(c))
+
+
+def test_restore_refuses_another_set_of_ep_state_names(tmp_path, build):
+    """The same function names, but EP state names that are not this solver's: refused
+    by ``EPState``, and undone."""
+    b = _steps(build(), 1)
+    Checkpointer(b, tmp_path, physics=P).write()
+    meta = json.loads((tmp_path / RESTART_META).read_text())
+    meta["ep"]["state_names"] = [*meta["ep"]["state_names"][:-1], "not_a_state"]
+    (tmp_path / RESTART_META).write_text(json.dumps(meta))
+
+    c = build()
+    raised = _refused(
+        c,
+        Checkpointer(c, tmp_path, physics=P).restore,
+        ValueError,
+        "EP state names differ",
+    )
+    assert "not_a_state" in str(raised.value)
+
+
 def _refused(controller: SimulationController, restore: Callable[[], Any], error, match: str):
     """``restore()`` raises ``error`` matching ``match``, and leaves ``controller`` as it was."""
     before = _coupled_state(controller)

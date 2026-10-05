@@ -50,29 +50,36 @@ POST_FILES = (
 )
 POST_DATA_FILES = ("fields.bp", "traces.csv")
 RESULT_NAMES = ("v", "cai", "u", "lmbda", "tension_kPa", "stiffness_kPa")
-#: Every process here runs with one hash seed. gotranx orders the generated EP module's
-#: states by iterating sets of names, so the order depends on ``PYTHONHASHSEED``, and a
-#: restart in a process that generated another order is refused ("the same names in
-#: another order"). ``test_ode_model.py``'s strict xfail tracks that; until gotranx
-#: generates the same code in every process, the restarts below would otherwise fail
-#: about one time in two, for that reason alone.
-ENV = {**os.environ, "PYTHONHASHSEED": "0"}
+#: Two hash seeds under which gotranx (1.8.0) generates the Ca_i split's EP states in
+#: different orders: R4 checkpoints under one and restarts under the other, which only
+#: works because a checkpoint is read by name. R4 checks that the orders do differ.
+SEED_FIRST, SEED_RESTART = "1", "3"
 
 
-def _run_example(*args: str, output_dir: Path) -> subprocess.CompletedProcess:
+def _run_example(
+    *args: str,
+    output_dir: Path,
+    seed: str | None = None,
+) -> subprocess.CompletedProcess:
+    """``main.py`` with ``args``, in the inherited environment, or with ``seed`` as its
+    ``PYTHONHASHSEED``."""
     return subprocess.run(
         [sys.executable, "main.py", *args, "--output-dir", str(output_dir)],
         cwd=EXAMPLE_DIR,
         capture_output=True,
         text=True,
         timeout=900,
-        env=ENV,
+        env=None if seed is None else {**os.environ, "PYTHONHASHSEED": seed},
     )
 
 
-def _run_slab(*args: str, output_dir: Path) -> subprocess.CompletedProcess:
+def _run_slab(
+    *args: str,
+    output_dir: Path,
+    seed: str | None = None,
+) -> subprocess.CompletedProcess:
     """The crossbridge slab with ``args`` appended (``--t-end``, ``--restart``, ...)."""
-    return _run_example(*CROSSBRIDGE, *args, output_dir=output_dir)
+    return _run_example(*CROSSBRIDGE, *args, output_dir=output_dir, seed=seed)
 
 
 def _run_post(output_dir: Path, *python_args: str) -> subprocess.CompletedProcess:
@@ -82,7 +89,6 @@ def _run_post(output_dir: Path, *python_args: str) -> subprocess.CompletedProces
         capture_output=True,
         text=True,
         timeout=900,
-        env=ENV,
     )
 
 
@@ -114,6 +120,12 @@ def _raw_times(folder: Path, name: str) -> list[float]:
         function_name=name,
     )
     return [float(t) for t in times]
+
+
+def _ep_state_names(folder: Path) -> list[str]:
+    """The EP state names of the process that wrote ``folder``'s checkpoint, in its
+    order."""
+    return json.loads((folder / "restart.json").read_text())["ep"]["state_names"]
 
 
 def _results(folder: Path) -> dict[str, dict[float, np.ndarray]]:
@@ -173,14 +185,24 @@ def test_slab_example_refuses_monolithic_with_crossbridge(tmp_path):
 def test_slab_restart_matches_the_uninterrupted_run(tmp_path):
     """Gate R4: 4 ms straight, and 2 ms followed by ``--restart`` to 4 ms, give the same
     ``results.bp`` (every name, every time, bit for bit, and no time twice), the same
-    ``log.csv`` and ``steps.csv`` byte for byte, and the same ``post/traces.csv``."""
+    ``log.csv`` and ``steps.csv`` byte for byte, and the same ``post/traces.csv``.
+
+    The restart runs under another hash seed than the run it continues, one under which
+    gotranx generates the EP states in another order, as a user's next process may."""
     straight, restarted = tmp_path / "a", tmp_path / "b"
-    result = _run_slab("--t-end", "4", output_dir=straight)
+    result = _run_slab("--t-end", "4", output_dir=straight, seed=SEED_RESTART)
     assert result.returncode == 0, result.stderr[-3000:]
-    result = _run_slab("--t-end", "2", output_dir=restarted)
+    result = _run_slab("--t-end", "2", output_dir=restarted, seed=SEED_FIRST)
     assert result.returncode == 0, result.stderr[-3000:]
-    result = _run_slab("--t-end", "4", "--restart", output_dir=restarted)
+    written = _ep_state_names(restarted)
+    result = _run_slab("--t-end", "4", "--restart", output_dir=restarted, seed=SEED_RESTART)
     assert result.returncode == 0, result.stderr[-3000:]
+    restored = _ep_state_names(restarted)
+    assert sorted(written) == sorted(restored)
+    assert written != restored, (
+        f"PYTHONHASHSEED {SEED_FIRST} and {SEED_RESTART} gave the same EP state order: pick "
+        "two that differ (or, if gotranx's order no longer depends on the seed, drop this)"
+    )
 
     for name in RESULT_NAMES:
         assert _raw_times(restarted, name) == _raw_times(straight, name), name

@@ -74,6 +74,14 @@ class Checkpointable(Protocol):
     overwritten with the saved ones. It raises ``ValueError`` if the metadata does not
     describe an object of this kind and configuration.
 
+    Names, not positions, identify state on disk. A :class:`Checkpointer` reads each
+    Function by its name, so the process that restores a checkpoint may list the same
+    names in another order than the one that wrote it (gotranx, for one, may generate
+    a module's states in another order in another process). ``load_restart`` always
+    gets its Functions in its own, current order. A component whose metadata or
+    Functions hold positions (the columns of a blocked Function, say) records the names
+    of those positions and maps the saved order onto its own in ``load_restart``.
+
     An object may also define two methods that are not members of this protocol,
     because not every component has anything to write besides its Functions; the
     checkpointer calls them if they are present (``hasattr``):
@@ -133,18 +141,23 @@ class EPState:
         functions: Sequence[tuple[str, dolfinx.fem.Function]],
         metadata: Mapping[str, Any],
     ) -> None:
-        """Raise ``ValueError`` unless the state names are this solver's, in its order;
-        then restore the solver."""
+        """Raise ``ValueError`` unless the saved state names are this solver's, in any
+        order; then restore the solver.
+
+        The saved order is the writing process's, which may differ from this one's
+        (gotranx may order a generated module's states differently in another
+        process). Nothing here uses it: ``functions`` are this solver's own
+        ``state_<name>`` Functions, in its current order, each filled by name, and beat
+        takes them in that order.
+        """
         saved, own = list(metadata.get("state_names", [])), list(self.state_names)
-        if saved != own:
+        if sorted(saved) != sorted(own):
             only_saved = sorted(set(saved) - set(own))
             only_own = sorted(set(own) - set(saved))
-            difference = (
-                f"only in the checkpoint: {only_saved}; only in this run: {only_own}"
-                if only_saved or only_own
-                else "the same names in another order"
+            raise ValueError(
+                "The EP state names differ "
+                f"(only in the checkpoint: {only_saved}; only in this run: {only_own})",
             )
-            raise ValueError(f"The EP state names differ ({difference})")
         self.ep_solver.load_restart(functions, metadata["solver"])
 
 
@@ -248,7 +261,9 @@ def restore_snapshot(components: Sequence[Checkpointable], snapshot: Snapshot) -
 
     Raises ``ValueError``, naming the difference and before writing anything, if the
     components' namespaces or any component's function names (or array sizes) differ
-    from the snapshot's.
+    from the snapshot's. Unlike a checkpoint on disk, a snapshot is copied back by
+    position, so the names must also be in the same order; a snapshot never leaves the
+    process that took it, so they are.
     """
     namespaces = [component.namespace for component in components]
     if namespaces != list(snapshot.arrays):
@@ -371,14 +386,15 @@ def _names_difference(
     saved: Mapping[str, Sequence[str]],
     own: Mapping[str, Sequence[str]],
 ) -> str:
-    """How two ``{namespace: function names}`` dicts differ, namespace by namespace."""
+    """How two ``{namespace: function names}`` dicts differ, namespace by namespace, as
+    sets: the same names in another order do not differ. Empty if they do not."""
     parts = []
     for namespace in [*saved, *(namespace for namespace in own if namespace not in saved)]:
         if namespace not in own:
             parts.append(f"{namespace!r} only in the checkpoint")
         elif namespace not in saved:
             parts.append(f"{namespace!r} only in this run")
-        elif list(saved[namespace]) != list(own[namespace]):
+        elif sorted(saved[namespace]) != sorted(own[namespace]):
             difference = _difference(
                 saved[namespace],
                 own[namespace],
@@ -562,8 +578,9 @@ class Checkpointer:
         its ``t`` (ms).
 
         In order: the physics are checked (:func:`check_restart`), then the function
-        names and the time; every component's Functions, from a fresh
-        ``restart_functions()`` call, are read from :data:`RESTART` at ``t``; each
+        names (as a set per namespace) and the time; every component's Functions, from a
+        fresh ``restart_functions()`` call, are read from :data:`RESTART` at ``t``, each
+        by its name; each
         component's ``load_restart`` is called, in order, with its metadata as written;
         then each component's ``read_sidecar(folder, t)``, where defined. Nothing is
         moved back to EP afterwards (``plan.backward()`` is not called): the rows of
@@ -587,8 +604,10 @@ class Checkpointer:
         FileNotFoundError, ValueError
             From :func:`check_restart`.
         ValueError
-            If the checkpoint's function names differ from this run's, listing the
-            differences, or if :data:`RESTART` does not hold ``t`` for every function,
+            If the checkpoint's set of function names differs from this run's in any
+            namespace, listing the differences (the same names in another order are
+            accepted: each Function is read by name), or if :data:`RESTART` does not
+            hold ``t`` for every function,
             listing the times it does hold for every one; or from a component's
             ``load_restart``, if it refuses its metadata.
         """
@@ -598,10 +617,12 @@ class Checkpointer:
 
         functions = self._functions()
         names = {component.namespace: [name for name, _ in pairs] for component, pairs in functions}
-        if own["functions"] != names:
+        # Sets per namespace, not lists: every Function is read by its name.
+        difference = _names_difference(own["functions"], names)
+        if difference:
             raise ValueError(
                 f"The checkpoint in {self.folder} holds other functions than this run "
-                f"({_names_difference(own['functions'], names)})",
+                f"({difference})",
             )
 
         t = float(own["t_ms"])

@@ -260,6 +260,8 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
 
         self.states_prev = dolfinx.fem.Function(states_space, name="states_prev")
         self.states_prev.x.array.reshape(-1, num_states)[:] = module.init_state_values()
+        #: The module's state names, in the order of ``states_prev``'s components.
+        self._state_names = sorted(module.state, key=module.state.__getitem__)
         self._states_next = dolfinx.fem.Function(states_space)
 
         self.lmbda_prev = dolfinx.fem.Function(self.space, name="lmbda_prev")
@@ -615,18 +617,44 @@ class GeneratedActivation(pulse.active_model.ActiveModel):
         ]
 
     def restart_metadata(self) -> dict[str, Any]:
-        return {"backend": "GeneratedActivation", "scheme": self.scheme}
+        """The kind (backend and scheme), and ``state_names``: the module's state
+        names in the order of ``states_prev``'s components."""
+        return {
+            "backend": "GeneratedActivation",
+            "scheme": self.scheme,
+            "state_names": list(self._state_names),
+        }
 
     def load_restart(
         self,
         functions: Sequence[tuple[str, dolfinx.fem.Function]],
         metadata: Mapping[str, Any],
     ) -> None:
-        """Check the metadata and re-average ``active_tension``; the Functions in
-        ``functions`` are the backend's own, already filled by the caller."""
-        if dict(metadata) != self.restart_metadata():
+        """Check the metadata, put ``states_prev``'s components into this module's
+        order, and re-average ``active_tension``.
+
+        The Functions in ``functions`` are the backend's own, already filled by the
+        caller, so ``states_prev`` holds the components in the saved order. gotranx may
+        order a module's states differently in another process, so the saved
+        ``state_names`` are mapped onto this module's by name. Every other Function is
+        one name's own.
+
+        Raises ``ValueError`` if the backend or the scheme differ, or if the saved
+        state names are not this module's (in any order).
+        """
+        kind = {key: metadata.get(key) for key in ("backend", "scheme")}
+        own_kind = {"backend": "GeneratedActivation", "scheme": self.scheme}
+        if kind != own_kind:
             raise ValueError(
                 f"Checkpoint was written by {dict(metadata)}, "
                 f"this backend is {self.restart_metadata()} (scheme must match)",
             )
+        saved, own = list(metadata.get("state_names", [])), self._state_names
+        if sorted(saved) != sorted(own):
+            raise ValueError(
+                f"The checkpoint's activation states are {saved}, this module's are {own}",
+            )
+        if saved != own:
+            components = self.states_prev.x.array.reshape(-1, len(own))
+            components[:] = components[:, [saved.index(name) for name in own]]
         self._average_tension()

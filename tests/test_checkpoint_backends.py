@@ -110,9 +110,74 @@ def test_generated_activation_names_and_metadata(split_modules):
         "activation_stiffness_kPa",
         *(f"activation_output_{name}" for name in sorted(a.outputs)),
     ]
-    assert a.restart_metadata() == {"backend": "GeneratedActivation", "scheme": "stabilized"}
+    assert a.restart_metadata() == {
+        "backend": "GeneratedActivation",
+        "scheme": "stabilized",
+        "state_names": sorted(mech.state, key=mech.state.__getitem__),
+    }
     assert a.namespace == "activation"
     assert a.step_pending is False
+
+
+def _in_another_order(backend) -> tuple[dict[str, np.ndarray], dict]:
+    """``backend``'s restart values and metadata as a process that ordered the module's
+    states in reverse would have written them: ``state_names`` reversed, and
+    ``states_prev``'s components with them."""
+    values = _snapshot(backend)
+    metadata = json.loads(json.dumps(backend.restart_metadata()))
+    names = metadata["state_names"]
+    reordered = names[::-1]
+    components = values["activation_states_prev"].reshape(-1, len(names))
+    values["activation_states_prev"] = components[:, [names.index(n) for n in reordered]].ravel()
+    metadata["state_names"] = reordered
+    return values, metadata
+
+
+def _load(dst, values: dict[str, np.ndarray], metadata: dict) -> None:
+    functions = dst.restart_functions()
+    for name, f in functions:
+        f.x.array[:] = values[name]
+    dst.load_restart(functions, metadata)
+
+
+@pytest.mark.parametrize("scheme", ["monolithic", "stabilized"])
+def test_generated_activation_restores_states_saved_in_another_order(scheme, split_modules):
+    """A checkpoint whose ``state_names`` are in another order, with ``states_prev``'s
+    components in that order, is restored by name: bit for bit, and it continues so."""
+    _, mech = split_modules["caisplit"]
+    assert len(mech.state) > 2
+    a, ua = _generated(mech, scheme)
+    for n in range(3):
+        _step(a, ua, n)
+    values, metadata = _in_another_order(a)
+    assert not np.array_equal(values["activation_states_prev"], a.states_prev.x.array)
+
+    b, ub = _generated(mech, scheme)
+    _set_stretch(ub, STRETCHES[2])
+    _load(b, values, metadata)
+    _assert_same(a, b)
+    for n in range(3, 5):
+        _step(a, ua, n)
+        _step(b, ub, n)
+    _assert_same(a, b)
+
+
+def test_generated_activation_refuses_other_state_names(split_modules):
+    """Saved state names that are not this module's, in any order, are refused."""
+    _, mech = split_modules["caisplit"]
+    a, _ = _generated(mech, "monolithic")
+    values, metadata = _in_another_order(a)
+    b, _ = _generated(mech, "monolithic")
+    for names in (
+        [*metadata["state_names"][:-1], "not_a_state"],
+        metadata["state_names"][:-1],
+        [],
+    ):
+        with pytest.raises(ValueError, match="activation states"):
+            _load(b, values, {**metadata, "state_names": names})
+    missing = {key: value for key, value in metadata.items() if key != "state_names"}
+    with pytest.raises(ValueError, match="activation states"):
+        _load(b, values, missing)
 
 
 def _crossbridge(model, f0_mesh=None):
