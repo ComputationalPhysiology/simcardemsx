@@ -196,10 +196,7 @@ class Recorder:
             "t": np.array(self._t),
         }
         for name, values in self.snaps.items():
-            arrays[f"snap_{name}"] = np.array(values, dtype=float).reshape(
-                len(values),
-                -1,
-            )
+            arrays[f"snap_{name}"] = np.array(values, dtype=float) if values else np.empty((0, 0))
         target = self._sidecar(folder, t_ms)
         np.savez(target, **arrays)
         keep = {target.name}
@@ -224,7 +221,7 @@ class Recorder:
             rows = [[float(row[0]), int(row[1]), *map(float, row[2:])] for row in data["rows"]]
             newton = [int(n) for n in data["newton"]]
             snap_t = [float(x) for x in data["snap_t"]]
-            snaps = {name: list(data[f"snap_{name}"]) for name in self.snaps}
+            snaps = {name: list(data[f"snap_{name}"]) for name in self.snaps}  # [] if empty
             lmbda = data["lmbda"].copy()
             d_prev = data["d_prev"].copy() if bool(data["has_d_prev"]) else None
         self.rows, self.newton, self.snap_t, self.snaps = rows, newton, snap_t, snaps

@@ -432,22 +432,23 @@ def test_failure_of_keeps_the_interrupt_behind_a_solver_error(record):
     assert record.failure_of(ValueError("x")) == "ValueError('x')"
 
 
-def _run_restarted(record, split_modules, tmp_path, *, restart: bool):
-    """Four steps of 0.5 ms with snapshots, straight or restarted after step two."""
+def _run_restarted(record, split_modules, tmp_path, *, restart: bool, every=1.0, after=2):
+    """Four steps of 0.5 ms, straight or restarted after ``after`` steps."""
     backend, u = _backend(split_modules)
-    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=every)
     if not restart:
         _advance(backend, u, 4, 0.5, rec)
         rec.finish(failure=None, t_fail_ms=None, timings={"mech_s": 1.0})
         return rec
-    _advance(backend, u, 2, 0.5, rec)
-    rec.write_sidecar(tmp_path, 1.0)
-    rec2 = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    _advance(backend, u, after, 0.5, rec)
+    t0 = after * 0.5
+    rec.write_sidecar(tmp_path, t0)
+    rec2 = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=every)
     rec2.load_restart([], rec.restart_metadata())
-    rec2.read_sidecar(tmp_path, 1.0)
+    rec2.read_sidecar(tmp_path, t0)
     from test_generated_activation import _set_stretch
 
-    for k in (2, 3):
+    for k in range(after, 4):
         t = (k + 1) * 0.5
         backend.t.value = k * 0.5
         backend.dt.value = 0.5
@@ -469,11 +470,26 @@ def test_recorder_restart_gives_the_same_files(record, split_modules, tmp_path):
     assert sorted(sa.files) == sorted(sb.files)
     for name in sa.files:
         np.testing.assert_array_equal(sa[name], sb[name])
+    _assert_same_run_json(a, b)
+
+
+def _assert_same_run_json(a, b):
     ja, jb = (json.loads((d / "run.json").read_text()) for d in (a, b))
     for j in (ja, jb):
         j.pop("utc")
         j.pop("timings")
     assert ja == jb
+
+
+@pytest.mark.parametrize("after", [0, 2])
+def test_recorder_restart_without_snapshots(record, split_modules, tmp_path, after):
+    a, b = tmp_path / "a", tmp_path / "b"
+    _run_restarted(record, split_modules, a, restart=False, every=None)
+    _run_restarted(record, split_modules, b, restart=True, every=None, after=after)
+    assert (a / "steps.csv").read_bytes() == (b / "steps.csv").read_bytes()
+    assert not (a / "snapshots.npz").exists()
+    assert not (b / "snapshots.npz").exists()
+    _assert_same_run_json(a, b)
 
 
 def test_recorder_sidecars_keep_the_newest_two(record, split_modules, tmp_path):
