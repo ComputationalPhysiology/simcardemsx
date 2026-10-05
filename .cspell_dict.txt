@@ -388,6 +388,7 @@ pypi
 pyplot
 pytest
 pytestmark
+PYTHONHASHSEED
 qca
 qna
 Quarteroni
@@ -398,6 +399,7 @@ Rdmm
 Regazzoni
 relp
 Remedios
+replots
 repolarisation
 resid
 rightback
@@ -519,6 +521,7 @@ uflacs
 unactivated
 undeformed
 undiseased
+unimportable
 unstabilized
 updegrove
 usecols

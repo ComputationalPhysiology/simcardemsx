@@ -1,9 +1,10 @@
 """What :class:`DataCollector` and its :class:`Timers` write.
 
-The collector is wired to :class:`SimulationController`'s callbacks exactly as in
-``numerical_experiments/strong_coupling_zetasplit/main.py``: the controller counts
-steps from 1, and the collector is handed ``step_idx - 1`` whenever that index is a
-multiple of the save frequency.
+The collector is deprecated: the demos write ``results.bp`` and ``log.csv``
+(:mod:`simcardemsx.results`) and their ``post.py`` replots from them. It is wired to
+:class:`SimulationController`'s callbacks as the slab example used to wire it: the
+controller counts steps from 1, and the collector is handed ``step_idx - 1`` whenever
+that index is a multiple of the save frequency.
 """
 
 import json
@@ -12,6 +13,7 @@ from mpi4py import MPI
 
 import dolfinx
 import numpy as np
+import pytest
 
 from simcardemsx.controller import SimulationController
 from simcardemsx.datacollector import DataCollector, Timers
@@ -57,12 +59,13 @@ def test_time_axes_are_the_times_the_samples_were_taken(
             "point_mech": [{"name": "Ta", **origin}],
         },
     }
-    collector = DataCollector(
-        problem=problem,
-        ep_ode_space=ep_solver.ode.v_ode.function_space,
-        config=config,
-        mech_variables={"Ta": backend.active_tension},
-    )
+    with pytest.warns(DeprecationWarning, match="results.bp"):
+        collector = DataCollector(
+            problem=problem,
+            ep_ode_space=ep_solver.ode.v_ode.function_space,
+            config=config,
+            mech_variables={"Ta": backend.active_tension},
+        )
 
     ep_sampled_at: list[float] = []
     mech_sampled_at: list[float] = []

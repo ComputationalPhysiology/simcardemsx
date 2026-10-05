@@ -348,6 +348,25 @@ def test_finish_after_artifacts_writes_run_json_last(record, split_modules, tmp_
     assert info["reached_t_end"] is True
 
 
+def test_finish_after_artifacts_passes_extra_to_run_json(record, split_modules, tmp_path):
+    """``extra`` reaches ``run.json`` through ``Recorder.finish``, as the demos' restart
+    provenance does."""
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(1.0))
+    _advance(backend, u, 2, 0.5, rec)
+    record.finish_after_artifacts(
+        rec,
+        [],
+        failure=None,
+        t_fail_ms=None,
+        timings={},
+        extra={"restart": True, "history": [{"git_commit": "abc"}]},
+    )
+    info = json.loads((tmp_path / "run.json").read_text())
+    assert info["restart"] is True
+    assert info["history"] == [{"git_commit": "abc"}]
+
+
 def test_finish_after_artifacts_keeps_the_loop_exception(record, split_modules, tmp_path):
     """When the loop raised, that exception propagates, not an artifact's."""
     backend, u = _backend(split_modules)

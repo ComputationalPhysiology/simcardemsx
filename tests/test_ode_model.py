@@ -1,3 +1,7 @@
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from mpi4py import MPI
@@ -115,3 +119,50 @@ def test_mechanics_module_emits_ufl(split_modules):
     s = [c(v) for v in mech.init_state_values()]
     out = mech.generalized_rush_larsen(s, c(0.0), c(1.0), p, [c(1e-4)])
     assert all(isinstance(e, ufl.core.expr.Expr) for e in out)
+
+
+#: Two hash seeds under which gotranx (1.8.0) generates the Ca_i split's EP states in
+#: different orders.
+HASH_SEEDS = ("1", "3")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="gotranx's sort_assignments adds each assignment's dependencies to its "
+    "TopologicalSorter in set order, so the generated state order depends on "
+    "PYTHONHASHSEED; a checkpoint is then refused by a process that generated the other "
+    "order. Remove this mark when gotranx generates the same code in every process.",
+)
+def test_generated_state_order_does_not_depend_on_the_hash_seed(tmp_path):
+    """The generated modules' state order is the same in every process.
+
+    A checkpoint names the EP states in the order of the module that wrote it, and a
+    restart in another process regenerates the module, so the two orders must agree
+    whatever the process's ``PYTHONHASHSEED``. The two runs generate the same numbers
+    (only the order of the states and of the statements differs), but the restart is
+    refused ("the same names in another order").
+    """
+    odefile = (
+        Path(__file__).parent.parent
+        / "numerical_experiments"
+        / "odefiles"
+        / "ToRORd_dynCl_endo_caisplit.ode"
+    )
+    script = (
+        "import json, sys; from pathlib import Path; "
+        "from simcardemsx.ode_model import load_ode_modules; "
+        "m = load_ode_modules(Path(sys.argv[1]), Path(sys.argv[2])); "
+        "print(json.dumps([m.ep.state, m.mechanics.state]))"
+    )
+    orders = []
+    for seed in HASH_SEEDS:
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(odefile), str(tmp_path / seed)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            timeout=300,
+        )
+        assert result.returncode == 0, result.stderr[-3000:]
+        orders.append(json.loads(result.stdout.strip().splitlines()[-1]))
+    assert orders[0] == orders[1]

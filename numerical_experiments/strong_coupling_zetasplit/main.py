@@ -3,20 +3,47 @@
 EP (fenicsx-beat, monodomain) and mechanics (fenicsx-pulse, quasistatic) are coupled
 through :class:`~simcardemsx.controller.SimulationController`, with the ``mechanics``
 component of ``--odefile`` stepped inside the mechanics Newton iteration by
-:class:`~simcardemsx.backends.GeneratedActivation`. Output goes to
-``output/<odefile stem>/``, including ``timings.json``: the wall time spent in the EP
-ODE step, the EP PDE step and the mechanics solve. Each run also writes the scheme
-comparison's ``steps.csv`` and ``run.json`` (see ``scheme_comparison/record.py``).
+:class:`~simcardemsx.backends.GeneratedActivation` (or, with ``--crossbridge``, a
+crossbridge model through :class:`~simcardemsx.backends.CrossbridgeSegregated`).
+
+Output goes to ``--output-dir`` (default ``output/<odefile stem>/``), in the upstream
+CLIs' layout (:mod:`simcardemsx.results`):
+
+- ``config.resolved.toml``: :func:`settings`, rewritten by every run, fresh or restarted.
+- ``results.bp``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
+  ``lmbda``, ``tension_kPa`` and ``stiffness_kPa`` (the last three on the backend's
+  quadrature points) every ``--save-every`` ms, all from t = 0.
+- ``log.csv``: one row per mechanics step, and one at t = 0: ``t_ms``,
+  ``newton_iterations``, and the mesh means ``lmbda_mean`` and ``Ta_mean_kPa``.
+- ``restart.bp`` and ``restart.json``: a checkpoint every ``--checkpoint-every`` ms and
+  at the end of the run, with the scheme comparison's ``restart_recorder_<t>.npz``.
+- ``timings.json``: this process's wall time in the EP ODE step, the EP PDE step and the
+  mechanics solve, and its Newton iterations (after a restart, only the part it ran).
+- The scheme comparison's ``steps.csv``, ``run.json`` (last, with the provenance of
+  every process that wrote the run) and, with ``--snapshot-every``, ``snapshots.npz``
+  (see ``scheme_comparison/record.py``).
+
+``post.py`` replots from these into ``post/``. ``DataCollector`` is no longer used, so
+its VTX files, text traces and plots, and ``lmbda_prev_mean.txt``, are not written.
+
+The folder rules are the CLIs'. A run refuses a folder that holds any of these files,
+unless ``--overwrite`` (which deletes only them) or ``--restart`` is given. The default
+folder may hold the results of a run from before these rules, so a plain re-run into it
+is refused too. ``--restart`` continues from the checkpoint, and refuses one written
+with other physics (:func:`physics`): it may change ``--t-end`` and the output options,
+nothing else. If the checkpoint is at or past ``--t-end`` it takes no step.
 """
 
 import argparse
 import functools
+import hashlib
 import json
 import logging
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import Any, Callable
 
 from mpi4py import MPI
 
@@ -27,11 +54,20 @@ import pulse
 import ufl
 
 import cardiac_geometries
-from simcardemsx.averaging import make_averager
+import cardiac_geometries.geometry
 from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
+from simcardemsx.checkpoint import Checkpointer
 from simcardemsx.controller import SimulationController
-from simcardemsx.datacollector import DataCollector
 from simcardemsx.ode_model import load_ode_modules
+from simcardemsx.provenance import provenance
+from simcardemsx.results import (
+    ARTIFACTS,
+    CsvLog,
+    ResultsWriter,
+    prepare_output,
+    stride,
+    write_resolved_settings,
+)
 
 HERE = Path(__file__).resolve().parent
 # scheme_comparison sits next to this example, not in the installed package.
@@ -46,10 +82,41 @@ logger = logging.getLogger(__name__)
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
 DEFAULT_ODEFILE = Path("../odefiles/ToRORd_dynCl_endo_zetasplit.ode")
 SLAB_DX = 0.5  # Resolution of the slab mesh
+#: Where the slab mesh is generated on first use and read after: beside this file, one
+#: directory per resolution, so that ``post.py`` finds it from any working directory.
+MESH_DIR = HERE / "meshes" / f"slab_dx{SLAB_DX}"
+STIM_MARKER = 1
 SCHEMES = ("monolithic", "segregated", "stabilized")
 CROSSBRIDGE_MODELS = ("Land2017", "RDQ18", "RDQ20MF", "Lewalle2024")
 DT_EP = 0.05  # ms
 T_END = 40.0  # ms
+
+#: The spaces of ``results.bp``, which ``post.py`` rebuilds: the EP ODE space, P1 (the
+#: transfer plan averages what crosses back onto P1 or DG0 only), holds ``v`` and
+#: ``cai``; pulse's displacement space, given to the problem, holds ``u``; and the
+#: backend's scalar quadrature space at ``QUAD_DEGREE`` holds the rest.
+EP_ODE_ELEMENT = ("P", 1)
+U_SPACE = "P_2"
+EP_RESULTS = ("v", "cai")
+MECHANICS_RESULTS = ("u", "lmbda", "tension_kPa", "stiffness_kPa")
+LOG_FIELDS = ("t_ms", "newton_iterations", "lmbda_mean", "Ta_mean_kPa")
+#: Everything a run writes into its output folder, and so what --overwrite deletes.
+OUTPUT_ARTIFACTS = (*ARTIFACTS, "steps.csv", "snapshots.npz", "restart_recorder_*.npz")
+#: The arguments that do not define the physics: the run's length and its output.
+NOT_PHYSICS = (
+    "t_end",
+    "output_dir",
+    "snapshot_every",
+    "save_every",
+    "save_every_ep",
+    "checkpoint_every",
+    "restart",
+    "overwrite",
+)
+#: ``default_config()["sim"]``'s entries that are not physics either: the run length,
+#: the output, and the ``.ode`` file's path (``physics`` holds its resolved path and
+#: hash in its place).
+NOT_PHYSICS_SIM = ("modelfile", "outdir", "sim_dur", "save_frequency_ep", "save_frequency_mech")
 
 
 def default_config():
@@ -117,52 +184,12 @@ def default_config():
     }
 
 
-class Geometry(NamedTuple):
-    mesh: dolfinx.mesh.Mesh
-    facet_tags: dolfinx.mesh.MeshTags
-    markers: dict[str, tuple[int, int]]
-    f0: dolfinx.fem.Function | dolfinx.fem.Constant
-    s0: dolfinx.fem.Function | dolfinx.fem.Constant
-    n0: dolfinx.fem.Function | dolfinx.fem.Constant
-    stim_tags: dolfinx.mesh.MeshTags
-    stim_marker: int
-
-    @property
-    def dx(self):
-        return ufl.Measure(
-            "dx",
-            domain=self.mesh,
-            subdomain_data=self.stim_tags,
-            metadata={"quadrature_degree": QUAD_DEGREE},
-        )
-
-    @property
-    def ds(self):
-        return ufl.Measure(
-            "ds",
-            domain=self.mesh,
-            subdomain_data=self.facet_tags,
-            metadata={"quadrature_degree": QUAD_DEGREE},
-        )
-
-    @property
-    def facet_normal(self) -> ufl.FacetNormal:
-        return ufl.FacetNormal(self.mesh)
-
-    def surface_area(self, marker: str) -> float:
-        marker_id = self.markers[marker][0]
-        return self.mesh.comm.allreduce(
-            dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * self.ds(marker_id))),
-            op=MPI.SUM,
-        )
-
-
 def disable_logger():
     for lib in ["numba", "matplotlib"]:
         logging.getLogger(lib).setLevel(logging.WARNING)
 
 
-def create_stim_tags(mesh, stim_marker=1, stimx=1.5, stimy=1.5, stimz=1.5):
+def create_stim_tags(mesh, stim_marker=STIM_MARKER, stimx=1.5, stimy=1.5, stimz=1.5):
     tol = 1e-6
 
     def S1_subdomain(x):
@@ -198,6 +225,8 @@ def accumulate_time(fn: Callable, totals: dict[str, float], key: str) -> Callabl
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, with ``output_dir`` and ``save_every`` resolved from their
+    defaults."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--odefile",
@@ -248,7 +277,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Output directory (default: output/<odefile stem>).",
+        help="Output directory (default: output/<odefile stem>). It must hold no results "
+        "of an earlier run, unless --overwrite or --restart is given.",
     )
     parser.add_argument(
         "--snapshot-every",
@@ -257,7 +287,123 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Save per-point snapshots of the stretch, tension and stiffness every this "
         "many ms, to snapshots.npz (default: off).",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--save-every",
+        type=float,
+        default=None,
+        help="Save u, lmbda, tension_kPa and stiffness_kPa to results.bp every this many "
+        "ms, a whole multiple of --dt-mech (default: --dt-mech).",
+    )
+    parser.add_argument(
+        "--save-every-ep",
+        type=float,
+        default=1.0,
+        help=f"Save EP's v and cai to results.bp every this many ms, a whole multiple of "
+        f"the {DT_EP} ms EP step (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=float,
+        default=50.0,
+        help="Write a checkpoint (restart.bp, restart.json) every this many ms, a whole "
+        "multiple of --dt-mech, and at the end of the run (default: %(default)s).",
+    )
+    flags = parser.add_mutually_exclusive_group()
+    flags.add_argument(
+        "--restart",
+        action="store_true",
+        help="Continue the run in the output directory from its checkpoint. Refused if "
+        "the physics differ from the checkpoint's; --t-end and the output options may.",
+    )
+    flags.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace the results in the output directory. Only this example's own files "
+        "are deleted.",
+    )
+    args = parser.parse_args(argv)
+    if args.output_dir is None:
+        args.output_dir = Path("output") / args.odefile.stem
+    if args.save_every is None:
+        args.save_every = args.dt_mech
+    return args
+
+
+def settings(args: argparse.Namespace) -> dict[str, Any]:
+    """Every argument (paths as ``str``), and :func:`default_config` with its ``sim``
+    entries set from them: what ``config.resolved.toml`` holds.
+
+    TOML has no null, so an argument that is ``None`` is not in the file.
+    """
+    config = default_config()
+    config["sim"].update(
+        modelfile=str(args.odefile),
+        outdir=str(args.output_dir),
+        dt=DT_EP,
+        N=round(args.dt_mech / DT_EP),
+        sim_dur=args.t_end,
+    )
+    arguments = {
+        key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
+    }
+    return {**arguments, **config}
+
+
+def physics(args: argparse.Namespace) -> dict[str, Any]:
+    """What a restart must share with the checkpointed run: :func:`settings` without the
+    run length and the output (:data:`NOT_PHYSICS`, ``default_config``'s ``output`` and
+    :data:`NOT_PHYSICS_SIM`), and with ``odefile`` as its resolved path and its sha256.
+
+    Raises ``FileNotFoundError`` if the ``.ode`` file does not exist.
+    """
+    result = settings(args)
+    for key in NOT_PHYSICS:
+        del result[key]
+    del result["output"]
+    for key in NOT_PHYSICS_SIM:
+        del result["sim"][key]
+    odefile = Path(args.odefile)
+    result["odefile"] = {
+        "path": str(odefile.resolve()),
+        "sha256": hashlib.sha256(odefile.read_bytes()).hexdigest(),
+    }
+    return result
+
+
+def build_geometry(run_settings: Mapping[str, Any]) -> cardiac_geometries.geometry.Geometry:
+    """The slab, read from :data:`MESH_DIR` (generated there first if it is missing),
+    with the stimulus region, the box up to ``run_settings["ep"]["stimulus"]``'s
+    ``xmax``, ``ymax`` and ``zmax``, as its cell tags (``cfun``, marker
+    :data:`STIM_MARKER`), and the mechanics quadrature degree."""
+    comm = MPI.COMM_WORLD
+    # One directory per resolution: the mesh is only generated when its directory is
+    # missing, so a single directory would silently reuse a slab of another resolution.
+    if not MESH_DIR.is_dir():
+        cardiac_geometries.mesh.slab(
+            outdir=MESH_DIR,
+            lx=2.0,
+            ly=1.0,
+            lz=0.5,
+            dx=SLAB_DX,
+            create_fibers=True,
+            fiber_angle_endo=0,
+            fiber_angle_epi=0,
+            fiber_space="DG_1",
+            comm=comm,
+            use_dolfinx=True,
+        )
+
+    geo = cardiac_geometries.geometry.Geometry.from_file(comm=comm, path=MESH_DIR / "geometry.bp")
+    stimulus = run_settings["ep"]["stimulus"]
+    geo.cfun = create_stim_tags(
+        geo.mesh,
+        stim_marker=STIM_MARKER,
+        stimx=stimulus["xmax"],
+        stimy=stimulus["ymax"],
+        stimz=stimulus["zmax"],
+    )
+    geo.quadrature_degree = QUAD_DEGREE
+    return geo
 
 
 def main(argv: list[str] | None = None):
@@ -269,22 +415,43 @@ def main(argv: list[str] | None = None):
             "are NumPy and cannot be stepped inside Newton. Use --scheme stabilized or "
             "segregated.",
         )
+    outdir: Path = args.output_dir
+    odefile: Path = args.odefile
+    dt_mech = args.dt_mech
+
+    # Everything that can refuse the run does so here: before any file is touched, and
+    # before anything expensive is generated, built or compiled.
+    def steps(option: str, every: float, dt: float) -> int:
+        try:
+            return stride(every, dt)
+        except ValueError as error:
+            raise ValueError(f"{option}: {error}") from error
+
+    try:
+        steps("--dt-mech", dt_mech, DT_EP)
+        save_ep_every = steps("--save-every-ep", args.save_every_ep, DT_EP)
+        save_every = steps("--save-every", args.save_every, dt_mech)
+        checkpoint_every = steps("--checkpoint-every", args.checkpoint_every, dt_mech)
+        run_physics = physics(args)
+        prepare_output(
+            outdir,
+            restart=args.restart,
+            overwrite=args.overwrite,
+            physics=run_physics,
+            artifacts=OUTPUT_ARTIFACTS,
+        )
+    except (ValueError, FileNotFoundError) as error:
+        raise SystemExit(str(error)) from error
+
+    comm = MPI.COMM_WORLD
+    run_settings = settings(args)
+    # Every run's, a restart's too: the latest run's settings win, as in the CLIs.
+    if comm.rank == 0:
+        write_resolved_settings(outdir / "config.resolved.toml", run_settings)
 
     logging.basicConfig(level=logging.DEBUG)
     disable_logger()
     dolfinx.log.set_log_level(dolfinx.log.LogLevel.DEBUG)
-
-    comm = MPI.COMM_WORLD
-    config = default_config()
-    odefile = args.odefile
-    config["sim"]["modelfile"] = str(odefile)
-    outdir = args.output_dir if args.output_dir is not None else Path("output") / odefile.stem
-    config["sim"]["outdir"] = str(outdir)
-    config["sim"]["dt"] = DT_EP
-    config["sim"]["N"] = round(args.dt_mech / DT_EP)
-    config["sim"]["sim_dur"] = args.t_end
-    if abs(config["sim"]["N"] * DT_EP - args.dt_mech) > 1e-9 * args.dt_mech:
-        raise ValueError(f"--dt-mech {args.dt_mech} is not a whole multiple of {DT_EP} ms")
 
     # ---------------------------------------------------------
     # 1. Pre-processing: Generate ODE Code
@@ -298,42 +465,22 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     # 2. Setup Meshes & Geometries
     # ---------------------------------------------------------
-    # One directory per resolution: the mesh is only generated when its directory is
-    # missing, so a single directory would silently reuse a slab of another resolution.
-    geodir = Path("meshes") / f"slab_dx{SLAB_DX}"
-    if not geodir.is_dir():
-        cardiac_geometries.mesh.slab(
-            outdir=geodir,
-            lx=2.0,
-            ly=1.0,
-            lz=0.5,
-            dx=SLAB_DX,
-            create_fibers=True,
-            fiber_angle_endo=0,
-            fiber_angle_epi=0,
-            fiber_space="DG_1",
-            comm=comm,
-            use_dolfinx=True,
-        )
-
-    geo = cardiac_geometries.geometry.Geometry.from_file(comm=comm, path=geodir / "geometry.bp")
-
-    stim_marker = 1
-    stim_tags = create_stim_tags(geo.mesh, stim_marker=stim_marker)
-    geo.cfun = stim_tags
+    geo = build_geometry(run_settings)
+    stim_tags = geo.cfun
+    assert stim_tags is not None
     mech_geo = geo
-    geo.quadrature_degree = QUAD_DEGREE
     ep_geo = geo
     mesh = mech_geo.mesh
     ep_mesh = ep_geo.mesh
 
     # P1: values going back to EP are averaged onto the EP ODE space, which the
     # transfer plan supports for P1 and DG0 only.
-    ep_ode_space = dolfinx.fem.functionspace(ep_mesh, ("P", 1))
+    ep_ode_space = dolfinx.fem.functionspace(ep_mesh, EP_ODE_ELEMENT)
 
     # ---------------------------------------------------------
     # 3. Setup EP Solver (fenicsx-beat)
     # ---------------------------------------------------------
+    config = run_settings
     mesh_unit = "mm"
     chi = config["ep"]["chi"] * beat.units.ureg("mm**-1")
     C_m = config["ep"]["C_m"] * beat.units.ureg("uF/mm**2")
@@ -354,7 +501,7 @@ def main(argv: list[str] | None = None):
         chi=chi,
         time=time_ep,
         subdomain_data=stim_tags,
-        marker=stim_marker,
+        marker=STIM_MARKER,
         mesh_unit=mesh_unit,
         amplitude=50_000.0 * beat.units.ureg("uA/cm**3"),
     )
@@ -477,23 +624,23 @@ def main(argv: list[str] | None = None):
         model=model,
         geometry=geometry,
         bcs=bcs,
-        parameters={"base_bc": pulse.problem.BaseBC.free, "petsc_options": petsc_options},
+        parameters={
+            "base_bc": pulse.problem.BaseBC.free,
+            "petsc_options": petsc_options,
+            "u_space": U_SPACE,
+        },
     )
 
     # ---------------------------------------------------------
-    # 5. Initialize Coupling Controller & DataCollector
+    # 5. Initialize the coupling controller and the run's output
     # ---------------------------------------------------------
-    dt_ep = config["sim"]["dt"]
-    N_steps = config["sim"]["N"]
-    dt_mech = args.dt_mech
-
     controller = SimulationController(
         mechanics=problem,
         ep_solver=ep_solver,
         backend=backend,
         ode_modules=modules,
         dt_mech=dt_mech,
-        dt_ep=dt_ep,
+        dt_ep=DT_EP,
     )
 
     a = pulse.HolzapfelOgden.transversely_isotropic_parameters()["a"]
@@ -519,6 +666,10 @@ def main(argv: list[str] | None = None):
             },
         },
     )
+    # The recorder's rows and snapshots are restored with the rest of the run.
+    checkpointer = Checkpointer(controller, outdir, physics=run_physics, extra=[recorder])
+    results = ResultsWriter(outdir)
+    log = CsvLog(outdir / "log.csv", LOG_FIELDS)
     newton_its = 0
 
     # Timing baseline: wall time spent in the EP ODE step, the EP PDE step and the
@@ -530,70 +681,79 @@ def main(argv: list[str] | None = None):
     ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
     problem.solve = accumulate_time(problem.solve, timings, "mech_s")  # type: ignore[method-assign]
 
-    # Ta is backend.active_tension, in kPa (ZetaSplitUFL's Ta_current was in Pa).
-    # The backend's outputs live on a quadrature space, which cannot be evaluated at
-    # a point, so each is recorded through a P1 copy refreshed after every step.
-    # "lmbda" keeps its old output name, "lambda".
-    P1 = dolfinx.fem.functionspace(mesh, ("P", 1))
-    mech_variables = {"Ta": backend.active_tension}
-    averagers = []
-    recorded = {("lambda" if name == "lmbda" else name): f for name, f in backend.outputs.items()}
-    for out_name, output in recorded.items():
-        mech_variables[out_name] = dolfinx.fem.Function(P1, name=out_name)
-        averagers.append(make_averager(output, mech_variables[out_name]))
+    # results.bp's fields. EP's are P1 copies of rows of the ODE's state array, refreshed
+    # before each save; the others are the problem's and the backend's own Functions.
+    ep_fields = {name: dolfinx.fem.Function(ep_ode_space, name=name) for name in EP_RESULTS}
+    ep_rows = {name: ep_module.state_index(name) for name in EP_RESULTS}
+    mechanics_fields = {
+        "u": problem.u,
+        "lmbda": backend.outputs["lmbda"],
+        "tension_kPa": backend.tension_kPa,
+        "stiffness_kPa": backend.stiffness_kPa,
+    }
 
-    collector = DataCollector(
-        problem=problem,
-        ep_ode_space=ep_ode_space,
-        config=config,
-        mech_variables=mech_variables,
-    )
+    def save_ep(t: float) -> None:
+        for name, f in ep_fields.items():
+            f.x.array[:] = ode.values[ep_rows[name]]
+        results.write(t, ep_fields)
 
-    # Mesh mean of the fibre stretch at the quadrature points, per mechanics step.
+    # Mesh means at the mechanics form's quadrature points, for log.csv.
     volume = comm.allreduce(
         dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * geometry.dx)),
         op=MPI.SUM,
     )
     lmbda_integral = dolfinx.fem.form(backend.lmbda_prev * geometry.dx)
-    lmbda_mean: list[tuple[float, float]] = []
+    tension_integral = dolfinx.fem.form(backend.tension_kPa * geometry.dx)
+
+    def mesh_mean(integral: dolfinx.fem.Form) -> float:
+        return comm.allreduce(dolfinx.fem.assemble_scalar(integral), op=MPI.SUM) / volume
+
+    def log_step(t: float, newton_iterations: int) -> None:
+        log.append(
+            {
+                "t_ms": t,
+                "newton_iterations": newton_iterations,
+                "lmbda_mean": mesh_mean(lmbda_integral),
+                "Ta_mean_kPa": mesh_mean(tension_integral),
+            },
+        )
+
+    if args.restart:
+        # A refused or failed restore leaves the folder as it was: nothing below it,
+        # neither the end checkpoint nor run.json, is reached.
+        t_restart = checkpointer.restore()
+        log.resume(t_restart)
+        results.resume([*EP_RESULTS, *MECHANICS_RESULTS])
+        logger.info(f"Restarted from the checkpoint at t = {t_restart} ms")
+    else:
+        log.start()
+        save_ep(controller.t)
+        results.write(controller.t, mechanics_fields)
+        log_step(controller.t, 0)
 
     # ---------------------------------------------------------
     # 6. Define Callbacks & Run Simulation
     # ---------------------------------------------------------
-    inds = []  # To track mechanics steps for the collector finalize
-
-    # The controller counts steps from 1; DataCollector indexes its arrays from 0.
+    # The controller counts steps from 1. A step that fails is rolled back, but the EP
+    # saves of its micro-steps stay in results.bp: a restart from the step's start
+    # recomputes them bit for bit, so it does not save them again.
     def on_ep_step(current_t, ep_step_idx):
-        # Update EP functions for saving
-        for out_ep_var in collector.out_ep_names:
-            state_idx = ep_module.state_index(out_ep_var)
-            collector.out_ep_funcs[out_ep_var].x.array[:] = ode.values[state_idx]
-
-        i = ep_step_idx - 1
-        if i % config["sim"]["save_frequency_ep"] == 0:
-            collector.write_ep(current_t)
-            collector.write_node_data_ep(i)
+        if ep_step_idx % save_ep_every == 0:
+            save_ep(current_t)
 
     def on_mech_step(current_t, mech_step_idx, newton_iters):
         nonlocal newton_its
-        i = mech_step_idx - 1
-        inds.append(i * N_steps)
-        collector.timers.no_of_newton_iterations.append(newton_iters)
         newton_its += newton_iters
         recorder.step(current_t, newton_iters)
+        log_step(current_t, newton_iters)
+        if mech_step_idx % save_every == 0:
+            results.write(current_t, mechanics_fields)
 
-        integral = dolfinx.fem.assemble_scalar(lmbda_integral)
-        lmbda_mean.append((current_t, comm.allreduce(integral, op=MPI.SUM) / volume))
-        for average in averagers:
-            average()
-
-        if i % config["sim"]["save_frequency_mech"] == 0:
-            collector.write_node_data_mech(i)
-            collector.write_disp(current_t)
-
-    # Calculate total mechanics steps needed
-    total_duration = config["sim"]["sim_dur"]
-    total_mech_steps = round(total_duration / dt_mech)
+    # The run is round(t_end / dt_mech) steps from t = 0, so a restart at or past it
+    # takes none.
+    remaining_steps = round(args.t_end / dt_mech) - controller.mech_step_idx
+    if remaining_steps <= 0:
+        logger.info(f"The checkpoint, at t = {controller.t} ms, is at or past t_end: no step")
 
     # --- THE MAIN LOOP ---
     start_loop = time.perf_counter()
@@ -601,21 +761,12 @@ def main(argv: list[str] | None = None):
     failure: str | None = None
     t_fail: float | None = None
     try:
-        for _ in range(total_mech_steps):
-            collector.timers.start_single_loop()
-
+        for _ in range(remaining_steps):
             # The controller does all the interpolation, sub-stepping, and solving!
             controller.step(ep_callback=on_ep_step, mech_callback=on_mech_step)
-
-            collector.timers.stop_single_loop()
+            if controller.mech_step_idx % checkpoint_every == 0:
+                checkpointer.write()
         timings["loop_s"] = time.perf_counter() - start_loop
-
-        collector.finalize(inds)
-        np.savetxt(
-            collector.outdir / "lmbda_prev_mean.txt",
-            np.array(lmbda_mean),
-            header="t (ms), mesh mean of backend.lmbda_prev",
-        )
     except BaseException as e:
         # BaseException: an interrupt is recorded too. A step that raised was rolled
         # back, leaving the controller's t at its start; t_failed is its end.
@@ -629,18 +780,31 @@ def main(argv: list[str] | None = None):
         timings["newton_its"] = newton_its
         logger.info(f"Timings: {timings}")
 
+        def write_checkpoint() -> None:
+            # At the end of every run, finished or failed (a failed step was rolled back
+            # to its start). At a time already checkpointed, only restart.json is new.
+            if backend.step_pending:
+                logger.warning(f"No checkpoint at t = {controller.t} ms: a step is pending")
+                return
+            checkpointer.write()
+
         def write_timings() -> None:
             if comm.rank == 0:
-                (collector.outdir / "timings.json").write_text(json.dumps(timings, indent=4))
+                (outdir / "timings.json").write_text(json.dumps(timings, indent=4))
 
-        # timings.json first, guarded, and run.json (the mark of a finished run, for
-        # scheme_comparison/run.py) last.
+        # The checkpoint and timings.json first, each guarded, and run.json (the mark of
+        # a finished run, for scheme_comparison/run.py) last.
         finish_after_artifacts(
             recorder,
-            [("timings.json", write_timings)],
+            [("checkpoint", write_checkpoint), ("timings.json", write_timings)],
             failure=failure,
             t_fail_ms=t_fail,
             timings=timings,
+            extra={
+                "provenance": provenance(HERE),
+                "history": checkpointer.history,
+                "restart": args.restart,
+            },
         )
 
 

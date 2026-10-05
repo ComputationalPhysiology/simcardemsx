@@ -301,6 +301,7 @@ def finish_after_artifacts(
     failure: str | None,
     t_fail_ms: float | None,
     timings: Mapping[str, float],
+    extra: Mapping[str, Any] | None = None,
 ) -> None:
     """Write the example's own ``artifacts``, then ``recorder.finish`` (``run.json``) last.
 
@@ -309,7 +310,8 @@ def finish_after_artifacts(
     and ``run.json``, are still written. If the loop raised (``failure`` is not None), its
     exception is the one that leaves the ``finally``; otherwise the first artifact's
     error is raised once ``run.json`` is written. ``finish`` itself is not guarded: if it
-    fails, there is no ``run.json`` and the run is not done.
+    fails, there is no ``run.json`` and the run is not done. ``extra`` is passed on to
+    :meth:`Recorder.finish`.
     """
     errors: list[Exception] = []
     for name, write in artifacts:
@@ -318,6 +320,6 @@ def finish_after_artifacts(
         except Exception as exc:
             logger.exception(f"Writing {name} failed")
             errors.append(exc)
-    recorder.finish(failure=failure, t_fail_ms=t_fail_ms, timings=timings)
+    recorder.finish(failure=failure, t_fail_ms=t_fail_ms, timings=timings, extra=extra)
     if errors and failure is None:
         raise errors[0]
