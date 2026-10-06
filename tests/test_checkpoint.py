@@ -22,9 +22,11 @@ constructed values, which no backend output reproduces (its λ output is 0 then)
 read; no ``restart.json`` raises ``FileNotFoundError``; writing with a step pending
 raises ``RuntimeError``.
 
-A checkpoint killed after ``restart.bp`` but before ``restart.json`` (Review Focus) is
-not used: the next restore starts from the previous one, and the later checkpoint at
-the killed time is skipped in ``restart.bp`` and read back correctly.
+A checkpoint killed after ``restart.bp`` but before ``restart.json`` (Review Focus), or
+partway through ``restart.bp``, is not used: the next restore starts from the previous
+one, and the restarted run writes nothing at the killed time, so ``restart.json`` keeps
+naming the previous checkpoint until the next time after it, which is written as usual
+and read back correctly.
 """
 
 import json
@@ -398,13 +400,67 @@ class _Killed(Exception):
     """The run is killed while it writes ``restart.json``."""
 
 
-def test_a_checkpoint_killed_before_restart_json_is_not_used(tmp_path, monkeypatch, build):
-    a = _steps(build(), N)
+def _meta_t(folder: Path) -> float:
+    return json.loads((folder / RESTART_META).read_text())["simcardemsx"]["t_ms"]
 
+
+def _killed_at_3(folder: Path, build: _Build) -> Checkpointer:
+    """A run checkpointed at t = 2 and stepped to t = 3, whose next ``write()`` the
+    caller kills."""
     b = _steps(build(), 2)
-    killed = Checkpointer(b, tmp_path, physics=P)
+    killed = Checkpointer(b, folder, physics=P, extra=[_Recording()])
     killed.write()
     _steps(b, 1)
+    return killed
+
+
+def _continue_past_the_killed_checkpoint(folder: Path, build: _Build, caplog) -> None:
+    """Restore the checkpoint at t = 2 from ``folder``, whose ``restart.bp`` also holds
+    Functions at t = 3 from a process killed before it wrote ``restart.json``.
+
+    t = 3 is foreign: the restarted run's write there writes nothing (no Functions, no
+    sidecar, no ``restart.json``), so the restart point stays t = 2. Its write at t = 4
+    is a normal one, and a run restored from it continues bit for bit.
+    """
+    a = _steps(build(), N)
+    stored = {name: _stored_times(folder, name) for name in _names(folder)}
+
+    c = build()
+    recording = _Recording()
+    checkpointer = Checkpointer(c, folder, physics=P, extra=[recording])
+    assert checkpointer.restore() == 2.0
+    _steps(c, 1)
+    with caplog.at_level("WARNING", logger=checkpoint.__name__):
+        checkpointer.write()
+    assert _meta_t(folder) == 2.0
+    assert {name: _stored_times(folder, name) for name in stored} == stored
+    assert [call[0] for call in recording.calls] == ["load_restart", "read_sidecar"]
+    assert "No checkpoint at t = 3.0 ms" in caplog.text
+
+    _steps(c, 1)
+    at_4 = _coupled_state(c)
+    checkpointer.write()
+    assert _meta_t(folder) == 4.0
+    for name, times in stored.items():
+        assert _stored_times(folder, name) == [*times, 4.0], name
+    assert recording.calls[-1] == ("write_sidecar", folder, 4.0, True)
+    _steps(c, N - 4)
+    _assert_same_state(_coupled_state(a), _coupled_state(c))
+
+    d = build()
+    assert Checkpointer(d, folder, physics=P, extra=[_Recording()]).restore() == 4.0
+    _assert_same_state(_coupled_state(d), at_4)
+    _steps(d, N - 4)
+    _assert_same_state(_coupled_state(a), _coupled_state(d))
+
+
+def test_a_checkpoint_killed_before_restart_json_is_not_used(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    build,
+):
+    killed = _killed_at_3(tmp_path, build)
 
     def kill(*args, **kwargs):
         raise _Killed
@@ -414,28 +470,42 @@ def test_a_checkpoint_killed_before_restart_json_is_not_used(tmp_path, monkeypat
         killed.write()
     monkeypatch.undo()
     # restart.bp holds t = 3 for every function, but restart.json still names t = 2.
-    assert json.loads((tmp_path / RESTART_META).read_text())["simcardemsx"]["t_ms"] == 2.0
+    assert _meta_t(tmp_path) == 2.0
     for name in _names(tmp_path):
         assert _stored_times(tmp_path, name) == [2.0, 3.0], name
 
-    c = build()
-    checkpointer = Checkpointer(c, tmp_path, physics=P)
-    assert checkpointer.restore() == 2.0
-    _steps(c, 1)
-    at_3 = _coupled_state(c)
-    checkpointer.write()
-    _steps(c, N - 3)
-    _assert_same_state(_coupled_state(a), _coupled_state(c))
-    # The checkpoint at t = 3 was already complete in restart.bp: only restart.json moved.
-    assert json.loads((tmp_path / RESTART_META).read_text())["simcardemsx"]["t_ms"] == 3.0
-    for name in _names(tmp_path):
-        assert _stored_times(tmp_path, name) == [2.0, 3.0], name
+    _continue_past_the_killed_checkpoint(tmp_path, build, caplog)
 
-    d = build()
-    assert Checkpointer(d, tmp_path, physics=P).restore() == 3.0
-    _assert_same_state(_coupled_state(d), at_3)
-    _steps(d, N - 3)
-    _assert_same_state(_coupled_state(a), _coupled_state(d))
+
+def test_a_checkpoint_killed_partway_through_restart_bp_is_not_used(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    build,
+):
+    """Killed after writing only some of the Functions at t = 3: the restarted run
+    appends no duplicates of them there, and never names t = 3."""
+    killed = _killed_at_3(tmp_path, build)
+    names = _names(tmp_path)
+    write = io4dolfinx.write_function_on_input_mesh
+    written: list[str] = []
+
+    def write_some(*args, **kwargs):
+        if len(written) == len(names) // 2:
+            raise _Killed
+        written.append(kwargs["name"])
+        write(*args, **kwargs)
+
+    monkeypatch.setattr(io4dolfinx, "write_function_on_input_mesh", write_some)
+    with pytest.raises(_Killed):
+        killed.write()
+    monkeypatch.undo()
+    assert _meta_t(tmp_path) == 2.0
+    assert 0 < len(written) < len(names)
+    for name in names:
+        assert _stored_times(tmp_path, name) == ([2.0, 3.0] if name in written else [2.0]), name
+
+    _continue_past_the_killed_checkpoint(tmp_path, build, caplog)
 
 
 def test_history_records_every_process(tmp_path, build):

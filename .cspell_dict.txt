@@ -54,6 +54,7 @@ CaMKt
 cansr
 cao
 capfd
+caplog
 cardioactive
 cardiomyocites
 cardiomyocytes

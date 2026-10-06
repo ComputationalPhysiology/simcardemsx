@@ -8,10 +8,12 @@ writes on rank 0. Imported as ``from scheme_comparison.record import Recorder`` 
 ``numerical_experiments/`` on ``sys.path``.
 """
 
+import contextlib
 import csv
 import datetime
 import json
 import logging
+import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -181,6 +183,12 @@ class Recorder:
         Keeps this file and the one written at the previous call (which the current
         ``restart.json`` names until the new one replaces it); deletes the others.
         Rows and snapshots are stored as float arrays, so they come back bit for bit.
+
+        The file is written atomically: into a temporary file in ``folder`` (named
+        ``.restart_recorder_tmp_<pid>.npz``, which the ``restart_recorder_*.npz`` glob
+        does not match), which ``os.replace`` then moves onto it. A checkpoint at a time
+        already checkpointed rewrites the file that ``restart.json`` names, and a kill
+        meanwhile must not leave it truncated.
         """
         if self.comm.rank != 0:
             return
@@ -198,7 +206,14 @@ class Recorder:
         for name, values in self.snaps.items():
             arrays[f"snap_{name}"] = np.array(values, dtype=float) if values else np.empty((0, 0))
         target = self._sidecar(folder, t_ms)
-        np.savez(target, **arrays)
+        tmp = folder / f".restart_recorder_tmp_{os.getpid()}.npz"
+        try:
+            np.savez(tmp, **arrays)
+            os.replace(tmp, target)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
         keep = {target.name}
         if self._sidecar_t is not None:
             keep.add(self._sidecar(folder, self._sidecar_t).name)

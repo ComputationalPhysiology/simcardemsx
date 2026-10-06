@@ -26,6 +26,7 @@ import contextlib
 import copy
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
     import pulse.cycle
 
     from .controller import SimulationController
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -454,6 +457,14 @@ class Checkpointer:
     would append a duplicate, and read the first one back), and only rewrites
     ``restart.json``. A fresh checkpointer knows of none; :meth:`restore` reads them.
     So a fresh one assumes that ``folder`` holds no ``restart.bp`` of another run.
+
+    Times that :data:`RESTART` holds, for any function, later than the checkpoint
+    :meth:`restore` restored are **foreign**: a process that was killed before it wrote
+    ``restart.json`` wrote them, wholly or in part. :meth:`write` skips a checkpoint at
+    a foreign time altogether, and logs a warning: pairing the killed process's
+    Functions (io4dolfinx reads back the first of duplicates) with this run's metadata
+    would mix two runs' states, which differ in a run that is not bit-reproducible.
+    ``restart.json`` then keeps naming the checkpoint before it.
     """
 
     def __init__(
@@ -473,6 +484,7 @@ class Checkpointer:
         self.provenance = provenance(_PACKAGE_DIR, self.comm)
         self.history: list[dict[str, Any]] = [self.provenance]
         self._complete: list[float] = []
+        self._foreign: list[float] = []
 
     def _check_components(self) -> None:
         namespaces: set[str] = set()
@@ -530,6 +542,9 @@ class Checkpointer:
         (:func:`write_json`), so that it names this checkpoint only once all of it is
         on disk.
 
+        At a foreign time (see the class's notes) it writes nothing, neither Functions
+        nor sidecars nor ``restart.json``, and logs a warning.
+
         Raises
         ------
         RuntimeError
@@ -543,6 +558,13 @@ class Checkpointer:
                 f"Cannot checkpoint at t = {t} ms: the backend has a step pending "
                 "(begin_step without post_solve). Checkpoint between steps.",
             )
+        if self._holds(self._foreign, t):
+            logger.warning(
+                f"No checkpoint at t = {t} ms: {self.folder / RESTART} already holds "
+                "Functions at that time, written by a process killed before it wrote "
+                f"{RESTART_META}. {RESTART_META} keeps naming the checkpoint before it.",
+            )
+            return
         functions = self._functions()
         if not self._holds(self._complete, t):
             for _, pairs in functions:
@@ -586,7 +608,8 @@ class Checkpointer:
         moved back to EP afterwards (``plan.backward()`` is not called): the rows of
         EP's arrays that come from the backend are the transfer plan's own restart
         Functions. :attr:`history` becomes the stored history followed by this
-        process's provenance.
+        process's provenance, and every time :data:`RESTART` holds, for any function,
+        later than ``t`` is recorded as foreign, so that :meth:`write` skips it.
 
         Each Function is read at the stored time closest to ``t``: io4dolfinx reads at
         an exact time, and returns the first of duplicates.
@@ -628,6 +651,7 @@ class Checkpointer:
         t = float(own["t_ms"])
         stored = {name: self._stored_times(name) for pairs in names.values() for name in pairs}
         complete = self._complete_times(stored)
+        foreign = self._later_times(stored, t)
         missing = [name for name, times in stored.items() if not self._holds(times, t)]
         if missing:
             which = "any function" if len(missing) == len(stored) else str(missing)
@@ -661,6 +685,7 @@ class Checkpointer:
             raise
 
         self._complete = complete
+        self._foreign = foreign
         self.history = [*own["history"], self.provenance]
         return t
 
@@ -692,3 +717,10 @@ class Checkpointer:
             for t in np.unique(first)
             if all(self._holds(times, float(t)) for times in rest)
         ]
+
+    def _later_times(self, stored: Mapping[str, np.ndarray], t: float) -> list[float]:
+        """The times held by any of ``stored``'s names later than ``t``, sorted."""
+        if not stored:
+            return []
+        times = np.unique(np.concatenate([np.asarray(s, dtype=float) for s in stored.values()]))
+        return [float(s) for s in times if s > t and not self._holds([t], float(s))]

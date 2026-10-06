@@ -522,6 +522,29 @@ def test_recorder_sidecars_keep_the_newest_two(record, split_modules, tmp_path):
         assert {p.name for p in tmp_path.glob("restart_recorder_*.npz")} == set(names[-2:])
 
 
+def test_recorder_sidecar_is_replaced_whole(record, split_modules, tmp_path, monkeypatch):
+    """A sidecar rewritten at its own time (an end checkpoint on a periodic one's time)
+    goes through a temporary file and ``os.replace``: a successful write leaves no
+    temporary file, and a failed one leaves the old file whole and no temporary file."""
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    _advance(backend, u, 2, 0.5, rec)
+    rec.write_sidecar(tmp_path, 1.0)
+    rec.write_sidecar(tmp_path, 1.0)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["restart_recorder_1.0.npz"]
+    before = (tmp_path / "restart_recorder_1.0.npz").read_bytes()
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(record.os, "replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        rec.write_sidecar(tmp_path, 1.0)
+    monkeypatch.undo()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["restart_recorder_1.0.npz"]
+    assert (tmp_path / "restart_recorder_1.0.npz").read_bytes() == before
+
+
 def test_recorder_read_sidecar_refuses_another_time_and_changes_nothing(
     record,
     split_modules,
