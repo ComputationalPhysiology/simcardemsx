@@ -121,26 +121,18 @@ def test_mechanics_module_emits_ufl(split_modules):
     assert all(isinstance(e, ufl.core.expr.Expr) for e in out)
 
 
-#: Two hash seeds under which gotranx (1.8.0) generates the Ca_i split's EP states in
-#: different orders.
+#: Two hash seeds under which gotranx before 2.2.0 generated the Ca_i split's EP states
+#: in different orders.
 HASH_SEEDS = ("1", "3")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="gotranx's sort_assignments adds each assignment's dependencies to its "
-    "TopologicalSorter in set order, so the generated state order depends on "
-    "PYTHONHASHSEED. Restarts no longer depend on it (a checkpoint is read by name), "
-    "but the fix belongs in gotranx: sort the dependencies. Remove this mark then.",
-)
 def test_generated_state_order_does_not_depend_on_the_hash_seed(tmp_path):
     """The generated modules' state order is the same in every process, whatever its
     ``PYTHONHASHSEED``.
 
-    The two orders give the same numbers (only the order of the states and of the
-    statements differs), and a restart maps a checkpoint's states by name, so nothing in
-    simcardemsx depends on this any more. It tracks gotranx's nondeterminism.
+    Before 2.2.0, gotranx's sort_assignments added each assignment's dependencies to its
+    TopologicalSorter in set order, so the order depended on the hash seed; 2.2.0 sorts
+    them. A restart maps a checkpoint's states by name, so it does not rely on this.
     """
     odefile = (
         Path(__file__).parent.parent
@@ -163,7 +155,6 @@ def test_generated_state_order_does_not_depend_on_the_hash_seed(tmp_path):
             env={**os.environ, "PYTHONHASHSEED": seed},
             timeout=300,
         )
-        # Not an assertion: a crash in the subprocess fails, not satisfies, the xfail.
         if result.returncode != 0:
             pytest.fail(f"PYTHONHASHSEED={seed}: {result.stderr[-3000:]}")
         orders.append(json.loads(result.stdout.strip().splitlines()[-1]))

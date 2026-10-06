@@ -148,8 +148,9 @@ class EPState:
         order; then restore the solver.
 
         The saved order is the writing process's, which may differ from this one's
-        (gotranx may order a generated module's states differently in another
-        process). Nothing here uses it: ``functions`` are this solver's own
+        (gotranx before 2.2.0 ordered a generated module's states by the process's hash
+        seed, and another ``.ode`` file or gotranx version may order them differently).
+        Nothing here uses it: ``functions`` are this solver's own
         ``state_<name>`` Functions, in its current order, each filled by name, and beat
         takes them in that order.
         """

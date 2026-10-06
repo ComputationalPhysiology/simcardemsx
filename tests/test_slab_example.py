@@ -55,9 +55,9 @@ POST_FILES = (
 )
 POST_DATA_FILES = ("fields.bp", "traces.csv")
 RESULT_NAMES = ("v", "cai", "u", "lmbda", "tension_kPa", "stiffness_kPa")
-#: Two hash seeds under which gotranx (1.8.0) generates the Ca_i split's EP states in
-#: different orders: R4 checkpoints under one and restarts under the other, which only
-#: works because a checkpoint is read by name. R4 checks that the orders do differ.
+#: Two hash seeds under which gotranx before 2.2.0 generated the Ca_i split's EP states
+#: in different orders. R4 checkpoints under one and restarts under the other, as a
+#: user's next process may.
 SEED_FIRST, SEED_RESTART = "1", "3"
 
 
@@ -196,8 +196,10 @@ def test_slab_restart_matches_the_uninterrupted_run(tmp_path):
     ``results.bp`` (every name, every time, bit for bit, and no time twice), the same
     ``log.csv`` and ``steps.csv`` byte for byte, and the same ``post/traces.csv``.
 
-    The restart runs under another hash seed than the run it continues, one under which
-    gotranx generates the EP states in another order, as a user's next process may."""
+    The restart runs under another hash seed than the run it continues, as a user's next
+    process may. Before gotranx 2.2.0 that also gave another EP state order; restoring
+    states from another order by name is tested in test_checkpoint.py and
+    test_checkpoint_backends.py."""
     straight, restarted = tmp_path / "a", tmp_path / "b"
     result = _run_slab("--t-end", "4", output_dir=straight, seed=SEED_RESTART)
     assert result.returncode == 0, result.stderr[-3000:]
@@ -208,10 +210,6 @@ def test_slab_restart_matches_the_uninterrupted_run(tmp_path):
     assert result.returncode == 0, result.stderr[-3000:]
     restored = _ep_state_names(restarted)
     assert sorted(written) == sorted(restored)
-    assert written != restored, (
-        f"PYTHONHASHSEED {SEED_FIRST} and {SEED_RESTART} gave the same EP state order: pick "
-        "two that differ (or, if gotranx's order no longer depends on the seed, drop this)"
-    )
 
     for name in RESULT_NAMES:
         assert _raw_times(restarted, name) == _raw_times(straight, name), name

@@ -32,7 +32,10 @@ dependencies = [
     "io4dolfinx",
     # scipy is used by simcardemsx.zero_d for the monolithic reference solve
     "scipy",
-    "gotranx>=1.8",
+    # gotranx 2.2.0 orders the generated states independently of PYTHONHASHSEED, and its
+    # GRL step linearizes every state, also through intermediates (1.8 advanced v, cai
+    # and the concentrations by forward Euler).
+    "gotranx>=2.2.0",
     "toml",
     "pydantic",
     "pydantic_pint",
