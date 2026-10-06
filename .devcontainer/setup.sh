@@ -9,7 +9,7 @@ fi
 python3 -m pip install pkgconfig
 HDF5_MPI=ON HDF5_PKGCONFIG_NAME="hdf5" python3 -m pip install h5py --no-build-isolation --no-binary=h5py
 python3 -m pip install scifem --no-build-isolation --no-binary=scifem
-python3 -m pip install "fenicsx-pulse>=0.10.0" "fenicsx-beat>=0.6.4" "crossbridge>=0.3.3" "gotranx>=1.8"
+python3 -m pip install "fenicsx-pulse>=0.11.1" "fenicsx-beat>=0.7.2" "crossbridge>=0.3.4" "gotranx>=1.8"
 python3 -m pip install "circulation>=0.4.0"
 python3 -m pip install -e .[all]
 pre-commit install
