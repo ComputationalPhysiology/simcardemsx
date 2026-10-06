@@ -9,7 +9,9 @@ and not imported from it, with the file and lines it comes from:
 - ``src/physcardems/parameters.py``: the Land parameters (``LAND_BASE``,
   ``LAND_OVERRIDES``, ``LAND_SCALES``) and ``EP_SCALES``;
 - ``configs/elife/em_tref7.toml``: the ``[circulation.lv]`` and ``[circulation.rv]``
-  tables, converted to SI with the run script's constants.
+  tables, converted to SI with the run script's constants;
+- ``cases/rodero_05/case.toml`` and ``src/physcardems/ecg.py``: the electrodes of the
+  pseudo-ECG, which only ``post.py`` reads (:func:`electrodes`).
 
 The geometry is shrunk by :data:`REFERENCE_SCALE` about its centroid before the
 ``pulse.HeartGeometry`` is built, physcardems' stand-in for unloading the imaged heart.
@@ -29,6 +31,7 @@ Serial only, as physcardems' run is: the centroid is the mean of this process's 
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,6 +116,16 @@ MECHANICS_ONLY_KEYS = ("Tref", "Beta0", "Tot_A")
 #: Scales of other cell-model parameters: ``parameters.py`` ``EP_SCALES``, and
 #: ``em_tref7.toml`` ``[cell] ep_scales`` (the eLife two-fold GCaL).
 EP_SCALES = {"PCa_b": 2.0}
+
+#: The electrode positions of the pseudo-ECG, one row per electrode, in the case
+#: directory, and the factor taking them to the mesh's metres: the file is in cm
+#: (physcardems ``cases/rodero_05/case.toml``, lines 16-17, ``[ecg]``).
+ELECTRODES = "rodero_05_fine_nodefield_electrode_xyz.csv"
+ELECTRODE_UNIT_SCALE = 1e-2
+
+#: The electrode of each row of :data:`ELECTRODES`, in order (physcardems
+#: ``src/physcardems/ecg.py``, line 16, ``ELECTRODE_ORDER``).
+ELECTRODE_ORDER = ("LA", "RA", "LL", "RL", "V1", "V2", "V3", "V4", "V5", "V6")
 
 # The run script's unit conversions for the cycle (lines 83-85).
 ML_PER_MS = 1e-6 / 1e-3  # m^3/s per mL/ms
@@ -261,6 +274,63 @@ def required_files(case_dir: Path) -> list[Path]:
     ]
 
 
+def check_required_files(case_dir: Path) -> None:
+    """Raise ``FileNotFoundError``, naming every missing one, unless every file of
+    :func:`required_files` exists. Raises ``ValueError`` as :func:`required_files` does."""
+    case_dir = Path(case_dir)
+    missing = [path for path in required_files(case_dir) if not path.exists()]
+    if missing:
+        listed = "\n".join(f"  {path}" for path in missing)
+        raise FileNotFoundError(
+            f"The rodero_05 case in {case_dir} is missing {len(missing)} file(s):\n{listed}",
+        )
+
+
+def files_sha256(case_dir: Path) -> str:
+    """The sha256 of every file :func:`load_case` reads from ``case_dir``, by its path
+    relative to ``case_dir`` and its contents. A ``.bp`` path is a directory: each file
+    in it counts. The files are about 10 MB, so hashing their contents is cheap, and,
+    unlike their sizes and modification times, does not change when the case is copied.
+
+    Raises ``FileNotFoundError`` as :func:`check_required_files` does.
+    """
+    case_dir = Path(case_dir)
+    check_required_files(case_dir)
+    digest = hashlib.sha256()
+    for path in required_files(case_dir):
+        files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else [path]
+        for file in files:
+            digest.update(str(file.relative_to(case_dir)).encode() + b"\0")
+            digest.update(hashlib.sha256(file.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def electrodes(case_dir: Path) -> dict[str, np.ndarray]:
+    """The pseudo-ECG's electrodes, by name (:data:`ELECTRODE_ORDER`), in metres: the
+    rows of :data:`ELECTRODES` times :data:`ELECTRODE_UNIT_SCALE` (physcardems'
+    ``ecg.load_electrodes``).
+
+    They are in the imaged heart's frame, as physcardems uses them: the
+    :data:`REFERENCE_SCALE` shrink of the mesh does not move them.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the case has no :data:`ELECTRODES`, naming the file.
+    ValueError
+        If it does not hold one 3-vector per electrode.
+    """
+    path = Path(case_dir) / ELECTRODES
+    if not path.is_file():
+        raise FileNotFoundError(f"The rodero_05 case has no electrode file: {path} does not exist")
+    xyz = np.loadtxt(path, delimiter=",", ndmin=2) * ELECTRODE_UNIT_SCALE
+    if xyz.shape != (len(ELECTRODE_ORDER), 3):
+        raise ValueError(
+            f"{path} holds {xyz.shape} values, not one 3-vector per electrode {ELECTRODE_ORDER}",
+        )
+    return dict(zip(ELECTRODE_ORDER, xyz))
+
+
 def _cell_fields(
     geo: cardiac_geometries.geometry.Geometry,
 ) -> tuple[dolfinx.fem.Function, dolfinx.fem.Function]:
@@ -342,12 +412,7 @@ def load_case(
         (see :func:`_initial_states`).
     """
     case_dir = Path(case_dir)
-    missing = [path for path in required_files(case_dir) if not path.exists()]
-    if missing:
-        listed = "\n".join(f"  {path}" for path in missing)
-        raise FileNotFoundError(
-            f"The rodero_05 case in {case_dir} is missing {len(missing)} file(s):\n{listed}",
-        )
+    check_required_files(case_dir)
     geometry_dir = case_dir / GEOMETRY_DIR
     state_dir = _steady_state_dir(case_dir)
 

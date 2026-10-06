@@ -17,15 +17,25 @@ readme = "README.md"
 requires-python = ">=3.10.0"
 dependencies = [
     "fenics-dolfinx",
-    "fenicsx-pulse>=0.10.0",
-    "fenicsx-beat>=0.6.4",
+    # pulse 0.11.1 and beat 0.7.2 are the first releases with the restart API that
+    # simcardemsx.checkpoint calls (restart_functions/restart_metadata, and pulse's
+    # CycleController.state_dict); SimulationController.step() snapshots through it.
+    "fenicsx-pulse>=0.11.1",
+    "fenicsx-beat>=0.7.2",
     # crossbridge backs the Ca_i-split activation backend and is imported at
     # package import time via simcardemsx.backends. 0.3.3 is the first release whose
-    # RDQ20MF can take a step longer than its 25 us RU step (gate X2).
-    "crossbridge>=0.3.3",
+    # RDQ20MF can take a step longer than its 25 us RU step (gate X2), and 0.3.4 the
+    # first with get_state/set_state, which the backend's checkpoint saves.
+    "crossbridge>=0.3.4",
+    # io4dolfinx writes and reads restart.bp and results.bp (simcardemsx.checkpoint,
+    # simcardemsx.results), and is imported at package import time.
+    "io4dolfinx",
     # scipy is used by simcardemsx.zero_d for the monolithic reference solve
     "scipy",
-    "gotranx>=1.8",
+    # gotranx 2.2.0 orders the generated states independently of PYTHONHASHSEED, and its
+    # GRL step linearizes every state, also through intermediates (1.8 advanced v, cai
+    # and the concentrations by forward Euler).
+    "gotranx>=2.2.0",
     "toml",
     "pydantic",
     "pydantic_pint",

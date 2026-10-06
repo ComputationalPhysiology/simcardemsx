@@ -1,5 +1,6 @@
 import json
 import typing
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -171,12 +172,22 @@ class Timers:
 
 @dataclass
 class DataCollector:
+    """Deprecated (a ``DeprecationWarning`` at construction): the demos write
+    ``results.bp`` and ``log.csv`` (:mod:`simcardemsx.results`) during the run, and
+    their ``post.py`` makes these plots from them."""
+
     problem: pulse.StaticProblem
     ep_ode_space: dolfinx.fem.FunctionSpace
     config: dict
     mech_variables: dict[str, dolfinx.fem.Function]
 
     def __post_init__(self):
+        warnings.warn(
+            "DataCollector is deprecated: the demos write results.bp and log.csv "
+            "(simcardemsx.results) during the run, and their post.py replots from them.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         self.outdir.mkdir(exist_ok=True, parents=True)
 
         # The time at the end of each EP step: self.t[i] is when EP step i (from 0) has

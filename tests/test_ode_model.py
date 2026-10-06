@@ -1,3 +1,7 @@
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from mpi4py import MPI
@@ -115,3 +119,43 @@ def test_mechanics_module_emits_ufl(split_modules):
     s = [c(v) for v in mech.init_state_values()]
     out = mech.generalized_rush_larsen(s, c(0.0), c(1.0), p, [c(1e-4)])
     assert all(isinstance(e, ufl.core.expr.Expr) for e in out)
+
+
+#: Two hash seeds under which gotranx before 2.2.0 generated the Ca_i split's EP states
+#: in different orders.
+HASH_SEEDS = ("1", "3")
+
+
+def test_generated_state_order_does_not_depend_on_the_hash_seed(tmp_path):
+    """The generated modules' state order is the same in every process, whatever its
+    ``PYTHONHASHSEED``.
+
+    Before 2.2.0, gotranx's sort_assignments added each assignment's dependencies to its
+    TopologicalSorter in set order, so the order depended on the hash seed; 2.2.0 sorts
+    them. A restart maps a checkpoint's states by name, so it does not rely on this.
+    """
+    odefile = (
+        Path(__file__).parent.parent
+        / "numerical_experiments"
+        / "odefiles"
+        / "ToRORd_dynCl_endo_caisplit.ode"
+    )
+    script = (
+        "import json, sys; from pathlib import Path; "
+        "from simcardemsx.ode_model import load_ode_modules; "
+        "m = load_ode_modules(Path(sys.argv[1]), Path(sys.argv[2])); "
+        "print(json.dumps([m.ep.state, m.mechanics.state]))"
+    )
+    orders = []
+    for seed in HASH_SEEDS:
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(odefile), str(tmp_path / seed)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            timeout=300,
+        )
+        if result.returncode != 0:
+            pytest.fail(f"PYTHONHASHSEED={seed}: {result.stderr[-3000:]}")
+        orders.append(json.loads(result.stdout.strip().splitlines()[-1]))
+    assert orders[0] == orders[1]

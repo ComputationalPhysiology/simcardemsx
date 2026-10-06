@@ -134,3 +134,28 @@ def test_load_case_matches_physcardems_geometry(case_module):
     assert case.land["kws"] == pytest.approx(0.012 * 3.86)
     assert case.land["cat50_ref"] == 0.534
     assert case.ep_scales == {"PCa_b": 2.0}
+
+
+def test_electrodes_report_a_missing_file(case_module, tmp_path):
+    """Only ``post.py`` reads the electrodes, so ``required_files`` does not list them;
+    a case without them is refused when they are read, naming the file."""
+    assert all(path.name != case_module.ELECTRODES for path in case_module.required_files(tmp_path))
+    with pytest.raises(FileNotFoundError) as raised:
+        case_module.electrodes(tmp_path)
+    assert str(tmp_path / case_module.ELECTRODES) in str(raised.value)
+
+
+@pytest.mark.skipif(
+    not PHYSCARDEMS_CASE.exists(),
+    reason="needs physcardems' rodero_05 case in third-party/physcardems",
+)
+def test_electrodes_are_read_in_metres(case_module):
+    """physcardems' electrode file is in cm, one row per electrode in the order of its
+    ``ecg.py``: LA, RA, LL, RL, V1..V6. ``electrodes`` gives them in metres, by name."""
+    electrodes = case_module.electrodes(PHYSCARDEMS_CASE)
+    assert list(electrodes) == ["LA", "RA", "LL", "RL", "V1", "V2", "V3", "V4", "V5", "V6"]
+    for position in electrodes.values():
+        assert position.shape == (3,)
+
+    rows = np.loadtxt(PHYSCARDEMS_CASE / case_module.ELECTRODES, delimiter=",")
+    np.testing.assert_array_equal(electrodes["RA"], 0.01 * rows[1])

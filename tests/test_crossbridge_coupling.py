@@ -32,8 +32,6 @@ Gate X6, D1 for crossbridge's Land2017. Measured: max |flagged - reference| in m
 0.0 (bitwise), max |flagged - alpha_f| 7.2e-3; mean λ falls to 0.899.
 """
 
-from types import ModuleType
-
 from mpi4py import MPI
 
 import crossbridge
@@ -42,6 +40,7 @@ import numpy as np
 import pytest
 from conftest import (
     _caisplit_inputs,
+    _crossbridge_factory,
     _lmbda_error,
     _numpy_mech,
     _observed_orders,
@@ -52,43 +51,12 @@ from conftest import (
     match_land2017_initial_states,
 )
 
-from simcardemsx.backends import CrossbridgeSegregated
 from simcardemsx.controller import SimulationController
 
 T_END = 60.0
 DTS = (1.0, 0.5, 0.25)
 #: crossbridge's total troponin concentration [mM], the backend's default.
 TRPNMAX = 0.07
-
-#: The reference sarcomere length [um] of the models that define no ``SL0``.
-SL_REF = {"RDQ18": 2.0}
-
-
-def _crossbridge_factory(model: str, mech: ModuleType, *, stabilized: bool = True):
-    """A ``backend_factory`` for ``conftest._mechanics``/``_dynamic_mechanics``.
-
-    It builds ``CrossbridgeSegregated`` of ``model`` on quadrature at the degree it is
-    handed, the mechanics form's. Land2017 gets the ``.ode``'s parameters and initial
-    states (``land2017_from_ode``, ``match_land2017_initial_states``); the other models
-    their own defaults, with :data:`SL_REF` where they define no ``SL0``.
-    """
-
-    def factory(mesh, f0, quadrature_degree):
-        land = model == "Land2017"
-        backend = CrossbridgeSegregated(
-            f0,
-            mesh,
-            model,
-            quadrature_degree=quadrature_degree,
-            SL_ref=SL_REF.get(model),
-            params=land2017_from_ode(mech) if land else None,
-            stabilized=stabilized,
-        )
-        if land:
-            match_land2017_initial_states(backend.model, mech)
-        return backend
-
-    return factory
 
 
 def _run_ode_land(ref, dt: float) -> tuple[np.ndarray, np.ndarray]:

@@ -348,6 +348,25 @@ def test_finish_after_artifacts_writes_run_json_last(record, split_modules, tmp_
     assert info["reached_t_end"] is True
 
 
+def test_finish_after_artifacts_passes_extra_to_run_json(record, split_modules, tmp_path):
+    """``extra`` reaches ``run.json`` through ``Recorder.finish``, as the demos' restart
+    provenance does."""
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(1.0))
+    _advance(backend, u, 2, 0.5, rec)
+    record.finish_after_artifacts(
+        rec,
+        [],
+        failure=None,
+        t_fail_ms=None,
+        timings={},
+        extra={"restart": True, "history": [{"git_commit": "abc"}]},
+    )
+    info = json.loads((tmp_path / "run.json").read_text())
+    assert info["restart"] is True
+    assert info["history"] == [{"git_commit": "abc"}]
+
+
 def test_finish_after_artifacts_keeps_the_loop_exception(record, split_modules, tmp_path):
     """When the loop raised, that exception propagates, not an artifact's."""
     backend, u = _backend(split_modules)
@@ -430,3 +449,141 @@ def test_failure_of_keeps_the_interrupt_behind_a_solver_error(record):
         solve()
     assert record.failure_of(info.value) == "RuntimeError('error code 101') <- KeyboardInterrupt()"
     assert record.failure_of(ValueError("x")) == "ValueError('x')"
+
+
+def _run_restarted(record, split_modules, tmp_path, *, restart: bool, every=1.0, after=2):
+    """Four steps of 0.5 ms, straight or restarted after ``after`` steps."""
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=every)
+    if not restart:
+        _advance(backend, u, 4, 0.5, rec)
+        rec.finish(failure=None, t_fail_ms=None, timings={"mech_s": 1.0})
+        return rec
+    _advance(backend, u, after, 0.5, rec)
+    t0 = after * 0.5
+    rec.write_sidecar(tmp_path, t0)
+    rec2 = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=every)
+    rec2.load_restart([], rec.restart_metadata())
+    rec2.read_sidecar(tmp_path, t0)
+    from test_generated_activation import _set_stretch
+
+    for k in range(after, 4):
+        t = (k + 1) * 0.5
+        backend.t.value = k * 0.5
+        backend.dt.value = 0.5
+        backend.inputs["cai"].x.array[:] = calcium(t)
+        _set_stretch(u, 1.0 - 0.01 * (k + 1))
+        backend.post_solve()
+        rec2.step(t, 2)
+    rec2.finish(failure=None, t_fail_ms=None, timings={"mech_s": 2.0})
+    return rec2
+
+
+def test_recorder_restart_gives_the_same_files(record, split_modules, tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    _run_restarted(record, split_modules, a, restart=False)
+    _run_restarted(record, split_modules, b, restart=True)
+
+    assert (a / "steps.csv").read_bytes() == (b / "steps.csv").read_bytes()
+    sa, sb = np.load(a / "snapshots.npz"), np.load(b / "snapshots.npz")
+    assert sorted(sa.files) == sorted(sb.files)
+    for name in sa.files:
+        np.testing.assert_array_equal(sa[name], sb[name])
+    _assert_same_run_json(a, b)
+
+
+def _assert_same_run_json(a, b):
+    ja, jb = (json.loads((d / "run.json").read_text()) for d in (a, b))
+    for j in (ja, jb):
+        j.pop("utc")
+        j.pop("timings")
+    assert ja == jb
+
+
+@pytest.mark.parametrize("after", [0, 2])
+def test_recorder_restart_without_snapshots(record, split_modules, tmp_path, after):
+    a, b = tmp_path / "a", tmp_path / "b"
+    _run_restarted(record, split_modules, a, restart=False, every=None)
+    _run_restarted(record, split_modules, b, restart=True, every=None, after=after)
+    assert (a / "steps.csv").read_bytes() == (b / "steps.csv").read_bytes()
+    assert not (a / "snapshots.npz").exists()
+    assert not (b / "snapshots.npz").exists()
+    _assert_same_run_json(a, b)
+
+
+def test_recorder_sidecars_keep_the_newest_two(record, split_modules, tmp_path):
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    names = []
+    for k, t in enumerate((0.5, 1.0, 1.5)):
+        _advance(backend, u, 1, 0.5, rec)
+        rec.write_sidecar(tmp_path, t)
+        names.append(f"restart_recorder_{t!r}.npz")
+        assert {p.name for p in tmp_path.glob("restart_recorder_*.npz")} == set(names[-2:])
+
+
+def test_recorder_sidecar_is_replaced_whole(record, split_modules, tmp_path, monkeypatch):
+    """A sidecar rewritten at its own time (an end checkpoint on a periodic one's time)
+    goes through a temporary file and ``os.replace``: a successful write leaves no
+    temporary file, and a failed one leaves the old file whole and no temporary file."""
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    _advance(backend, u, 2, 0.5, rec)
+    rec.write_sidecar(tmp_path, 1.0)
+    rec.write_sidecar(tmp_path, 1.0)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["restart_recorder_1.0.npz"]
+    before = (tmp_path / "restart_recorder_1.0.npz").read_bytes()
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(record.os, "replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        rec.write_sidecar(tmp_path, 1.0)
+    monkeypatch.undo()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["restart_recorder_1.0.npz"]
+    assert (tmp_path / "restart_recorder_1.0.npz").read_bytes() == before
+
+
+def test_recorder_read_sidecar_refuses_another_time_and_changes_nothing(
+    record,
+    split_modules,
+    tmp_path,
+):
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(2.0), snapshot_every_ms=1.0)
+    _advance(backend, u, 2, 0.5, rec)
+    rec.write_sidecar(tmp_path, 1.0)
+    (tmp_path / "restart_recorder_1.0.npz").rename(tmp_path / "restart_recorder_0.5.npz")
+    rows = [list(r) for r in rec.rows]
+    with pytest.raises(ValueError, match="0.5"):
+        rec.read_sidecar(tmp_path, 0.5)
+    assert rec.rows == rows
+    assert rec._t == 1.0
+
+
+def test_finish_merges_extra(record, split_modules, tmp_path):
+    backend, u = _backend(split_modules)
+    rec = record.Recorder(backend, tmp_path, run_info=_run_info(1.0))
+    rec.finish(
+        failure=None,
+        t_fail_ms=None,
+        timings={},
+        extra={"restart": {"from_ms": 1.0}, "failure": "overridden"},
+    )
+    info = json.loads((tmp_path / "run.json").read_text())
+    assert info["restart"] == {"from_ms": 1.0}
+    assert info["failure"] == "overridden"
+    assert info["scheme"] == "monolithic"
+
+
+def test_run_commands_pass_overwrite(tmp_path):
+    sys.path.insert(0, str(EXAMPLES))
+    try:
+        run = importlib.import_module("scheme_comparison.run")
+    finally:
+        sys.path.remove(str(EXAMPLES))
+    for geometry in ("slab", "biv"):
+        r = next(r for r in run.MATRIX["slab" if geometry == "slab" else "biv"])
+        cmd, _ = r.command(tmp_path)
+        assert "--overwrite" in cmd

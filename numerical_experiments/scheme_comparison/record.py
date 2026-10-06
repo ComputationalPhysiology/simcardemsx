@@ -8,20 +8,22 @@ writes on rank 0. Imported as ``from scheme_comparison.record import Recorder`` 
 ``numerical_experiments/`` on ``sys.path``.
 """
 
+import contextlib
 import csv
 import datetime
 import json
 import logging
-import subprocess
+import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import dolfinx
 import numpy as np
 import ufl
 
 from scheme_comparison import metrics
+from simcardemsx import provenance
 
 COLUMNS = [
     "t_ms",
@@ -41,25 +43,14 @@ logger = logging.getLogger(__name__)
 HERE = Path(__file__).resolve().parent
 
 
-def _git(args: list[str], cwd: Path) -> str | None:
-    """``git <args>``'s stdout in ``cwd``, or None if git fails (best effort)."""
-    try:
-        out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
-    except Exception:
-        return None
-    return out.stdout if out.returncode == 0 else None
-
-
 def _git_commit(cwd: Path = HERE) -> str | None:
     """The commit checked out in ``cwd``, or None."""
-    out = _git(["rev-parse", "HEAD"], cwd)
-    return (out.strip() or None) if out is not None else None
+    return provenance.git_commit(cwd)
 
 
 def _git_dirty(cwd: Path = HERE) -> bool | None:
     """Whether a tracked file differs from that commit (untracked files ignored), or None."""
-    out = _git(["status", "--porcelain", "--untracked-files=no"], cwd)
-    return bool(out.strip()) if out is not None else None
+    return provenance.git_dirty(cwd)
 
 
 REQUIRED_RUN_INFO = ("geometry", "split", "scheme", "dt_mech_ms", "t_end_ms", "regime")
@@ -116,6 +107,7 @@ class Recorder:
         self._lmbda = backend.lmbda_prev.x.array.copy()
         self._d_prev: np.ndarray | None = None
         self._t = 0.0
+        self._sidecar_t: float | None = None
         self.rows.append(self._row(0.0, 0, 0.0, [0.0] * len(metrics.FLOORS_PER_MS)))
         self._maybe_snapshot(0.0)
 
@@ -166,13 +158,104 @@ class Recorder:
         self._lmbda = lmbda
         self._t = t_ms
 
+    # -- Checkpointer component (see simcardemsx.checkpoint.Checkpointable) --------------
+    namespace = "recorder"
+
+    def restart_functions(self) -> list:
+        return []
+
+    def restart_metadata(self) -> dict[str, Any]:
+        return {"t_ms": self._t}
+
+    def load_restart(self, functions, metadata: Mapping[str, Any]) -> None:
+        """Take the time back. The rows come from :meth:`read_sidecar`."""
+        if "t_ms" not in metadata:
+            raise ValueError("The recorder's restart metadata has no 't_ms'")
+        self._t = float(metadata["t_ms"])
+
+    @staticmethod
+    def _sidecar(folder: Path, t_ms: float) -> Path:
+        return Path(folder) / f"restart_recorder_{t_ms!r}.npz"
+
+    def write_sidecar(self, folder: Path, t_ms: float) -> None:
+        """Write every row and snapshot so far to ``restart_recorder_<t_ms!r>.npz``.
+
+        Keeps this file and the one written at the previous call (which the current
+        ``restart.json`` names until the new one replaces it); deletes the others.
+        Rows and snapshots are stored as float arrays, so they come back bit for bit.
+
+        The file is written atomically: into a temporary file in ``folder`` (named
+        ``.restart_recorder_tmp_<pid>.npz``, which the ``restart_recorder_*.npz`` glob
+        does not match), which ``os.replace`` then moves onto it. A checkpoint at a time
+        already checkpointed rewrites the file that ``restart.json`` names, and a kill
+        meanwhile must not leave it truncated.
+        """
+        if self.comm.rank != 0:
+            return
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        arrays: dict[str, Any] = {
+            "rows": np.array(self.rows, dtype=float).reshape(-1, len(COLUMNS)),
+            "newton": np.array(self.newton, dtype=np.int64),
+            "snap_t": np.array(self.snap_t, dtype=float),
+            "lmbda": self._lmbda,
+            "has_d_prev": np.array(self._d_prev is not None),
+            "d_prev": np.empty(0) if self._d_prev is None else self._d_prev,
+            "t": np.array(self._t),
+        }
+        for name, values in self.snaps.items():
+            arrays[f"snap_{name}"] = np.array(values, dtype=float) if values else np.empty((0, 0))
+        target = self._sidecar(folder, t_ms)
+        tmp = folder / f".restart_recorder_tmp_{os.getpid()}.npz"
+        try:
+            np.savez(tmp, **arrays)
+            os.replace(tmp, target)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
+        keep = {target.name}
+        if self._sidecar_t is not None:
+            keep.add(self._sidecar(folder, self._sidecar_t).name)
+        for path in folder.glob("restart_recorder_*.npz"):
+            if path.name not in keep:
+                path.unlink()
+        self._sidecar_t = t_ms
+
+    def read_sidecar(self, folder: Path, t_ms: float) -> None:
+        """Take the rows and snapshots back from the file written at ``t_ms``.
+
+        Raises ``ValueError`` if the file's time is not ``t_ms``. Everything is read
+        into locals first, so a refusal leaves the recorder as it was.
+        """
+        with np.load(self._sidecar(folder, t_ms)) as data:
+            t = float(data["t"])
+            if t != t_ms:
+                raise ValueError(f"The recorder's sidecar is of t = {t} ms, not {t_ms} ms")
+            # Column 1 is the Newton count: an int, as step() wrote it.
+            rows = [[float(row[0]), int(row[1]), *map(float, row[2:])] for row in data["rows"]]
+            newton = [int(n) for n in data["newton"]]
+            snap_t = [float(x) for x in data["snap_t"]]
+            snaps = {name: list(data[f"snap_{name}"]) for name in self.snaps}  # [] if empty
+            lmbda = data["lmbda"].copy()
+            d_prev = data["d_prev"].copy() if bool(data["has_d_prev"]) else None
+        self.rows, self.newton, self.snap_t, self.snaps = rows, newton, snap_t, snaps
+        self._lmbda, self._d_prev, self._t = lmbda, d_prev, t
+        self._sidecar_t = t_ms
+
     def finish(
         self,
         *,
         failure: str | None,
         t_fail_ms: float | None,
         timings: Mapping[str, float],
+        extra: Mapping[str, Any] | None = None,
     ) -> None:
+        """Write ``steps.csv``, ``snapshots.npz`` and, last, ``run.json``.
+
+        ``extra`` is merged into ``run.json`` after everything else, so a key in it
+        overrides the recorder's own.
+        """
         if self.comm.rank != 0:
             return
         self.outdir.mkdir(parents=True, exist_ok=True)
@@ -203,6 +286,7 @@ class Recorder:
             "git_commit": self.git_commit,
             "git_dirty": self.git_dirty,
             "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            **(extra or {}),
         }
         (self.outdir / "run.json").write_text(json.dumps(info, indent=2))
 
@@ -225,13 +309,28 @@ def failure_of(exc: BaseException) -> str:
     return " <- ".join(parts)
 
 
+class RunFinisher(Protocol):
+    """What :func:`finish_after_artifacts` writes ``run.json`` with: a :class:`Recorder`,
+    or anything with the same ``finish``."""
+
+    def finish(
+        self,
+        *,
+        failure: str | None,
+        t_fail_ms: float | None,
+        timings: Mapping[str, float],
+        extra: Mapping[str, Any] | None = None,
+    ) -> None: ...
+
+
 def finish_after_artifacts(
-    recorder: Recorder,
+    recorder: RunFinisher,
     artifacts: Sequence[tuple[str, Callable[[], object]]],
     *,
     failure: str | None,
     t_fail_ms: float | None,
     timings: Mapping[str, float],
+    extra: Mapping[str, Any] | None = None,
 ) -> None:
     """Write the example's own ``artifacts``, then ``recorder.finish`` (``run.json``) last.
 
@@ -240,7 +339,8 @@ def finish_after_artifacts(
     and ``run.json``, are still written. If the loop raised (``failure`` is not None), its
     exception is the one that leaves the ``finally``; otherwise the first artifact's
     error is raised once ``run.json`` is written. ``finish`` itself is not guarded: if it
-    fails, there is no ``run.json`` and the run is not done.
+    fails, there is no ``run.json`` and the run is not done. ``extra`` is passed on to
+    :meth:`Recorder.finish`.
     """
     errors: list[Exception] = []
     for name, write in artifacts:
@@ -249,6 +349,6 @@ def finish_after_artifacts(
         except Exception as exc:
             logger.exception(f"Writing {name} failed")
             errors.append(exc)
-    recorder.finish(failure=failure, t_fail_ms=t_fail_ms, timings=timings)
+    recorder.finish(failure=failure, t_fail_ms=t_fail_ms, timings=timings, extra=extra)
     if errors and failure is None:
         raise errors[0]

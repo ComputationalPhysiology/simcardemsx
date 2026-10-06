@@ -26,14 +26,17 @@ no shipped EP remainder consumes it.
 :class:`TransferPlan` is the runtime half: it adds the function spaces,
 averagers and `interpolation.TransferOperator`s that move these names' values
 between beat's arrays on the EP mesh and the activation backend on the
-mechanics mesh.
+mechanics mesh. It is also a `~simcardemsx.checkpoint.Checkpointable`
+(namespace ``"transfer"``), holding the rows of beat's arrays that its backward
+direction writes, so that a restore never needs to move anything back.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from types import ModuleType
-from typing import TYPE_CHECKING, Callable, Mapping, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Mapping, NamedTuple, Protocol
 
 import dolfinx
 import numpy as np
@@ -162,6 +165,12 @@ class _Backward(NamedTuple):
     array: str  # attribute of the ODE solver: "missing_variables" or "parameters"
     row: int
 
+    @property
+    def restart_name(self) -> str:
+        """``transfer_missing_<name>`` or ``transfer_parameter_<name>``."""
+        kind = "missing" if self.array == "missing_variables" else "parameter"
+        return f"transfer_{kind}_{self.name}"
+
 
 class TransferPlan:
     """Move the values named by ``crossings`` between beat's EP arrays and ``backend``.
@@ -188,6 +197,12 @@ class TransferPlan:
     integrating with the old arrays. For the same reason the arrays must already
     have one column per point: a λ that varies between points cannot be written
     into a parameter array that has one value for all of them.
+
+    As a ``Checkpointable`` (namespace ``"transfer"``), the plan's state is those
+    rows themselves, as they are now: one Function on the EP ODE space per row that
+    :meth:`backward` writes. They cannot be recomputed from the backend's outputs in
+    general: before the backend has accepted a step its outputs are zero, while EP
+    holds its own initial values (``lmbda`` = 1, for one).
 
     Parameters
     ----------
@@ -305,3 +320,43 @@ class TransferPlan:
             crossing.average()
             self._backward_operator.interpolate(crossing.averaged, crossing.received)
             getattr(self.ode, crossing.array)[crossing.row, :] = crossing.received.x.array
+
+    # ------------------------------------------------------------------
+    # Checkpoint / restart (simcardemsx.checkpoint.Checkpointable)
+    # ------------------------------------------------------------------
+
+    namespace = "transfer"
+
+    def restart_functions(self) -> list[tuple[str, dolfinx.fem.Function]]:
+        """Fresh copies of the rows of beat's arrays that :meth:`backward` writes:
+        ``transfer_missing_<name>`` for each backward name, then
+        ``transfer_parameter_lmbda`` when λ crosses to EP."""
+        V_ep = self.ode.v_ode.function_space
+        functions = []
+        for crossing in self._backward:
+            f = dolfinx.fem.Function(V_ep, name=crossing.restart_name)
+            f.x.array[:] = getattr(self.ode, crossing.array)[crossing.row, :]
+            functions.append((crossing.restart_name, f))
+        return functions
+
+    def restart_metadata(self) -> dict[str, Any]:
+        return {}
+
+    def load_restart(
+        self,
+        functions: Sequence[tuple[str, dolfinx.fem.Function]],
+        metadata: Mapping[str, Any],
+    ) -> None:
+        """Copy the rows back into beat's arrays, **in place**.
+
+        Raises ``ValueError`` if ``functions`` are not the rows this plan writes.
+        """
+        by_name = dict(functions)
+        expected = [crossing.restart_name for crossing in self._backward]
+        if sorted(by_name) != sorted(expected):
+            raise ValueError(
+                f"The transfer rows are {sorted(by_name)}, this plan writes {sorted(expected)}",
+            )
+        for crossing in self._backward:
+            values = by_name[crossing.restart_name].x.array
+            getattr(self.ode, crossing.array)[crossing.row, :] = values
