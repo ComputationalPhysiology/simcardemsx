@@ -128,6 +128,7 @@ HASH_SEEDS = ("1", "3")
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="gotranx's sort_assignments adds each assignment's dependencies to its "
     "TopologicalSorter in set order, so the generated state order depends on "
     "PYTHONHASHSEED. Restarts no longer depend on it (a checkpoint is read by name), "
@@ -162,6 +163,8 @@ def test_generated_state_order_does_not_depend_on_the_hash_seed(tmp_path):
             env={**os.environ, "PYTHONHASHSEED": seed},
             timeout=300,
         )
-        assert result.returncode == 0, result.stderr[-3000:]
+        # Not an assertion: a crash in the subprocess fails, not satisfies, the xfail.
+        if result.returncode != 0:
+            pytest.fail(f"PYTHONHASHSEED={seed}: {result.stderr[-3000:]}")
         orders.append(json.loads(result.stdout.strip().splitlines()[-1]))
     assert orders[0] == orders[1]

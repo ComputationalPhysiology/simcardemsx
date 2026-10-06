@@ -13,7 +13,7 @@ import io4dolfinx
 import numpy as np
 import pytest
 
-from simcardemsx import checkpoint
+from simcardemsx import checkpoint, results
 from simcardemsx.results import (
     ARTIFACTS,
     RESULTS,
@@ -183,7 +183,14 @@ def test_prepare_output_restart_checks_the_physics(tmp_path):
         prepare_output(tmp_path, restart=True, overwrite=False, physics={"a": 2})
 
 
-def test_resolved_settings_round_trip(tmp_path):
+@pytest.mark.parametrize("reader", ["tomllib", "toml"])
+def test_resolved_settings_round_trip(tmp_path, monkeypatch, reader):
+    """Read back alike with the standard library's tomllib and, where it has none
+    (Python 3.10), with toml."""
+    if reader == "toml":
+        monkeypatch.setattr(results, "tomllib", None)
+    elif results.tomllib is None:
+        pytest.skip("Python 3.10 has no tomllib")
     settings = {"a": 1, "path": Path("/x/y"), "nested": {"p": Path("z"), "v": [1.5, 2.5]}}
     write_resolved_settings(tmp_path / "config.resolved.toml", settings)
     assert read_resolved_settings(tmp_path / "config.resolved.toml") == {

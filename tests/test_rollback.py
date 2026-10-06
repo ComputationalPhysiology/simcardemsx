@@ -6,14 +6,16 @@ mechanics, coupled through :class:`SimulationController`. The split is the zeta 
 whose λ and ``Zetas``/``Zetaw`` cross back to EP, so EP's ``parameters`` and
 ``missing_variables`` are rewritten by every step.
 
-The controller snapshots every component at the start of a step. If anything up to and
-including ``post_solve`` raises, or the driver reports failure, it restores the
-snapshot: every array and metadata value is then bit-identical to before the step (EP's
-``parameters`` and ``missing_variables`` included, whose crossing rows the transfer plan
-holds), ``controller.t`` is the step's start and
-``controller.t_failed`` its end. A retry then reproduces the uninterrupted run bit for
-bit. X3 (``test_segregated_backend.py``) and Review Focus 1 (``test_cycle_coupling.py``)
-check the backend and the cycle's mechanics; these check everything, EP included.
+The controller snapshots every component at the start of a step. If anything before
+``mech_callback`` raises (the EP micro-steps and ``ep_callback``, the forward transfer,
+``begin_step``, the solve, ``post_solve``, ``plan.backward()`` or the step counter), or
+the driver reports failure, it restores the snapshot; only ``mech_callback`` is outside
+the rollback. Every array and metadata value is then bit-identical to before the step
+(EP's ``parameters`` and ``missing_variables`` included, whose crossing rows the
+transfer plan holds), ``controller.t`` is the step's start and ``controller.t_failed``
+its end. A retry then reproduces the uninterrupted run bit for bit. X3
+(``test_segregated_backend.py``) and Review Focus 1 (``test_cycle_coupling.py``) check
+the backend and the cycle's mechanics; these check everything, EP included.
 """
 
 import re

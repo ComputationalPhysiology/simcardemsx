@@ -22,7 +22,11 @@ import dolfinx
 import io4dolfinx
 import numpy as np
 import toml
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10: read with toml, which wrote the file
+    tomllib = None  # type: ignore[assignment]
 
 from .checkpoint import RESTART, RESTART_META, check_restart, write_json
 
@@ -312,6 +316,9 @@ def write_resolved_settings(path: str | Path, settings: Mapping[str, Any]) -> No
 
 
 def read_resolved_settings(path: str | Path) -> dict[str, Any]:
-    """Read a TOML file written by :func:`write_resolved_settings`."""
+    """Read a TOML file written by :func:`write_resolved_settings`: with the standard
+    library's ``tomllib`` where there is one (Python >= 3.11), else with ``toml``."""
+    if tomllib is None:
+        return toml.load(path)
     with open(path, "rb") as f:
         return tomllib.load(f)
