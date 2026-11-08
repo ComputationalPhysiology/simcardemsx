@@ -1,3 +1,4 @@
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -10,7 +11,9 @@ import dolfinx
 import pytest
 import ufl
 
-from simcardemsx.ode_model import generate_ode_code, load_ode_modules
+from simcardemsx import ode_model
+from simcardemsx.ode_model import generate_ode_code
+from simcardemsx.utils import load_module_from_path
 
 
 def test_code_generator_smoke_test(tmp_path):
@@ -54,7 +57,65 @@ def test_code_generator_smoke_test(tmp_path):
     assert "import ufl" in mech_code
 
 
-def test_real_split_files_have_the_expected_interfaces(tmp_path):
+_TINY_ODE = """
+states("ep", v=0)
+parameters("ep", a=1)
+expressions("ep")
+dv_dt = a
+
+states("mechanics", XS=0)
+expressions("mechanics")
+dXS_dt = v - XS
+"""
+
+
+def test_generated_code_is_cached_until_its_inputs_change(tmp_path, monkeypatch):
+    """`generate_ode_code` reuses a complete earlier generation of the same `.ode`
+    content, and regenerates when the content changes, when the stamp is missing
+    (a generation interrupted before it was written) or when forced."""
+    import gotranx
+
+    calls = []
+    load_ode = gotranx.load_ode
+    monkeypatch.setattr(gotranx, "load_ode", lambda f: calls.append(f) or load_ode(f))
+
+    ode_file = tmp_path / "tiny.ode"
+    ode_file.write_text(_TINY_ODE)
+    out_dir = tmp_path / "generated"
+
+    generate_ode_code(ode_file, out_dir)
+    assert len(calls) == 1
+    assert (out_dir / ode_model.STAMP_FILE).is_file()
+
+    paths = generate_ode_code(ode_file, out_dir)
+    assert len(calls) == 1, "the same content must be reused"
+    assert paths.ep.is_file() and paths.mechanics.is_file()
+
+    ode_file.write_text(_TINY_ODE.replace("a=1", "a=2"))
+    generate_ode_code(ode_file, out_dir)
+    assert len(calls) == 2, "changed content must regenerate"
+    ep = load_module_from_path("ep_tiny", out_dir / "ep_model.py")
+    assert ep.init_parameter_values()[ep.parameter["a"]] == 2
+
+    (out_dir / ode_model.STAMP_FILE).unlink()
+    generate_ode_code(ode_file, out_dir)
+    assert len(calls) == 3, "no stamp must regenerate"
+
+    generate_ode_code(ode_file, out_dir, force=True)
+    assert len(calls) == 4, "force must regenerate"
+
+
+def test_the_stamp_names_gotranx_and_the_generator(tmp_path):
+    """A gotranx upgrade or a change to `ode_model.py` must invalidate the cache, so
+    both are in the stamp, beside the `.ode` content."""
+    ode_file = tmp_path / "tiny.ode"
+    ode_file.write_text(_TINY_ODE)
+    stamp = ode_model._stamp(ode_file)
+    assert set(stamp) == {"ode_sha256", "gotranx", "generator_sha256"}
+    assert stamp["gotranx"] == importlib.metadata.version("gotranx")
+
+
+def test_real_split_files_have_the_expected_interfaces(split_modules):
     """Pin the interface of the three ODE files shipped in the repository.
 
     These are what the FIXME's hardcoded 2 was silently wrong about: only the
@@ -64,20 +125,17 @@ def test_real_split_files_have_the_expected_interfaces(tmp_path):
     omits the `missing` attribute entirely rather than emitting an empty dict
     -- hence getattr. Any consumer of these modules has to tolerate that.
     """
-    odefiles = Path(__file__).parent.parent / "numerical_experiments" / "odefiles"
     expected = {
-        "ToRORd_dynCl_endo_caisplit": ({"J_TRPN"}, {"cai"}),
-        "ToRORd_dynCl_endo_catrpnsplit": (set(), {"CaTrpn"}),
-        "ToRORd_dynCl_endo_zetasplit": ({"Zetas", "Zetaw"}, {"XS", "XW"}),
+        "caisplit": ({"J_TRPN"}, {"cai"}),
+        "catrpnsplit": (set(), {"CaTrpn"}),
+        "zetasplit": ({"Zetas", "Zetaw"}, {"XS", "XW"}),
     }
+    assert set(split_modules) == set(expected)
 
-    for stem, (ep_missing, mech_missing) in expected.items():
-        odefile = odefiles / f"{stem}.ode"
-        if not odefile.is_file():
-            pytest.skip(f"{odefile} not available")
-        modules = load_ode_modules(odefile, tmp_path / stem)
-        assert set(getattr(modules.ep, "missing", {})) == ep_missing, stem
-        assert set(getattr(modules.mechanics, "missing", {})) == mech_missing, stem
+    for split, (ep_missing, mech_missing) in expected.items():
+        modules = split_modules[split]
+        assert set(getattr(modules.ep, "missing", {})) == ep_missing, split
+        assert set(getattr(modules.mechanics, "missing", {})) == mech_missing, split
 
 
 @pytest.mark.parametrize(

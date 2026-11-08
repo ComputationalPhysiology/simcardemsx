@@ -184,20 +184,28 @@ def _crossbridge_factory(model: str, mech: ModuleType, *, stabilized: bool = Tru
 
 
 @pytest.fixture(scope="session")
-def split_modules(tmp_path_factory) -> dict[str, ODEModules]:
+def split_modules(request, tmp_path_factory) -> dict[str, ODEModules]:
     """Generate and load the EP/mechanics module pair for each of the three
     ODE splits shipped in `numerical_experiments/odefiles`.
 
     Session-scoped: code generation goes through gotranx (parsing + black
-    formatting), which is slow, and every test that only reads module state
-    (parameters/monitor/missing/provides) can share the result. Each split
-    gets its own directory from `tmp_path_factory` so the three
+    formatting), about 15 s per split, and every test that only reads module state
+    (parameters/monitor/missing/provides) can share the result. The code is written
+    under pytest's cache directory (`.pytest_cache/d/generated_odes/<split>`), where
+    `load_ode_modules` reuses it across sessions until the `.ode` file, gotranx or
+    the generator changes (`simcardemsx.ode_model.generate_ode_code`). With the cache
+    provider disabled (`-p no:cacheprovider`) it falls back to a fresh temporary
+    directory. Each split has its own directory, so the three
     `ep_model.py`/`mechanics_model.py` files don't collide on disk.
     """
+    cache = getattr(request.config, "cache", None)
     modules = {}
     for split in SPLITS:
         odefile = ODEFILES_DIR / f"ToRORd_dynCl_endo_{split}.ode"
-        output_dir = tmp_path_factory.mktemp(split)
+        if cache is not None:
+            output_dir = Path(cache.mkdir("generated_odes")) / split
+        else:
+            output_dir = tmp_path_factory.mktemp(split)
         modules[split] = load_ode_modules(odefile, output_dir)
     return modules
 
