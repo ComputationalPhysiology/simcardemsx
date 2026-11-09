@@ -1,4 +1,4 @@
-"""The slab example (``examples/strong_coupling_zetasplit/main.py``) with a
+"""The slab example (``examples/slab/main.py``) with a
 crossbridge contraction model: its output, its restart, and its ``post.py``.
 
 The example runs as a subprocess from its own directory, as it is meant to be run: its
@@ -30,7 +30,7 @@ from simcardemsx.checkpoint import physics_hash
 from simcardemsx.results import RESULTS, read_resolved_settings, read_results
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
-EXAMPLE_DIR = EXAMPLES / "strong_coupling_zetasplit"
+EXAMPLE_DIR = EXAMPLES / "slab"
 CAISPLIT = "../odefiles/ToRORd_dynCl_endo_caisplit.ode"
 #: The crossbridge path every run below takes, at a mechanics step of 1 ms.
 CROSSBRIDGE = (
@@ -98,10 +98,10 @@ def _run_post(output_dir: Path, *python_args: str) -> subprocess.CompletedProces
 
 
 def _import(name: str) -> ModuleType:
-    """``strong_coupling_zetasplit.<name>``, imported without running anything."""
+    """``slab.<name>``, imported without running anything."""
     sys.path.insert(0, str(EXAMPLES))
     try:
-        return importlib.import_module(f"strong_coupling_zetasplit.{name}")
+        return importlib.import_module(f"slab.{name}")
     finally:
         sys.path.remove(str(EXAMPLES))
 

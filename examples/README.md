@@ -29,7 +29,7 @@ finished run. Run each from its own directory.
 
 | Example | What it is |
 | --- | --- |
-| [`strong_coupling_zetasplit/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/strong_coupling_zetasplit) | EP and mechanics on a slab, for any split, scheme or crossbridge model |
+| [`slab/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/slab) | EP and mechanics on a slab, for any split, scheme or crossbridge model |
 | [`circulation_biv/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/circulation_biv) | A biventricular heart beating in a closed-loop circulation (Regazzoni et al.) |
 | [`rodero_05/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/rodero_05) | A Rodero-cohort biventricular heart driven through the five phases of the cardiac cycle |
 | [`scheme_comparison/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/scheme_comparison) | Batch runs and a report comparing the three coupling schemes |

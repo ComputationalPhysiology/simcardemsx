@@ -75,7 +75,7 @@ class Run:
                     "--output-dir",
                     outdir,
                 ],
-                EXAMPLES / "strong_coupling_zetasplit",
+                EXAMPLES / "slab",
             )
         return (
             [sys.executable, "main.py", *common, "--outdir", outdir],

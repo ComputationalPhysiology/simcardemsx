@@ -1,6 +1,6 @@
 # Electro-mechanics on a slab
 
-[`main.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/strong_coupling_zetasplit/main.py) couples EP and mechanics on a 2 × 1 × 0.5 mm slab of tissue. It is
+[`main.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/slab/main.py) couples EP and mechanics on a 2 × 1 × 0.5 mm slab of tissue. It is
 [tutorial 4](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/04_coupled_slab.py) grown into a program: the split, the
 coupling scheme and the contraction model are chosen on the command line, and the run
 writes its results for ParaView, checkpoints, and restarts.
@@ -18,7 +18,7 @@ The slab is generated with cardiac-geometriesx on first use, into `meshes/`.
 ## Running
 
 ```bash
-cd examples/strong_coupling_zetasplit
+cd examples/slab
 python3 main.py                                   # zeta split, monolithic, 40 ms
 python3 main.py --odefile ../odefiles/ToRORd_dynCl_endo_caisplit.ode --scheme stabilized
 python3 main.py --odefile ../odefiles/ToRORd_dynCl_endo_caisplit.ode \

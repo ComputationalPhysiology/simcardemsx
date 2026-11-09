@@ -58,7 +58,7 @@ Output goes to ``--outdir``, in the upstream CLIs' layout (:mod:`simcardemsx.res
   and ``tref_scale``, the ``--tref`` the run used. After a restart, both cover the
   whole run, from ``log.csv``.
 - ``timings.json``: this process's wall time in the EP ODE step, the EP PDE step and
-  the mechanics solve (as in ``strong_coupling_zetasplit``), plus the loop and the
+  the mechanics solve (as in ``slab``), plus the loop and the
   whole run, ``setup_s`` (the start of ``main`` to the start of the loop) and
   ``newton_its``, the total of Newton iterations (after a restart, only the part it
   ran).

@@ -41,7 +41,7 @@ python3 post.py --output-dir output
 | `--tref` | Scale on Land's reference tension of 120 kPa (default 3) |
 | `--scheme`, `--dt-mech` | Coupling scheme and mechanics time step |
 | `--outdir` | Where the results go (default `output/`) |
-| `--save-every`, `--save-every-ep`, `--checkpoint-every`, `--restart`, `--overwrite` | As for the [slab](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/strong_coupling_zetasplit) |
+| `--save-every`, `--save-every-ep`, `--checkpoint-every`, `--restart`, `--overwrite` | As for the [slab](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/slab) |
 
 The mesh, the circulation's operating point and the prestress are cached in
 `meshes/ukb_mean_ed_clipped/`. Delete that folder after changing the mesh resolution

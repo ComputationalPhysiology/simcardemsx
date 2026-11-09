@@ -48,7 +48,7 @@ from demo_io import (  # noqa: E402
 )
 from demo_io import result_functions as demo_result_functions  # noqa: E402
 
-from strong_coupling_zetasplit import main as slab  # noqa: E402
+from slab import main as slab  # noqa: E402
 
 #: Where the traces are taken: ``DataCollector``'s point, a corner of the slab.
 POINT = (0.0, 0.0, 0.0)
