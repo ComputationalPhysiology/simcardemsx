@@ -33,9 +33,9 @@ replacing it whole:
   integrated by parts; the two agree to second order in the mesh size. It is in mV for
   unit conductivities, as physcardems' is: a scaled, not a physical, body-surface
   potential. The electrodes are the case's (``case.electrodes``, in metres, in the
-  imaged frame, as physcardems uses them), and the leads ``beat.ecg.Leads12`` of their
-  potentials: I, II, III, aVR, aVL, aVF, and V1..V6 against Wilson's central terminal
-  (``Leads12.V1_``...), which are physcardems' ``standard_leads``.
+  imaged frame, as physcardems uses them), and the leads ``beat.ecg.twelve_lead()`` of their
+  potentials: I, II, III, aVR, aVL, aVF, and V1..V6 against Wilson's central terminal,
+  which are physcardems' ``standard_leads``.
 
 :func:`summarise` and :func:`plot` live here, and ``main.py`` imports them, so this
 module imports ``main`` only inside the functions that use it. Without matplotlib the
@@ -91,17 +91,10 @@ ACTIVE_STATS_FIELDS = (
         for name in (f"Ta_median_{celltype}_kPa", f"lmbda_median_{celltype}")
     ),
 )
-#: The pseudo-ECG's leads, by ``ecg.csv`` column, as ``beat.ecg.Leads12`` names them.
-LEADS = {
-    "I": "I",
-    "II": "II",
-    "III": "III",
-    "aVR": "aVR",
-    "aVL": "aVL",
-    "aVF": "aVF",
-    **{f"V{i}": f"V{i}_" for i in range(1, 7)},
-}
-ECG_FIELDS = ("t_ms", *LEADS)
+#: The pseudo-ECG's leads (and ``ecg.csv``'s columns): the textbook 12 leads, a negative
+#: pole of n electrodes contributing -1/n of each one's potential.
+LEADS = beat.ecg.twelve_lead()
+ECG_FIELDS = ("t_ms", *LEADS.names)
 #: ``ecg.png``'s layout, physcardems' (``ecg.py``, ``LEAD_LAYOUT``): one row per limb
 #: lead, then its augmented lead and two precordial leads.
 ECG_LAYOUT = (("I", "aVR", "V1", "V4"), ("II", "aVL", "V2", "V5"), ("III", "aVF", "V3", "V6"))
@@ -373,8 +366,8 @@ class PseudoECG:
             name: self.comm.allreduce(dolfinx.fem.assemble_scalar(form), op=MPI.SUM)
             for name, form in self.forms.items()
         }
-        leads = beat.ecg.Leads12(**potentials)
-        return {"t_ms": t} | {column: float(getattr(leads, lead)) for column, lead in LEADS.items()}
+        leads = LEADS.leads(potentials)
+        return {"t_ms": t} | {name: float(value) for name, value in leads.items()}
 
 
 def write_fields_and_traces(

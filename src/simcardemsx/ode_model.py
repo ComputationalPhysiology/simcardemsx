@@ -1,3 +1,6 @@
+import hashlib
+import importlib.metadata
+import json
 from pathlib import Path
 from types import ModuleType
 from typing import NamedTuple
@@ -25,7 +28,29 @@ class ODEModules(NamedTuple):
     mechanics: ModuleType
 
 
-def generate_ode_code(odefile: Path, output_dir: Path) -> ODEModulePaths:
+#: Written into ``output_dir`` after both modules, so it only ever describes a complete
+#: generation.
+STAMP_FILE = "generated_from.json"
+
+
+def _stamp(odefile: Path) -> dict[str, str]:
+    """What the generated code depends on: the ``.ode`` file's content, gotranx's
+    version, and this module's own source (the split and the appended ``provides``)."""
+    return {
+        "ode_sha256": hashlib.sha256(Path(odefile).read_bytes()).hexdigest(),
+        "gotranx": importlib.metadata.version("gotranx"),
+        "generator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+
+
+def _read_stamp(output_dir: Path) -> dict[str, str] | None:
+    try:
+        return json.loads((output_dir / STAMP_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def generate_ode_code(odefile: Path, output_dir: Path, *, force: bool = False) -> ODEModulePaths:
     """
     Pre-processing step: Generates EP and Mechanics Python modules
     from a gotranx ODE file and writes them to the specified directory.
@@ -47,10 +72,28 @@ def generate_ode_code(odefile: Path, output_dir: Path) -> ODEModulePaths:
     which also loads them -- the mechanics module is not optional, since it is
     the only place that records how many variables the mechanics side needs
     from EP.
+
+    Generation takes ~15 s for a ToR-ORd split, so it is cached: if ``output_dir``
+    already holds both modules and a ``generated_from.json`` stamp matching
+    :func:`_stamp` (the ``.ode`` file's content, gotranx's version and this module's
+    source), they are reused as they are. The stamp is written after both modules, so a
+    generation that was interrupted is never reused. ``force=True`` regenerates anyway.
     """
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ep_module_file = output_dir / "ep_model.py"
     mechanics_module_file = output_dir / "mechanics_model.py"
+    paths = ODEModulePaths(ep=ep_module_file, mechanics=mechanics_module_file)
+
+    stamp = _stamp(odefile)
+    if (
+        not force
+        and ep_module_file.is_file()
+        and mechanics_module_file.is_file()
+        and _read_stamp(output_dir) == stamp
+    ):
+        return paths
+    (output_dir / STAMP_FILE).unlink(missing_ok=True)
 
     ode = gotranx.load_ode(odefile)
     mechanics_comp = ode.get_component("mechanics")
@@ -75,17 +118,19 @@ def generate_ode_code(odefile: Path, output_dir: Path) -> ODEModulePaths:
     code_ep += f"\nprovides = {dict(mechanics_ode.missing_variables)!r}\n"
     ep_module_file.write_text(code_ep)
 
-    return ODEModulePaths(ep=ep_module_file, mechanics=mechanics_module_file)
+    (output_dir / STAMP_FILE).write_text(json.dumps(stamp, indent=2) + "\n")
+    return paths
 
 
-def load_ode_modules(odefile: Path, output_dir: Path) -> ODEModules:
+def load_ode_modules(odefile: Path, output_dir: Path, *, force: bool = False) -> ODEModules:
     """Generate both ODE modules from ``odefile`` and load them.
 
     Use this rather than calling :func:`generate_ode_code` and loading only
     ``ep_model``: the split is described jointly by the two modules, and
     :func:`simcardemsx.transfer_plan.resolve` needs both to say what crosses.
+    The generated code is cached in ``output_dir`` (see :func:`generate_ode_code`).
     """
-    paths = generate_ode_code(odefile, output_dir)
+    paths = generate_ode_code(odefile, output_dir, force=force)
     return ODEModules(
         ep=load_module_from_path("ep_model", paths.ep),
         mechanics=load_module_from_path("mechanics_model", paths.mechanics),

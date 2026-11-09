@@ -20,8 +20,9 @@ dependencies = [
     # pulse 0.11.1 and beat 0.7.2 are the first releases with the restart API that
     # simcardemsx.checkpoint calls (restart_functions/restart_metadata, and pulse's
     # CycleController.state_dict); SimulationController.step() snapshots through it.
+    # beat 0.9.0 replaced beat.ecg.Leads12 with twelve_lead(), which rodero_05's post.py uses.
     "fenicsx-pulse>=0.11.1",
-    "fenicsx-beat>=0.7.2",
+    "fenicsx-beat>=0.9.0",
     # crossbridge backs the Ca_i-split activation backend and is imported at
     # package import time via simcardemsx.backends. 0.3.3 is the first release whose
     # RDQ20MF can take a step longer than its 25 us RU step (gate X2), and 0.3.4 the

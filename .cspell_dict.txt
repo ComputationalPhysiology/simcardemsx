@@ -581,3 +581,4 @@ getpid
 Intracomm
 subplus
 nonpositive
+cacheprovider
