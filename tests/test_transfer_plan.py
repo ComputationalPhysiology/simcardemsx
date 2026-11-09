@@ -4,7 +4,7 @@
 generated from one gotranx `.ode` file, it says what crosses between EP and
 activation without touching meshes or function spaces. `test_shipped_splits_resolve`
 checks it against the table in `.scratch/monolithic-activation/spec.md` (S2) for
-all three splits shipped in `numerical_experiments/odefiles`;
+all three splits shipped in `examples/odefiles`;
 `test_a_name_nothing_produces_raises` checks the guard against modules that
 don't actually come from the same file.
 

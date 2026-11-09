@@ -1,4 +1,4 @@
-"""The slab example (``numerical_experiments/strong_coupling_zetasplit/main.py``) with a
+"""The slab example (``examples/strong_coupling_zetasplit/main.py``) with a
 crossbridge contraction model: its output, its restart, and its ``post.py``.
 
 The example runs as a subprocess from its own directory, as it is meant to be run: its
@@ -29,7 +29,7 @@ import pytest
 from simcardemsx.checkpoint import physics_hash
 from simcardemsx.results import RESULTS, read_resolved_settings, read_results
 
-EXAMPLES = Path(__file__).parent.parent / "numerical_experiments"
+EXAMPLES = Path(__file__).parent.parent / "examples"
 EXAMPLE_DIR = EXAMPLES / "strong_coupling_zetasplit"
 CAISPLIT = "../odefiles/ToRORd_dynCl_endo_caisplit.ode"
 #: The crossbridge path every run below takes, at a mechanics step of 1 ms.

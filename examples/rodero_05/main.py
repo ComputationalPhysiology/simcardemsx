@@ -175,7 +175,7 @@ from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved
 
 HERE = Path(__file__).resolve().parent
 # case.py and post.py sit next to this script, and demo_io beside its directory, not in
-# the installed package. As rodero_05.case, with numerical_experiments/ on the path, it
+# the installed package. As rodero_05.case, with examples/ on the path, it
 # has the name mypy gives it too.
 sys.path.insert(0, str(HERE.parent))
 import demo_io  # noqa: E402

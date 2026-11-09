@@ -1,0 +1,111 @@
+name: Documentation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one in flight: a half-published site is worse than
+# an out-of-date one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # The site, which is also how the tutorials are exercised: each is converted to a notebook
+  # and executed, so a tutorial that stopped running fails a pull request. They need dolfinx,
+  # so this runs in the same container as the tests.
+  build:
+    runs-on: ubuntu-24.04
+    container: ghcr.io/fenics/dolfinx/dolfinx:stable
+    env:
+      DEB_PYTHON_INSTALL_LAYOUT: deb_system
+      # An inline backend and an explicit `plt.show()` are what put the figures in the
+      # pages. Under Agg they are drawn and dropped.
+      MPLBACKEND: module://matplotlib_inline.backend_inline
+      # Where GitHub Pages serves the site from, for the static export's asset paths.
+      BASE_URL: /simcardemsx
+      # `localhost` resolves to both 127.0.0.1 and ::1, and the theme server and the static
+      # export's crawler pick different ones, so the export fails with ECONNREFUSED.
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      # The container runs as root, which the Jupyter server MyST starts refuses by default.
+      JUPYTER_CONFIG_DIR: /tmp/jupyter-config
+    steps:
+      - uses: actions/checkout@v7
+
+      # The Node that mystmd bootstraps for itself may be too old for the static export.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install build requirements
+        run: python3 -m pip install --group build
+
+      - name: Install package
+        run: |
+          python3 -m pip install scifem --no-build-isolation
+          python3 -m pip install .[docs]
+
+      # The kernel MyST executes the notebooks in has to be the interpreter simcardemsx is
+      # installed in.
+      - name: Set up Jupyter
+        run: |
+          python3 -m ipykernel install --user --name python3 --display-name "Python 3"
+          mkdir -p "${JUPYTER_CONFIG_DIR}"
+          echo "c.ServerApp.allow_root = True" > "${JUPYTER_CONFIG_DIR}/jupyter_server_config.py"
+
+      # MyST reads only .md and .ipynb, so the tutorials are converted next to themselves,
+      # where they find ../odefiles as the scripts do. A table of contents entry with no file
+      # behind it is not an error to MyST, so the pages are counted against the scripts and
+      # against the table of contents.
+      - name: Convert the tutorials to notebooks
+        run: |
+          for script in examples/tutorials/[0-9]*.py; do
+            jupytext --to ipynb --set-kernel python3 "${script}"
+          done
+          scripts="$(ls examples/tutorials/[0-9]*.py | wc -l)"
+          listed="$(grep -c 'file: tutorials/' docs/myst.yml)"
+          test "${scripts}" -eq "${listed}" || {
+            echo "${scripts} tutorials, ${listed} of them in the table of contents"; exit 1; }
+
+      # One page per module, and one table of contents entry per page.
+      - name: Write the API reference pages
+        run: |
+          python3 docs/generate_api_pages.py docs/api
+          pages="$(ls docs/api | wc -l)"
+          modules="$(find src/simcardemsx -name '*.py' | wc -l)"
+          listed="$(grep -c 'file: api/' docs/myst.yml)"
+          test "${pages}" -eq "${modules}" || {
+            echo "wrote ${pages} pages for ${modules} modules"; exit 1; }
+          test "${pages}" -eq "${listed}" || {
+            echo "${pages} pages, ${listed} of them in the table of contents"; exit 1; }
+
+      # --strict is what makes a failing notebook fail the job. Without it a notebook that
+      # raised still builds a site, and the build reports success. The tutorials run one at
+      # a time, since several generate code into the same folder (generated_odes/<stem>) and
+      # would otherwise load modules another is still writing.
+      - name: Build the site
+        working-directory: docs
+        run: myst build --html --execute --execute-parallel 1 --strict
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs/_build/html
+
+  # Deploying is a separate job so that it runs on the standard runner rather than inside the
+  # container, and only for a push to main: a pull request builds the site to check that it
+  # builds, and publishes nothing.
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

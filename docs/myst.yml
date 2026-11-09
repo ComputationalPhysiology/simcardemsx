@@ -1,0 +1,74 @@
+version: 1
+
+project:
+  title: simcardemsx
+  description: >-
+    Cardiac electro-mechanics in FEniCSx: EP from fenicsx-beat and mechanics from
+    fenicsx-pulse, coupled through cell models generated from gotranx .ode files.
+  github: https://github.com/ComputationalPhysiology/simcardemsx
+  authors:
+    - name: Henrik Finsberg
+      email: henriknf@simula.no
+  # The tutorials are the scripts in examples/tutorials/, converted to notebooks next to
+  # themselves by jupytext at build time (see README.md) and executed, so the code and
+  # figures on each page are those of the script in the repository. docs/tutorials is a
+  # symlink to that folder: the Jupyter server MyST executes with serves nothing outside
+  # docs/, and through the link the notebooks still run in examples/tutorials/, where they
+  # find ../odefiles as the scripts do.
+  #
+  # The applications are long runs (minutes to hours, some needing data that is not in this
+  # repository), so nothing is executed: each page in applications/ includes the README of
+  # its folder in examples/, which GitHub shows too. The wrappers give the pages their
+  # names; a README in the table of contents directly would be published as readme-N.
+  #
+  # The API reference is written from the source at build time by generate_api_pages.py,
+  # one page per module.
+  toc:
+    - file: index.md
+    - file: installation.md
+    - title: User guide
+      children:
+        - file: guide/overview.md
+        - file: guide/models.md
+        - file: guide/coupling.md
+        - file: guide/mechanics.md
+    - title: Tutorials
+      children:
+        - file: tutorials/01_cell_model.ipynb
+        - file: tutorials/02_coupling_schemes_0d.ipynb
+        - file: tutorials/03_single_element.ipynb
+        - file: tutorials/04_coupled_slab.ipynb
+    - title: Applications
+      children:
+        - file: applications/examples.md
+        - file: applications/slab.md
+        - file: applications/circulation-biv.md
+        - file: applications/rodero.md
+        - file: applications/scheme-comparison.md
+    - title: API reference
+      children:
+        - file: api/simcardemsx.md
+          children:
+            - file: api/simcardemsx.averaging.md
+            - file: api/simcardemsx.backends.md
+              children:
+                - file: api/simcardemsx.backends.base.md
+                - file: api/simcardemsx.backends.generated.md
+                - file: api/simcardemsx.backends.segregated.md
+                - file: api/simcardemsx.backends.zeta_split.md
+            - file: api/simcardemsx.checkpoint.md
+            - file: api/simcardemsx.config.md
+            - file: api/simcardemsx.controller.md
+            - file: api/simcardemsx.datacollector.md
+            - file: api/simcardemsx.interpolation.md
+            - file: api/simcardemsx.mechanics.md
+            - file: api/simcardemsx.ode_model.md
+            - file: api/simcardemsx.provenance.md
+            - file: api/simcardemsx.results.md
+            - file: api/simcardemsx.transfer_plan.md
+            - file: api/simcardemsx.units.md
+            - file: api/simcardemsx.utils.md
+            - file: api/simcardemsx.zero_d.md
+
+site:
+  template: book-theme

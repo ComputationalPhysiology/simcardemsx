@@ -1,4 +1,4 @@
-"""Loading the ``rodero_05`` case of the worked example (``numerical_experiments/rodero_05``).
+"""Loading the ``rodero_05`` case of the worked example (``examples/rodero_05``).
 
 ``case.py`` reads physcardems' ``cases/rodero_05`` as it is, with no data copied into
 this repository, and shrinks the imaged geometry by 0.9 about its centroid, as
@@ -18,7 +18,7 @@ physcardems does to approximate the unloaded heart.
     unchanged. The same holds for the 0.9 scaling, which is about the centroid, not
     the origin.
 
-``case.py`` is imported by path, from ``numerical_experiments/``: the examples are not
+``case.py`` is imported by path, from ``examples/``: the examples are not
 part of the installed package.
 """
 
@@ -32,7 +32,7 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).parent.parent
-EXAMPLES = ROOT / "numerical_experiments"
+EXAMPLES = ROOT / "examples"
 PHYSCARDEMS_CASE = ROOT / "third-party" / "physcardems" / "cases" / "rodero_05"
 
 #: physcardems' reference scaling (``run_rodero_em_tref7.py``, ``REFERENCE_SCALE``).

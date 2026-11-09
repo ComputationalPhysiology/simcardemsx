@@ -14,6 +14,13 @@ description = "Next generation cardiac electro-mechanics solver based on FEniCSx
 authors = [{name = "Henrik Finsberg", email = "henriknf@simula.no"}]
 license = {file = "LICENSE"}
 readme = "README.md"
+keywords = ["cardiac", "electromechanics", "finite element", "fenicsx", "electrophysiology"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
 requires-python = ">=3.12.0"
 dependencies = [
     "fenics-dolfinx",
@@ -41,6 +48,12 @@ dependencies = [
     "pydantic",
     "pydantic_pint",
 ]
+
+[project.urls]
+Homepage = "https://computationalphysiology.github.io/simcardemsx"
+Documentation = "https://computationalphysiology.github.io/simcardemsx"
+Source = "https://github.com/ComputationalPhysiology/simcardemsx"
+Issues = "https://github.com/ComputationalPhysiology/simcardemsx/issues"
 
 [project.optional-dependencies]
 test = [
@@ -70,13 +83,15 @@ demo = [
     "io4dolfinx",
 ]
 docs = [
-   "jupyter-book",
-   "jupytext",
-   "jupyter",
-   "pyvista[all]>=0.43.0",
-   "trame-vuetify",
-   "ipywidgets",
-   "simcardemsx[demo]",
+    # MyST builds the site (docs/myst.yml); jupytext turns the tutorials into the notebooks
+    # it executes, in the kernel ipykernel registers; griffe reads the docstrings for the
+    # API reference (docs/generate_api_pages.py) without importing the package.
+    "mystmd",
+    "jupytext",
+    "ipykernel",
+    "jupyter-server",
+    "griffe>=2",
+    "simcardemsx[demo]",
 ]
 benchmark = [
     "pytest-codspeed",
@@ -132,7 +147,6 @@ ignore_missing_imports = true
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
 exclude = [
-    "demo/*.py",
     ".bzr",
     ".direnv",
     ".eggs",
@@ -153,7 +167,7 @@ exclude = [
     "dist",
     "node_modules",
     "venv",
-    "demos",
+    "third-party",
 ]
 
 # Same as Black.

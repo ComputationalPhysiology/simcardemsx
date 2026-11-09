@@ -5,7 +5,7 @@ Call ``Recorder.step(t_ms, newton_iterations)`` after each ``backend.post_solve(
 files: ``run.json`` is what ``run.py`` takes as the mark of a finished run, so it is
 written last (:func:`finish_after_artifacts` does both, in that order). Serial only;
 writes on rank 0. Imported as ``from scheme_comparison.record import Recorder`` with
-``numerical_experiments/`` on ``sys.path``.
+``examples/`` on ``sys.path``.
 """
 
 import contextlib

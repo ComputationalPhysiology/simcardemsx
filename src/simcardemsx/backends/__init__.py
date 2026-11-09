@@ -12,14 +12,11 @@ between EP and activation is derived from the EP module and the backend's
 :class:`simcardemsx.transfer_plan.TransferPlan`. :class:`ZetaSplitUFL` is driven
 directly against ``pulse`` and declares its crossings with :class:`Transfer`.
 
-======================================  ================================  =================
-Backend                                 Coupling                          Split
-======================================  ================================  =================
-:class:`GeneratedActivation`            monolithic in Newton, or naive    any (``.ode``)
-                                         segregated (``scheme``)
-:class:`ZetaSplitUFL` (deprecated)      monolithic in Newton              zeta's
-:class:`CrossbridgeSegregated`          stabilized-segregated (R&Q)       Ca_i
-======================================  ================================  =================
+- :class:`GeneratedActivation`: any split of an ``.ode`` file, coupled monolithically in
+  Newton (the default), stabilized-segregated, or naive segregated (``scheme``).
+- :class:`CrossbridgeSegregated`: a crossbridge model on the Ca_i split,
+  stabilized-segregated (R&Q), or naive segregated (``stabilized=False``).
+- :class:`ZetaSplitUFL` (deprecated): the hand-ported Land model of the zeta split.
 
 An external-operator crossbridge backend, coupling monolithically without
 symbolic differentiation, is planned; it would implement :class:`CoupledBackend`.

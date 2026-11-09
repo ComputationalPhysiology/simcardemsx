@@ -1,4 +1,4 @@
-"""The ``rodero_05`` example (``numerical_experiments/rodero_05``) without its case data:
+"""The ``rodero_05`` example (``examples/rodero_05``) without its case data:
 what its physics hash holds, its refusals before anything is built, and its summary.
 
 Importing ``rodero_05.main`` and ``rodero_05.post`` builds nothing, and none of these
@@ -22,7 +22,7 @@ import pytest
 from simcardemsx.checkpoint import physics_hash
 from simcardemsx.results import CsvLog
 
-EXAMPLES = Path(__file__).parent.parent / "numerical_experiments"
+EXAMPLES = Path(__file__).parent.parent / "examples"
 sys.path.insert(0, str(EXAMPLES))
 try:
     rodero = importlib.import_module("rodero_05.main")

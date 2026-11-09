@@ -193,10 +193,7 @@ def test_generated_state_order_does_not_depend_on_the_hash_seed(tmp_path):
     them. A restart maps a checkpoint's states by name, so it does not rely on this.
     """
     odefile = (
-        Path(__file__).parent.parent
-        / "numerical_experiments"
-        / "odefiles"
-        / "ToRORd_dynCl_endo_caisplit.ode"
+        Path(__file__).parent.parent / "examples" / "odefiles" / "ToRORd_dynCl_endo_caisplit.ode"
     )
     script = (
         "import json, sys; from pathlib import Path; "

@@ -1,4 +1,4 @@
-"""What the demos share (``numerical_experiments/demo_io.py``): the end of a run without
+"""What the demos share (``examples/demo_io.py``): the end of a run without
 a ``Recorder``, and the P1 fields ``post.py`` writes from discontinuous sources.
 
 The slab and BiV examples' own tests cover the rest through the examples.
@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 import ufl
 
-EXAMPLES = Path(__file__).parent.parent / "numerical_experiments"
+EXAMPLES = Path(__file__).parent.parent / "examples"
 sys.path.insert(0, str(EXAMPLES))
 try:
     demo_io = importlib.import_module("demo_io")
