@@ -65,7 +65,7 @@ jobs:
       - name: Install package
         run: |
           python3 -m pip install scifem --no-build-isolation
-          python3 -m pip install .[dev,test]
+          python3 -m pip install .[dev,test,docs]
 
       - name: Run pre-commit
         run: pre-commit run --all-files
