@@ -12,7 +12,8 @@ name = "simcardemsx"
 version = "0.1.0"
 description = "Next generation cardiac electro-mechanics solver based on FEniCSx"
 authors = [{name = "Henrik Finsberg", email = "henriknf@simula.no"}]
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
 keywords = ["cardiac", "electromechanics", "finite element", "fenicsx", "electrophysiology"]
 classifiers = [

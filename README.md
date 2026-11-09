@@ -142,3 +142,7 @@ The documentation is built with [MyST](https://mystmd.org). See
 ## Authors
 
 Henrik Finsberg (<henriknf@simula.no>)
+
+## License
+
+MIT. See [LICENSE](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/LICENSE).
