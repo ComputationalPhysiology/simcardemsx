@@ -12,9 +12,17 @@ name = "simcardemsx"
 version = "0.1.0"
 description = "Next generation cardiac electro-mechanics solver based on FEniCSx"
 authors = [{name = "Henrik Finsberg", email = "henriknf@simula.no"}]
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.10.0"
+keywords = ["cardiac", "electromechanics", "finite element", "fenicsx", "electrophysiology"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+requires-python = ">=3.12.0"
 dependencies = [
     "fenics-dolfinx",
     # pulse 0.11.1 and beat 0.7.2 are the first releases with the restart API that
@@ -41,6 +49,12 @@ dependencies = [
     "pydantic",
     "pydantic_pint",
 ]
+
+[project.urls]
+Homepage = "https://computationalphysiology.github.io/simcardemsx"
+Documentation = "https://computationalphysiology.github.io/simcardemsx"
+Source = "https://github.com/ComputationalPhysiology/simcardemsx"
+Issues = "https://github.com/ComputationalPhysiology/simcardemsx/issues"
 
 [project.optional-dependencies]
 test = [
@@ -70,13 +84,15 @@ demo = [
     "io4dolfinx",
 ]
 docs = [
-   "jupyter-book",
-   "jupytext",
-   "jupyter",
-   "pyvista[all]>=0.43.0",
-   "trame-vuetify",
-   "ipywidgets",
-   "simcardemsx[demo]",
+    # MyST builds the site (docs/myst.yml); jupytext turns the tutorials into the notebooks
+    # it executes, in the kernel ipykernel registers; griffe reads the docstrings for the
+    # API reference (docs/generate_api_pages.py) without importing the package.
+    "mystmd",
+    "jupytext",
+    "ipykernel",
+    "jupyter-server",
+    "griffe>=2",
+    "simcardemsx[demo]",
 ]
 benchmark = [
     "pytest-codspeed",
@@ -132,7 +148,6 @@ ignore_missing_imports = true
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
 exclude = [
-    "demo/*.py",
     ".bzr",
     ".direnv",
     ".eggs",
@@ -153,7 +168,7 @@ exclude = [
     "dist",
     "node_modules",
     "venv",
-    "demos",
+    "third-party",
 ]
 
 # Same as Black.
@@ -162,7 +177,7 @@ line-length = 100
 # Allow unused variables when underscore-prefixed.
 
 # Assume Python 3.10.
-target-version = "py310"
+target-version = "py312"
 
 
 [tool.ruff.lint]
@@ -212,16 +227,10 @@ tag = true
 sign_tags = false
 tag_name = "v{new_version}"
 tag_message = "Bump version: {current_version} → {new_version}"
-current_version = "0.2.0"
+current_version = "0.1.0"
 
 
 [[tool.bumpversion.files]]
 filename = "pyproject.toml"
 search = 'version = "{current_version}"'
 replace = 'version = "{new_version}"'
-
-
-[[tool.bumpversion.files]]
-filename = "README.md"
-search = "ghcr.io/finsberg/fenicsx-pulse:v{current_version}"
-replace = "ghcr.io/finsberg/fenicsx-pulse:v{new_version}"

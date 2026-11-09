@@ -1,4 +1,4 @@
-"""The scheme comparison's report, ``numerical_experiments/scheme_comparison/report.py``.
+"""The scheme comparison's report, ``examples/scheme_comparison/report.py``.
 
 Every run here is fabricated, in the real file formats (``steps.csv`` with
 ``record.COLUMNS``, ``snapshots.npz``, ``run.json``, ``timings.json``, and for the BiV
@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-EXAMPLES = Path(__file__).parent.parent / "numerical_experiments"
+EXAMPLES = Path(__file__).parent.parent / "examples"
 
 
 @pytest.fixture(scope="module")

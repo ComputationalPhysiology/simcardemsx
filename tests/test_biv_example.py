@@ -1,4 +1,4 @@
-"""The BiV example (``numerical_experiments/circulation_biv``) without its mesh: what its
+"""The BiV example (``examples/circulation_biv``) without its mesh: what its
 physics hash holds, its refusals before anything is built, and its summary.
 
 Importing ``circulation_biv.main`` builds nothing, and none of these tests reaches the
@@ -15,7 +15,7 @@ import pytest
 
 from simcardemsx.checkpoint import physics_hash
 
-EXAMPLES = Path(__file__).parent.parent / "numerical_experiments"
+EXAMPLES = Path(__file__).parent.parent / "examples"
 sys.path.insert(0, str(EXAMPLES))
 try:
     biv = importlib.import_module("circulation_biv.main")

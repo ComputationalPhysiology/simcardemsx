@@ -24,7 +24,7 @@ from simcardemsx.controller import SimulationController
 from simcardemsx.mechanics import MechanicsDriver
 from simcardemsx.ode_model import ODEModules, load_ode_modules
 
-ODEFILES_DIR = Path(__file__).parent.parent / "numerical_experiments" / "odefiles"
+ODEFILES_DIR = Path(__file__).parent.parent / "examples" / "odefiles"
 
 SPLITS = ("caisplit", "zetasplit", "catrpnsplit")
 
@@ -186,7 +186,7 @@ def _crossbridge_factory(model: str, mech: ModuleType, *, stabilized: bool = Tru
 @pytest.fixture(scope="session")
 def split_modules(request, tmp_path_factory) -> dict[str, ODEModules]:
     """Generate and load the EP/mechanics module pair for each of the three
-    ODE splits shipped in `numerical_experiments/odefiles`.
+    ODE splits shipped in `examples/odefiles`.
 
     Session-scoped: code generation goes through gotranx (parsing + black
     formatting), about 15 s per split, and every test that only reads module state

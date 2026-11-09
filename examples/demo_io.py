@@ -1,7 +1,7 @@
-"""What the demos in ``numerical_experiments/`` share: their output folder, restart and
+"""What the demos in ``examples/`` share: their output folder, restart and
 post-processing.
 
-Imported as ``import demo_io``, with ``numerical_experiments/`` on ``sys.path``: each demo
+Imported as ``import demo_io``, with ``examples/`` on ``sys.path``: each demo
 puts it there, as it does for ``scheme_comparison``.
 
 The run side, in the order a demo's ``main`` uses it:

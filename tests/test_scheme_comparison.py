@@ -16,7 +16,7 @@ from conftest import calcium
 from simcardemsx.backends import GeneratedActivation
 
 ROOT = Path(__file__).parent.parent
-EXAMPLES = ROOT / "numerical_experiments"
+EXAMPLES = ROOT / "examples"
 
 
 @pytest.fixture(scope="module")

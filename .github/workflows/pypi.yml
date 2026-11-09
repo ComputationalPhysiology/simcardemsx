@@ -1,0 +1,45 @@
+name: PyPI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Built on every pull request, so a broken sdist or a README PyPI cannot render is caught
+  # before a release. The build needs no dolfinx: the package is pure Python.
+  dist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the sdist and wheel
+        run: pipx run build
+
+      - name: Check the metadata
+        run: pipx run twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/*
+
+  # Published from a version tag only (bump-my-version tags as v<version>), through PyPI's
+  # trusted publishing: the project on PyPI must name this repository, this workflow and the
+  # `pypi` environment as a trusted publisher. No token is stored.
+  publish:
+    needs: dist
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
