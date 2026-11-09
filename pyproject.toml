@@ -14,7 +14,7 @@ description = "Next generation cardiac electro-mechanics solver based on FEniCSx
 authors = [{name = "Henrik Finsberg", email = "henriknf@simula.no"}]
 license = {file = "LICENSE"}
 readme = "README.md"
-requires-python = ">=3.10.0"
+requires-python = ">=3.12.0"
 dependencies = [
     "fenics-dolfinx",
     # pulse 0.11.1 and beat 0.7.2 are the first releases with the restart API that
@@ -162,7 +162,7 @@ line-length = 100
 # Allow unused variables when underscore-prefixed.
 
 # Assume Python 3.10.
-target-version = "py310"
+target-version = "py312"
 
 
 [tool.ruff.lint]
@@ -212,16 +212,10 @@ tag = true
 sign_tags = false
 tag_name = "v{new_version}"
 tag_message = "Bump version: {current_version} → {new_version}"
-current_version = "0.2.0"
+current_version = "0.1.0"
 
 
 [[tool.bumpversion.files]]
 filename = "pyproject.toml"
 search = 'version = "{current_version}"'
 replace = 'version = "{new_version}"'
-
-
-[[tool.bumpversion.files]]
-filename = "README.md"
-search = "ghcr.io/finsberg/fenicsx-pulse:v{current_version}"
-replace = "ghcr.io/finsberg/fenicsx-pulse:v{new_version}"
