@@ -63,6 +63,10 @@ test = [
     "cardiac-geometriesx",
     # Regazzoni's closed-loop circuit (its .ode file), for the circulation gates
     "circulation>=0.4.0",
+    # The 0D reference of tests/test_zero_mech_reference.py: 0.3.0 is the first with
+    # StretchActiveStress and Holzapfel-Ogden's b = 0 limit (pulse's transversely
+    # isotropic parameters)
+    "zero-mech>=0.3.0",
 ]
 dev = [
     "pdbpp",
@@ -142,6 +146,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # circulation (Regazzoni's circuit, for the circulation gates) ships no py.typed marker.
 module = ["circulation", "circulation.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# sympy and zero-mech (the 0D reference of tests/test_zero_mech_reference.py) ship no py.typed
+# marker.
+module = ["sympy", "sympy.*", "zero_mech", "zero_mech.*"]
 ignore_missing_imports = true
 
 
