@@ -692,6 +692,7 @@ def main(argv: list[str] | None = None):
     # is deliberate: beat's splitting solver and the controller call them through
     # these attributes, which is what mypy's method-assign objects to.
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0, "mech_s": 0.0}
+    assert ep_solver.pde is not None  # optional since beat 0.11; built above with one
     ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
     ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
     problem.solve = accumulate_time(problem.solve, timings, "mech_s")  # type: ignore[method-assign]

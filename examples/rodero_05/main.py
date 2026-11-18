@@ -882,6 +882,7 @@ def main(argv: list[str] | None = None) -> None:
     controller = SimulationController(Cycle(cycle), ep_solver, backend, modules, DT_MECH, DT_EP)
 
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0}
+    assert ep_solver.pde is not None  # optional since beat 0.11; make_ep_solver builds one
     ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
     ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
     solves = SolveLog(problem)
