@@ -96,6 +96,8 @@ docs = [
     "ipykernel",
     "jupyter-server",
     "griffe>=2",
+    # Tutorial 5's independent 0D reference
+    "zero-mech>=0.3.0",
     "simcardemsx[demo]",
 ]
 benchmark = [
