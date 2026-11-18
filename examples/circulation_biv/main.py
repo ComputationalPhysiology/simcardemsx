@@ -31,7 +31,7 @@ in the first beat; the RV does.
 Output goes to ``--outdir``, in the upstream CLIs' layout (:mod:`simcardemsx.results`):
 
 - ``config.resolved.toml``: :func:`settings`, rewritten by every run, fresh or restarted.
-- ``results.bp``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
+- ``results.h5``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
   ``lmbda``, ``tension_kPa`` and ``stiffness_kPa`` (the last three on the backend's
   quadrature points) every ``--save-every`` ms, all from t = 0.
 - ``log.csv``: one row at ``t = 0`` and one after each mechanics step, appended as the
@@ -42,7 +42,7 @@ Output goes to ``--outdir``, in the upstream CLIs' layout (:mod:`simcardemsx.res
   and ``conservation_drift`` its relative change since ``t = 0``; ``Ta_mean_kPa`` is
   the volume mean of the backend's ``active_tension``; ``newton_iterations`` is 0 at
   ``t = 0``, where nothing is solved.
-- ``restart.bp`` and ``restart.json``: a checkpoint every ``--checkpoint-every`` ms and
+- ``restart.h5`` and ``restart.json``: a checkpoint every ``--checkpoint-every`` ms and
   at the end of the run, with the scheme comparison's ``restart_recorder_<t>.npz``.
 - ``pv_loops.png``: pressure-volume loops, and pressures, volumes and tension in time.
 - ``summary.json``: per ventricle, ``EDV_mL`` and ``ESV_mL``, the largest and
@@ -121,7 +121,7 @@ from pulse.circulation import ChamberCoupling, GotranxCirculation, mL, mmHg
 import cardiac_geometries
 import cardiac_geometries.geometry
 from simcardemsx.backends import GeneratedActivation
-from simcardemsx.checkpoint import Checkpointer
+from simcardemsx.checkpoint import IO_BACKEND, Checkpointer
 from simcardemsx.controller import SimulationController
 from simcardemsx.mechanics import CirculationClock
 from simcardemsx.ode_model import load_ode_modules
@@ -140,7 +140,7 @@ from circulation_biv.post import plot, summarise  # noqa: E402
 
 ODEFILE = HERE.parent / "odefiles" / "ToRORd_dynCl_endo_zetasplit.ode"
 GEODIR = HERE / "meshes" / "ukb_mean_ed_clipped"
-PRESTRESS_FILE = "prestress_biv.bp"
+PRESTRESS_FILE = "prestress_biv.h5"
 
 CHAMBERS = ("LV", "RV")
 
@@ -248,21 +248,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--save-every",
         type=float,
         default=None,
-        help="Save u, lmbda, tension_kPa and stiffness_kPa to results.bp every this many "
+        help="Save u, lmbda, tension_kPa and stiffness_kPa to results.h5 every this many "
         "ms, a whole multiple of --dt-mech (default: --dt-mech).",
     )
     parser.add_argument(
         "--save-every-ep",
         type=float,
         default=1.0,
-        help=f"Save EP's v and cai to results.bp every this many ms, a whole multiple of "
+        help=f"Save EP's v and cai to results.h5 every this many ms, a whole multiple of "
         f"the {DT_EP} ms EP step (default: %(default)s).",
     )
     parser.add_argument(
         "--checkpoint-every",
         type=float,
         default=50.0,
-        help="Write a checkpoint (restart.bp, restart.json) every this many ms, a whole "
+        help="Write a checkpoint (restart.h5, restart.json) every this many ms, a whole "
         "multiple of --dt-mech, and at the end of the run (default: %(default)s).",
     )
     flags = parser.add_mutually_exclusive_group()
@@ -630,7 +630,7 @@ def read_prestress(
     if not fname.exists():
         raise FileNotFoundError(f"No prestress in the cache: {fname} does not exist")
     u_pre = dolfinx.fem.Function(_vector_space(mesh, run_settings["mechanics"]["u_space"]))
-    io4dolfinx.read_function(fname, u_pre, time=0.0, name="u_pre")
+    io4dolfinx.read_function(fname, u_pre, time=0.0, name="u_pre", backend=IO_BACKEND)
     return u_pre
 
 
@@ -673,7 +673,13 @@ def prestress(
             ramp_steps=run_settings["initial_state"]["prestress_ramp_steps"],
         )
         u_pre = problem.unload()
-        io4dolfinx.write_function_on_input_mesh(fname, u_pre, time=0.0, name="u_pre")
+        io4dolfinx.write_function_on_input_mesh(
+            fname,
+            u_pre,
+            time=0.0,
+            name="u_pre",
+            backend=IO_BACKEND,
+        )
     comm.barrier()
     return read_prestress(geometry.mesh, cachedir, run_settings)
 
@@ -1090,7 +1096,7 @@ def main(argv: list[str] | None = None):
         rows.append(row)
         return row
 
-    # results.bp's fields. EP's are P1 copies of rows of the ODE's state array, refreshed
+    # results.h5's fields. EP's are P1 copies of rows of the ODE's state array, refreshed
     # before each save; the others are the problem's and the backend's own Functions.
     ep_fields = {name: dolfinx.fem.Function(ep_ode_space, name=name) for name in EP_RESULTS}
     ep_rows = {name: modules.ep.state_index(name) for name in EP_RESULTS}
@@ -1125,7 +1131,7 @@ def main(argv: list[str] | None = None):
     rows.extend(resumed)
 
     # The controller counts steps from 1. A step that fails is rolled back, but the EP
-    # saves of its micro-steps stay in results.bp: a restart from the step's start
+    # saves of its micro-steps stay in results.h5: a restart from the step's start
     # recomputes them bit for bit, so it does not save them again.
     def on_ep_step(t: float, ep_step_idx: int) -> None:
         if ep_step_idx % save_ep_every == 0:

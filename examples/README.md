@@ -24,7 +24,7 @@ documentation is built.
 ## Applications
 
 Larger programs with a command line, output in the layout of the pulse and beat CLIs
-(`results.bp`, `log.csv`, …), checkpoints and restarts, and a `post.py` that replots a
+(`results.h5`, `log.csv`, …), checkpoints and restarts, and a `post.py` that replots a
 finished run. Run each from its own directory.
 
 | Example | What it is |

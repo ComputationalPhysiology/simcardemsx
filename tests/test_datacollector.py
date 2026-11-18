@@ -1,6 +1,6 @@
 """What :class:`DataCollector` and its :class:`Timers` write.
 
-The collector is deprecated: the demos write ``results.bp`` and ``log.csv``
+The collector is deprecated: the demos write ``results.h5`` and ``log.csv``
 (:mod:`simcardemsx.results`) and their ``post.py`` replots from them. It is wired to
 :class:`SimulationController`'s callbacks as the slab example used to wire it: the
 controller counts steps from 1, and the collector is handed ``step_idx - 1`` whenever
@@ -59,7 +59,7 @@ def test_time_axes_are_the_times_the_samples_were_taken(
             "point_mech": [{"name": "Ta", **origin}],
         },
     }
-    with pytest.warns(DeprecationWarning, match="results.bp"):
+    with pytest.warns(DeprecationWarning, match="results.h5"):
         collector = DataCollector(
             problem=problem,
             ep_ode_space=ep_solver.ode.v_ode.function_space,

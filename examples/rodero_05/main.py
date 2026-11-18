@@ -80,7 +80,7 @@ Known differences from physcardems, kept rather than removed:
   of physcardems' cycle controller this run uses: not the ``ejection_pressure``
   valve override, the legacy filling laws or the FILLING stall counter, none of which
   em_tref7 sets or, with a prescribed inflow, reaches.
-- A restart continues ``log.csv`` and ``results.bp`` from the checkpoint; physcardems'
+- A restart continues ``log.csv`` and ``results.h5`` from the checkpoint; physcardems'
   starts its logs empty.
 - Left out: the mid-ventricular slice statistics, and ``sf_IKs`` (read by physcardems,
   never used).
@@ -89,7 +89,7 @@ Output, in ``--output-dir``, in the upstream CLIs' layout (:mod:`simcardemsx.res
 
 - ``config.resolved.toml``: :func:`settings`, with where the Land parameters went,
   rewritten by every run, fresh or restarted.
-- ``results.bp``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
+- ``results.h5``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
   ``lmbda``, ``tension_kPa`` and ``stiffness_kPa`` (the last three on the backend's
   quadrature points; the tension masked) every ``--save-every`` ms, all from t = 0.
 - ``log.csv`` (:data:`LOG_FIELDS`): one row after the unloaded solve (``t_ms`` 0) and
@@ -103,7 +103,7 @@ Output, in ``--output-dir``, in the upstream CLIs' layout (:mod:`simcardemsx.res
   solve's iterations and reason; EP's membrane potential range; the step's wall time.
   ``pulse.cycle`` retries a solve at most once, so the first and last solves are every
   solve, and the summary is computed from ``log.csv`` alone.
-- ``restart.bp`` and ``restart.json``: a checkpoint every ``--checkpoint-every`` ms,
+- ``restart.h5`` and ``restart.json``: a checkpoint every ``--checkpoint-every`` ms,
   after every step at which a cavity's phase switched (as physcardems does), and at the
   end of the run.
 - ``pv_loops.png``: the PV loops with EF, where EDV is the volume at the last switch
@@ -202,7 +202,7 @@ DT_MECH = 2.0
 DT_EP = 0.05
 T_END = 800.0
 
-#: The spaces of ``results.bp``, which ``post.py`` rebuilds: the EP ODE space, P1 (the
+#: The spaces of ``results.h5``, which ``post.py`` rebuilds: the EP ODE space, P1 (the
 #: transfer plan averages what crosses back onto P1 or DG0 only), holds ``v`` and
 #: ``cai``; pulse's displacement space, given to the problem, holds ``u``; and the
 #: backend's scalar quadrature space at ``QUADRATURE_DEGREE`` holds the rest.
@@ -345,14 +345,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--save-every",
         type=float,
         default=None,
-        help="Save u, lmbda, tension_kPa and stiffness_kPa to results.bp every this many "
+        help="Save u, lmbda, tension_kPa and stiffness_kPa to results.h5 every this many "
         f"ms, a whole multiple of the {DT_MECH} ms mechanics step (default: {DT_MECH}).",
     )
     parser.add_argument(
         "--save-every-ep",
         type=float,
         default=1.0,
-        help=f"Save EP's v and cai to results.bp every this many ms, a whole multiple of "
+        help=f"Save EP's v and cai to results.h5 every this many ms, a whole multiple of "
         f"the {DT_EP} ms EP step; post.py's pseudo-ECG has one row per save "
         "(default: %(default)s).",
     )
@@ -360,7 +360,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--checkpoint-every",
         type=float,
         default=50.0,
-        help="Write a checkpoint (restart.bp, restart.json) every this many ms, a whole "
+        help="Write a checkpoint (restart.h5, restart.json) every this many ms, a whole "
         f"multiple of the {DT_MECH} ms mechanics step, after every phase switch and at the "
         "end of the run (default: %(default)s).",
     )
@@ -949,7 +949,7 @@ def main(argv: list[str] | None = None) -> None:
         log.append(row)
         rows.append(row)
 
-    # results.bp's fields. EP's are P1 copies of rows of the ODE's state array, refreshed
+    # results.h5's fields. EP's are P1 copies of rows of the ODE's state array, refreshed
     # before each save; the others are the problem's and the backend's own Functions.
     ep_space = dolfinx.fem.functionspace(mesh, EP_ODE_ELEMENT)
     ep_fields = {name: dolfinx.fem.Function(ep_space, name=name) for name in EP_RESULTS}
@@ -1060,7 +1060,7 @@ def main(argv: list[str] | None = None) -> None:
     step: dict[str, Any] = {}
 
     # The controller counts steps from 1. A step that fails is rolled back, but the EP
-    # saves of its micro-steps stay in results.bp: a restart from the step's start
+    # saves of its micro-steps stay in results.h5: a restart from the step's start
     # recomputes them, so it does not save them again.
     def on_ep_step(t: float, ep_step_idx: int) -> None:
         if ep_step_idx % save_ep_every == 0:

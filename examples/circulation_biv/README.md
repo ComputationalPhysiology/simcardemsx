@@ -49,7 +49,7 @@ or the heart rate.
 
 ## Output
 
-Besides the files every application writes (`results.bp`, `log.csv`, checkpoints,
+Besides the files every application writes (`results.h5`, `log.csv`, checkpoints,
 `run.json`), it writes `pv_loops.png`, with the pressure-volume loops and the
 pressures, volumes and tension over time, and `summary.json`, which has each
 ventricle's volume range, the intervals in which its outflow valve is open and the

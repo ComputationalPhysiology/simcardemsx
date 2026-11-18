@@ -343,7 +343,8 @@ print(f"λ at the EP nodes after {T_END:g} ms: {lmbda_ep.min():.4f} to {lmbda_ep
 #
 # - The [slab example](../applications/slab.md) is this tutorial grown
 #   into a full program. It takes the split, the scheme and a crossbridge model on the
-#   command line, writes `results.bp` for ParaView, and checkpoints and restarts.
+#   command line, writes `results.h5` (from which its `post.py` writes fields for
+#   ParaView), and checkpoints and restarts.
 # - `controller.snapshot()` and `controller.restore(snapshot)` copy and restore the
 #   state of every component, and `simcardemsx.checkpoint.Checkpointer` writes it to
 #   disk, so a run can continue in a new process.

@@ -15,7 +15,7 @@ state in memory (:func:`take_snapshot`), so that a step that fails can be undone
 back to EP afterwards.
 
 On disk, a :class:`Checkpointer` writes them in the upstream CLIs' layout: every
-Function into :data:`RESTART` (``restart.bp``, through io4dolfinx, in input-mesh order)
+Function into :data:`RESTART` (``restart.h5``, through io4dolfinx, in input-mesh order)
 and every metadata value into :data:`RESTART_META` (``restart.json``), written last and
 atomically, so that it only ever names a complete checkpoint.
 """
@@ -301,11 +301,15 @@ def restore_snapshot(components: Sequence[Checkpointable], snapshot: Snapshot) -
 
 
 # ----------------------------------------------------------------------
-# On disk: restart.bp and restart.json
+# On disk: restart.h5 and restart.json
 # ----------------------------------------------------------------------
 
+#: The io4dolfinx backend of every file of Functions simcardemsx writes and reads back:
+#: HDF5, named ``.h5``. Named in every call, since io4dolfinx's default changed from
+#: adios2 to h5py in its 2.0, and the two cannot read each other's files.
+IO_BACKEND = "h5py"
 #: The checkpoint's Functions, written by io4dolfinx into the run's output folder.
-RESTART = "restart.bp"
+RESTART = "restart.h5"
 #: The checkpoint's metadata. Written last, and atomically, so it names only a
 #: checkpoint whose Functions are all in :data:`RESTART`.
 RESTART_META = "restart.json"
@@ -344,6 +348,24 @@ def write_json(path: Path, data: Mapping[str, Any], comm: MPI.Comm = MPI.COMM_WO
         raise failure
     if message is not None:
         raise OSError(f"Rank 0 could not write {path}: {message}")
+
+
+def stored_times(path: Path, name: str, comm: MPI.Intracomm = MPI.COMM_WORLD) -> np.ndarray:
+    """Every time the io4dolfinx file ``path`` holds ``name`` at, as written.
+
+    None if the file does not hold ``name``: the h5py backend raises ``KeyError`` for
+    a name it never wrote, where adios2 returned no times. Any other failure propagates.
+    """
+    try:
+        times = io4dolfinx.read_timestamps(
+            filename=path,
+            comm=comm,
+            function_name=name,
+            backend=IO_BACKEND,
+        )
+    except KeyError:
+        return np.zeros(0)
+    return np.asarray(times, dtype=float)
 
 
 def physics_hash(physics: Mapping[str, Any]) -> str:
@@ -410,7 +432,7 @@ def _names_difference(
 
 
 class Checkpointer:
-    """Write a coupled run to ``folder`` and read it back: ``restart.bp`` and
+    """Write a coupled run to ``folder`` and read it back: ``restart.h5`` and
     ``restart.json``, in the upstream CLIs' layout.
 
     Its components are ``controller.components()`` followed by ``extra``. A checkpoint
@@ -455,16 +477,16 @@ class Checkpointer:
     -----
     Times that :data:`RESTART` holds for every function are complete checkpoints.
     :meth:`write` writes no Functions at a time already complete there (io4dolfinx
-    would append a duplicate, and read the first one back), and only rewrites
+    refuses a Function at a time the file already holds it at), and only rewrites
     ``restart.json``. A fresh checkpointer knows of none; :meth:`restore` reads them.
-    So a fresh one assumes that ``folder`` holds no ``restart.bp`` of another run.
+    So a fresh one assumes that ``folder`` holds no ``restart.h5`` of another run.
 
     Times that :data:`RESTART` holds, for any function, later than the checkpoint
     :meth:`restore` restored are **foreign**: a process that was killed before it wrote
     ``restart.json`` wrote them, wholly or in part. :meth:`write` skips a checkpoint at
     a foreign time altogether, and logs a warning: pairing the killed process's
-    Functions (io4dolfinx reads back the first of duplicates) with this run's metadata
-    would mix two runs' states, which differ in a run that is not bit-reproducible.
+    Functions with this run's metadata would mix two runs' states, which differ in a
+    run that is not bit-reproducible.
     ``restart.json`` then keeps naming the checkpoint before it.
     """
 
@@ -520,13 +542,8 @@ class Checkpointer:
         return bool(np.any(np.abs(np.asarray(times, dtype=float) - t) < self._tolerance()))
 
     def _stored_times(self, name: str) -> np.ndarray:
-        """Every time :data:`RESTART` holds ``name`` at, duplicates included."""
-        times = io4dolfinx.read_timestamps(
-            filename=self.folder / RESTART,
-            comm=self.comm,
-            function_name=name,
-        )
-        return np.asarray(times, dtype=float)
+        """Every time :data:`RESTART` holds ``name`` at (none if it does not hold it)."""
+        return stored_times(self.folder / RESTART, name, self.comm)
 
     def _functions(
         self,
@@ -575,6 +592,7 @@ class Checkpointer:
                         f,
                         time=t,
                         name=name,
+                        backend=IO_BACKEND,
                     )
             self._complete.append(t)
         for component in self.components:
@@ -613,7 +631,7 @@ class Checkpointer:
         later than ``t`` is recorded as foreign, so that :meth:`write` skips it.
 
         Each Function is read at the stored time closest to ``t``: io4dolfinx reads at
-        an exact time, and returns the first of duplicates.
+        an exact time.
 
         A refused restore changes nothing. The physics, the function names and the time
         are checked before anything is read. Anything raised after that, by a read, by a
@@ -705,6 +723,7 @@ class Checkpointer:
                     f,
                     time=float(times[np.argmin(np.abs(times - t))]),
                     name=name,
+                    backend=IO_BACKEND,
                 )
                 f.x.scatter_forward()
 

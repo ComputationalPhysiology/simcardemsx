@@ -11,7 +11,7 @@ The run side, in the order a demo's ``main`` uses it:
   its option, then the physics, then :func:`~simcardemsx.results.prepare_output`. A
   refusal exits through ``SystemExit`` with the reason.
 - :func:`start_or_resume`: a fresh run starts ``log.csv`` and writes its rows at t = 0;
-  a restart restores the checkpoint and resumes ``log.csv`` and ``results.bp``.
+  a restart restores the checkpoint and resumes ``log.csv`` and ``results.h5``.
 - :func:`steps_to_take` counts the steps left to ``t_end``, none if the checkpoint is at
   or past it.
 - :func:`failure_at` gives what ``run.json`` records of an exception from the loop.
@@ -22,9 +22,9 @@ The run side, in the order a demo's ``main`` uses it:
 
 The post side, for each demo's ``post.py``:
 
-- :func:`result_functions`: one Function per ``results.bp`` name, on the space the run
+- :func:`result_functions`: one Function per ``results.h5`` name, on the space the run
   wrote it from, as the run's resolved settings describe the spaces.
-- :func:`write_p1_fields`: VTX on P1 of a run's ``results.bp`` fields, the quadrature
+- :func:`write_p1_fields`: VTX on P1 of a run's ``results.h5`` fields, the quadrature
   and other discontinuous fields averaged and the others interpolated, with a callback
   at each time.
 - :class:`Panel` and :func:`figure`: quantities over time, stacked over a shared time
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 #: :data:`simcardemsx.results.ARTIFACTS`, and so what ``--overwrite`` also deletes:
 #: ``steps.csv``, ``snapshots.npz`` and the recorder's checkpoint sidecars.
 RECORDER_ARTIFACTS = ("steps.csv", "snapshots.npz", "restart_recorder_*.npz")
-#: The ``results.bp`` names on the backend's quadrature space, which every demo saves.
+#: The ``results.h5`` names on the backend's quadrature space, which every demo saves.
 ACTIVATION_RESULTS = ("lmbda", "tension_kPa", "stiffness_kPa")
 
 
@@ -121,10 +121,10 @@ def start_or_resume(
     """Start the run's output, or restore the run and resume its output.
 
     A fresh run starts ``log`` (its header) and calls ``write_initial()``, which writes
-    the rows at t = 0 (``results.bp`` and ``log.csv``); it returns ``[]``. A restart
+    the rows at t = 0 (``results.h5`` and ``log.csv``); it returns ``[]``. A restart
     restores the checkpoint (``checkpointer.restore()``), keeps the rows of ``log`` up
     to its time (:meth:`~simcardemsx.results.CsvLog.resume`), takes each of
-    ``result_names``' last saved time from ``results.bp``
+    ``result_names``' last saved time from ``results.h5``
     (:meth:`~simcardemsx.results.ResultsWriter.resume`), and returns the rows kept, the
     first of them the run's row at t = 0.
 
@@ -158,7 +158,7 @@ def failure_at(controller: SimulationController, error: BaseException) -> tuple[
 
     A step that raised before its ``mech_callback`` was rolled back: the controller's
     ``t`` is its start, and ``t_failed`` its end, which is ``t_fail_ms``. Anything
-    raised after that, in ``mech_callback`` (the log row, ``results.bp``, the recorder)
+    raised after that, in ``mech_callback`` (the log row, ``results.h5``, the recorder)
     or in a periodic checkpoint, follows an accepted step: ``t_failed`` is None, and
     ``t_fail_ms`` is the controller's ``t``, that step's end, whose output may be half
     written.
@@ -177,7 +177,7 @@ def write_end_checkpoint(checkpointer: Checkpointer, failure: str | None) -> Non
     Written at the end of a run that finished, or whose last step failed and was rolled
     back to its start (``t_failed`` is set). Not after a failure that followed an
     accepted step (``failure`` is set and ``t_failed`` is None): that step's log row,
-    ``results.bp`` fields or recorder row may be missing, and a checkpoint at its end
+    ``results.h5`` fields or recorder row may be missing, and a checkpoint at its end
     would leave them missing for good, so the last periodic checkpoint stays the
     restart point. Not while the backend has a step pending. At a time already
     checkpointed, only ``restart.json`` and the sidecars are new.
@@ -270,7 +270,7 @@ def result_functions(
     settings: Mapping[str, Any],
     ep_names: Sequence[str],
 ) -> dict[str, dolfinx.fem.Function]:
-    """One Function per ``results.bp`` name, on ``mesh``, on the space the run wrote it
+    """One Function per ``results.h5`` name, on ``mesh``, on the space the run wrote it
     from, as the run's resolved ``settings`` describe it.
 
     ``ep_names`` (EP's, ``v`` and ``cai``) are on the EP ODE space
@@ -345,7 +345,7 @@ def write_p1_fields(
     """Write VTX at ``path`` of a run's fields on P1, at every time any of ``functions``
     was saved at.
 
-    ``functions`` are one Function per ``results.bp`` name, all on one mesh, and
+    ``functions`` are one Function per ``results.h5`` name, all on one mesh, and
     ``saved`` their values by name and time, as
     :func:`~simcardemsx.results.read_results` returns them. ``shown`` maps each name in
     the VTX file to the name it shows: a P1 Function (vector-valued if the field is)

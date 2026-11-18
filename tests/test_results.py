@@ -1,4 +1,4 @@
-"""The results module: results.bp, the CSV log, the output-folder rules, settings."""
+"""The results module: results.h5, the CSV log, the output-folder rules, settings."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from simcardemsx import checkpoint, results
+from simcardemsx.checkpoint import IO_BACKEND
 from simcardemsx.results import (
     ARTIFACTS,
     RESULTS,
@@ -50,7 +51,7 @@ def test_results_writer_never_duplicates_a_timestamp(tmp_path):
     for t in (1.0, 2.0):
         f.x.array[:] = t
         again.write(t, {"u": f})
-    raw = io4dolfinx.read_timestamps(tmp_path / RESULTS, COMM, "u")
+    raw = io4dolfinx.read_timestamps(tmp_path / RESULTS, COMM, "u", backend=IO_BACKEND)
     assert list(raw) == [0.0, 1.0, 2.0]
 
 
@@ -216,7 +217,7 @@ def test_results_writer_resume_skips_a_name_without_times(tmp_path):
     writer = ResultsWriter(tmp_path)
     writer.resume(["u", "never_written"])
     assert writer._last == {"u": 1.0}
-    ResultsWriter(tmp_path / "empty").resume(["u"])  # no results.bp: sets nothing
+    ResultsWriter(tmp_path / "empty").resume(["u"])  # no results.h5: sets nothing
 
 
 def test_results_writer_resume_propagates_a_real_read_failure(tmp_path):

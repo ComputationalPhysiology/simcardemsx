@@ -1,8 +1,11 @@
-"""Results in the upstream CLIs' layout: ``results.bp``, ``log.csv``, resolved settings.
+"""Results in the upstream CLIs' layout: ``results.h5``, ``log.csv``, resolved settings.
 
-A run's folder holds ``config.resolved.toml``, ``run.json``, ``results.bp`` (Functions,
+A run's folder holds ``config.resolved.toml``, ``run.json``, ``results.h5`` (Functions,
 through io4dolfinx, in input-mesh order), ``log.csv`` (one row per logged step),
-``restart.bp`` and ``restart.json`` (see :mod:`simcardemsx.checkpoint`) and ``post/``.
+``restart.h5`` and ``restart.json`` (see :mod:`simcardemsx.checkpoint`) and ``post/``.
+The Functions are HDF5 files (io4dolfinx's h5py backend,
+:data:`~simcardemsx.checkpoint.IO_BACKEND`), named ``.h5`` where the CLIs, on
+io4dolfinx's adios2 backend, write ``.bp``.
 :func:`prepare_output` applies the CLIs' rules to such a folder before a run starts.
 """
 
@@ -28,7 +31,7 @@ try:
 except ModuleNotFoundError:  # Python 3.10: read with toml, which wrote the file
     tomllib = None  # type: ignore[assignment]
 
-from .checkpoint import RESTART, RESTART_META, check_restart, write_json
+from .checkpoint import IO_BACKEND, RESTART, RESTART_META, check_restart, stored_times, write_json
 
 __all__ = [
     "ARTIFACTS",
@@ -46,7 +49,7 @@ __all__ = [
     "write_resolved_settings",
 ]
 
-RESULTS = "results.bp"
+RESULTS = "results.h5"
 ARTIFACTS = (
     "config.resolved.toml",
     "run.json",
@@ -126,7 +129,7 @@ def prepare_output(
 
     ``artifacts`` are names or fnmatch-style globs; ``"wipe"`` deletes only what they
     match. The decision is taken on rank 0 and broadcast, so every rank raises together.
-    A stale ``restart.bp`` is an artifact: a fresh run is refused beside it, and
+    A stale ``restart.h5`` is an artifact: a fresh run is refused beside it, and
     ``overwrite`` removes it, so a fresh run never appends to another run's checkpoint.
 
     Raises
@@ -177,13 +180,9 @@ def read_result_times(
     name: str,
     comm: MPI.Intracomm = MPI.COMM_WORLD,
 ) -> np.ndarray:
-    """Sorted, unique saved times of ``name`` in ``folder / results.bp``."""
-    times = io4dolfinx.read_timestamps(
-        filename=Path(folder) / RESULTS,
-        comm=comm,
-        function_name=name,
-    )
-    return np.unique(np.asarray(times, dtype=float))
+    """Sorted, unique saved times of ``name`` in ``folder / results.h5`` (none if it has
+    none)."""
+    return np.unique(stored_times(Path(folder) / RESULTS, name, comm))
 
 
 def read_results(
@@ -200,14 +199,20 @@ def read_results(
     for name, f in functions.items():
         out[name] = {}
         for t in read_result_times(folder, name, comm):
-            io4dolfinx.read_function(Path(folder) / RESULTS, f, time=float(t), name=name)
+            io4dolfinx.read_function(
+                Path(folder) / RESULTS,
+                f,
+                time=float(t),
+                name=name,
+                backend=IO_BACKEND,
+            )
             f.x.scatter_forward()
             out[name][float(t)] = f.x.array.copy()
     return out
 
 
 class ResultsWriter:
-    """Writes Functions to ``folder / results.bp``, each name at most once per time."""
+    """Writes Functions to ``folder / results.h5``, each name at most once per time."""
 
     def __init__(self, folder: str | Path, comm: MPI.Intracomm = MPI.COMM_WORLD) -> None:
         self.folder = Path(folder)
@@ -226,16 +231,17 @@ class ResultsWriter:
                 f,
                 time=float(t_ms),
                 name=name,
+                backend=IO_BACKEND,
             )
             self._last[name] = float(t_ms)
 
     def resume(self, names: Iterable[str]) -> None:
-        """Take each name's last saved time from ``results.bp`` (none if it has none)."""
+        """Take each name's last saved time from ``results.h5`` (none if it has none)."""
         if not (self.folder / RESULTS).exists():
             return
         for name in names:
-            # io4dolfinx returns no times for a name never written to an existing file;
-            # any real read failure propagates.
+            # A name never written to an existing file has no times; any real read
+            # failure propagates.
             times = read_result_times(self.folder, name, self.comm)
             if times.size:
                 self._last[name] = float(times[-1])

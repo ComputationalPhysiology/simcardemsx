@@ -1,6 +1,6 @@
 """Replot a BiV run from its output folder: ``python post.py --output-dir <folder>``.
 
-Reads the folder's ``config.resolved.toml``, ``log.csv``, ``results.bp`` and, if it is
+Reads the folder's ``config.resolved.toml``, ``log.csv``, ``results.h5`` and, if it is
 there, ``run.json``. Rebuilds only the geometry and the spaces the run wrote from, not
 the coupled problem: the mesh comes from the cache under
 ``meshes/ukb_mean_ed_clipped/`` (``main.load_geometry``: rotated, in metres), deformed
@@ -167,7 +167,7 @@ def plot(columns: dict[str, np.ndarray], path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The run's fields, from results.bp
+# The run's fields, from results.h5
 # ---------------------------------------------------------------------------
 
 
@@ -197,7 +197,7 @@ def result_functions(
     settings: Mapping[str, Any],
     mesh: dolfinx.mesh.Mesh,
 ) -> dict[str, dolfinx.fem.Function]:
-    """One Function per ``results.bp`` name, on the space the run wrote it from, on
+    """One Function per ``results.h5`` name, on the space the run wrote it from, on
     ``mesh`` (:func:`reference_mesh`), as the run's resolved ``settings`` describe it
     (:func:`demo_io.result_functions`).
     """
