@@ -50,6 +50,7 @@ from conftest import (
     _run,
     _zetasplit_inputs,
 )
+from test_round_trip import DT_EP, DT_MECH, NUM_STEPS
 
 from simcardemsx.controller import SimulationController
 
@@ -68,7 +69,8 @@ def _homogeneous_stress() -> Callable[..., list[float]]:
 
     The material of ``conftest._mechanics`` (Holzapfel-Ogden, transversely isotropic,
     incompressible, fibres along x and sheets along y) and simcardemsx's default active
-    stress, ``Ta (λ_f - 1)``, all from zero-mech.
+    stress, ``Ta F f0⊗f0 / λ_f`` (the ``stretch`` formulation), all from zero-mech, whose
+    ``StretchActiveStress`` writes it as the strain energy ``Ta (λ_f - 1)``.
     """
     model = zero_mech.Model(
         material=zero_mech.material.HolzapfelOgden(
@@ -167,7 +169,8 @@ def test_one_element_equals_the_zero_mech_solution(
 ):
     dt = 1.0
     fem = _run(split_modules, _mechanics, split, "monolithic", dt, t_end, inputs_of_t)
-    assert fem.t_fail == t_end
+    # Every step converged. Not t_fail == t_end, which a failure on the last step also gives.
+    assert len(fem.trace) == round(t_end / dt)
 
     mech = _numpy_mech(split)
     zero_d = _Homogeneous0D(mech, homogeneous_stress)
@@ -197,7 +200,6 @@ def test_coupled_loop_equals_its_zero_mech_twin(
     homogeneous_stress,
     split,
 ):
-    dt_ep, dt_mech, num_steps = 0.05, 1.0, 60
     modules = split_modules[split]
     ep = modules.ep
     i_v, i_cai = ep.state_index("v"), ep.state_index("cai")
@@ -207,10 +209,10 @@ def test_coupled_loop_equals_its_zero_mech_twin(
         modules.mechanics,
         dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1),
     )
-    controller = SimulationController(problem, ep_solver, backend, modules, dt_mech, dt_ep)
+    controller = SimulationController(problem, ep_solver, backend, modules, DT_MECH, DT_EP)
     fem: dict[str, list[float]] = {"lmbda": [], "v": [], "cai": [], "Ta": []}
     spread = 0.0
-    for _ in range(num_steps):
+    for _ in range(NUM_STEPS):
         controller.step()
         states = ep_solver.ode.values
         fem["lmbda"].append(float(np.mean(backend.lmbda_prev.x.array)))
@@ -229,13 +231,13 @@ def test_coupled_loop_equals_its_zero_mech_twin(
     i_lmbda = ep.parameter.get("lmbda")
     reference: dict[str, list[float]] = {key: [] for key in fem}
     t = 0.0
-    for _ in range(num_steps):
+    for _ in range(NUM_STEPS):
         t_n = t
-        for i in range(round(dt_mech / dt_ep)):  # the controller's own time arithmetic
-            t_start, t = t, t_n + (i + 1) * dt_ep
+        for i in range(round(DT_MECH / DT_EP)):  # the controller's own time arithmetic
+            t_start, t = t, t_n + (i + 1) * DT_EP
             y = ep.generalized_rush_larsen(y, t_start, t - t_start, p, to_ep)
         forward = _by_name(ep.missing_values(t, y, p, to_ep), ep.provides, mech.missing)
-        lmbda = zero_d.step(t_n, dt_mech, forward)
+        lmbda = zero_d.step(t_n, DT_MECH, forward)
         to_ep = _by_name(zero_d.provided, modules.mechanics.provides, ep.missing)
         if i_lmbda is not None:
             p[i_lmbda] = lmbda
