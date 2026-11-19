@@ -42,10 +42,10 @@ python3 post.py --output-dir output/ToRORd_dynCl_endo_zetasplit
 
 In `--output-dir`:
 
-- `results.bp`: `v` and `cai`, and `u`, `lmbda`, `tension_kPa` and `stiffness_kPa`;
+- `results.h5`: `v` and `cai`, and `u`, `lmbda`, `tension_kPa` and `stiffness_kPa`;
 - `log.csv`: one row per mechanics step, with the Newton iterations, mean stretch and
   mean tension;
-- `restart.bp` and `restart.json`: the checkpoint that `--restart` continues from;
+- `restart.h5` and `restart.json`: the checkpoint that `--restart` continues from;
 - `config.resolved.toml`, `run.json` and `timings.json`: the settings, how the run
   ended, and where the time went.
 

@@ -10,12 +10,12 @@ Output goes to ``--output-dir`` (default ``output/<odefile stem>/``), in the ups
 CLIs' layout (:mod:`simcardemsx.results`):
 
 - ``config.resolved.toml``: :func:`settings`, rewritten by every run, fresh or restarted.
-- ``results.bp``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
+- ``results.h5``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
   ``lmbda``, ``tension_kPa`` and ``stiffness_kPa`` (the last three on the backend's
   quadrature points) every ``--save-every`` ms, all from t = 0.
 - ``log.csv``: one row per mechanics step, and one at t = 0: ``t_ms``,
   ``newton_iterations``, and the mesh means ``lmbda_mean`` and ``Ta_mean_kPa``.
-- ``restart.bp`` and ``restart.json``: a checkpoint every ``--checkpoint-every`` ms and
+- ``restart.h5`` and ``restart.json``: a checkpoint every ``--checkpoint-every`` ms and
   at the end of the run, with the scheme comparison's ``restart_recorder_<t>.npz``.
 - ``timings.json``: this process's wall time in the EP ODE step, the EP PDE step and the
   mechanics solve, and its Newton iterations (after a restart, only the part it ran).
@@ -89,7 +89,7 @@ SLAB: dict[str, Any] = {
 }
 MESH_UNIT = "mm"
 QUAD_DEGREE = 4  # Degree of quadrature for the mechanics mesh
-#: The spaces of ``results.bp``, which ``post.py`` rebuilds: the EP ODE space, P1 (the
+#: The spaces of ``results.h5``, which ``post.py`` rebuilds: the EP ODE space, P1 (the
 #: transfer plan averages what crosses back onto P1 or DG0 only), holds ``v`` and
 #: ``cai``; pulse's displacement space, given to the problem, holds ``u``; and the
 #: backend's scalar quadrature space at ``QUAD_DEGREE`` holds the rest.
@@ -293,21 +293,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--save-every",
         type=float,
         default=None,
-        help="Save u, lmbda, tension_kPa and stiffness_kPa to results.bp every this many "
+        help="Save u, lmbda, tension_kPa and stiffness_kPa to results.h5 every this many "
         "ms, a whole multiple of --dt-mech (default: --dt-mech).",
     )
     parser.add_argument(
         "--save-every-ep",
         type=float,
         default=1.0,
-        help=f"Save EP's v and cai to results.bp every this many ms, a whole multiple of "
+        help=f"Save EP's v and cai to results.h5 every this many ms, a whole multiple of "
         f"the {DT_EP} ms EP step (default: %(default)s).",
     )
     parser.add_argument(
         "--checkpoint-every",
         type=float,
         default=50.0,
-        help="Write a checkpoint (restart.bp, restart.json) every this many ms, a whole "
+        help="Write a checkpoint (restart.h5, restart.json) every this many ms, a whole "
         "multiple of --dt-mech, and at the end of the run (default: %(default)s).",
     )
     flags = parser.add_mutually_exclusive_group()
@@ -692,11 +692,12 @@ def main(argv: list[str] | None = None):
     # is deliberate: beat's splitting solver and the controller call them through
     # these attributes, which is what mypy's method-assign objects to.
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0, "mech_s": 0.0}
+    assert ep_solver.pde is not None  # optional since beat 0.11; built above with one
     ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
     ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
     problem.solve = accumulate_time(problem.solve, timings, "mech_s")  # type: ignore[method-assign]
 
-    # results.bp's fields. EP's are P1 copies of rows of the ODE's state array, refreshed
+    # results.h5's fields. EP's are P1 copies of rows of the ODE's state array, refreshed
     # before each save; the others are the problem's and the backend's own Functions.
     ep_fields = {name: dolfinx.fem.Function(ep_ode_space, name=name) for name in EP_RESULTS}
     ep_rows = {name: ep_module.state_index(name) for name in EP_RESULTS}
@@ -753,7 +754,7 @@ def main(argv: list[str] | None = None):
     # 6. Define Callbacks & Run Simulation
     # ---------------------------------------------------------
     # The controller counts steps from 1. A step that fails is rolled back, but the EP
-    # saves of its micro-steps stay in results.bp: a restart from the step's start
+    # saves of its micro-steps stay in results.h5: a restart from the step's start
     # recomputes them bit for bit, so it does not save them again.
     def on_ep_step(current_t, ep_step_idx):
         if ep_step_idx % save_ep_every == 0:

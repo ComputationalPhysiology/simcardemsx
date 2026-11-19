@@ -26,7 +26,7 @@ import numpy as np
 import pulse
 import pytest
 
-from simcardemsx.checkpoint import physics_hash
+from simcardemsx.checkpoint import IO_BACKEND, physics_hash
 from simcardemsx.results import RESULTS, read_resolved_settings, read_results
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
@@ -120,13 +120,14 @@ def _files(folder: Path) -> dict[str, bytes]:
 
 
 def _raw_times(folder: Path, name: str) -> list[float]:
-    """Every time ``results.bp`` holds ``name`` at, duplicates included."""
+    """Every time ``results.h5`` holds ``name`` at, as io4dolfinx stores them."""
     from mpi4py import MPI
 
     times = io4dolfinx.read_timestamps(
         filename=folder / RESULTS,
         comm=MPI.COMM_WORLD,
         function_name=name,
+        backend=IO_BACKEND,
     )
     return [float(t) for t in times]
 
@@ -170,7 +171,7 @@ def test_slab_example_runs_a_crossbridge_model(tmp_path):
         log = list(csv.reader(f))
     assert log[0] == ["t_ms", "newton_iterations", "lmbda_mean", "Ta_mean_kPa"]
     assert [float(row[0]) for row in log[1:]] == [0.0, 1.0, 2.0]
-    for name in ("config.resolved.toml", RESULTS, "restart.bp", "restart.json", "timings.json"):
+    for name in ("config.resolved.toml", RESULTS, "restart.h5", "restart.json", "timings.json"):
         assert (output_dir / name).exists(), name
     for name in RESULT_NAMES:
         assert _raw_times(output_dir, name) == [0.0, 1.0, 2.0], name
@@ -193,7 +194,7 @@ def test_slab_example_refuses_monolithic_with_crossbridge(tmp_path):
 @pytest.mark.slow
 def test_slab_restart_matches_the_uninterrupted_run(tmp_path):
     """Gate R4: 4 ms straight, and 2 ms followed by ``--restart`` to 4 ms, give the same
-    ``results.bp`` (every name, every time, bit for bit, and no time twice), the same
+    ``results.h5`` (every name, every time, bit for bit, and no time twice), the same
     ``log.csv`` and ``steps.csv`` byte for byte, and the same ``post/traces.csv``.
 
     The restart runs under another hash seed than the run it continues, as a user's next
@@ -256,7 +257,7 @@ runpy.run_path("main.py", run_name="__main__")
 
 @pytest.mark.slow
 def test_slab_failure_in_a_steps_output_restarts_from_the_last_checkpoint(tmp_path):
-    """A failure in a step's output (here ``results.bp``, inside ``mech_callback``)
+    """A failure in a step's output (here ``results.h5``, inside ``mech_callback``)
     follows an accepted step, so the run writes no end checkpoint at that step's end:
     its output is incomplete. The restart continues from the last periodic checkpoint
     and gives the uninterrupted run's files."""
@@ -412,7 +413,7 @@ def test_slab_post_regenerates_the_plots(tmp_path):
 @pytest.mark.slow
 def test_slab_restart_at_or_past_t_end_does_nothing(tmp_path):
     """``--restart`` with ``--t-end`` at or before the checkpoint exits 0 without
-    stepping: ``results.bp``'s times and ``log.csv`` are unchanged."""
+    stepping: ``results.h5``'s times and ``log.csv`` are unchanged."""
     output_dir = tmp_path / "out"
     result = _run_slab("--t-end", "2", output_dir=output_dir)
     assert result.returncode == 0, result.stderr[-3000:]

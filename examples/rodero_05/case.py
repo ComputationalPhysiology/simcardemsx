@@ -350,7 +350,8 @@ def _cell_fields(
 def _node_field(mesh: dolfinx.mesh.Mesh, path: Path, name: str) -> np.ndarray:
     """One of the EP node fields, per P1 dof (run script, lines 201-207)."""
     function = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 1)), name=name)
-    io4dolfinx.read_function(filename=path, u=function, name=name)
+    # physcardems wrote the case with io4dolfinx's adios2 backend, its default before 2.0
+    io4dolfinx.read_function(filename=path, u=function, name=name, backend="adios2")
     return function.x.array.copy()
 
 

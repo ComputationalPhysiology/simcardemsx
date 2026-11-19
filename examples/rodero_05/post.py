@@ -1,6 +1,6 @@
 """Replot a rodero_05 run from its output folder: ``python post.py --output-dir <folder>``.
 
-Reads the folder's ``config.resolved.toml``, ``log.csv``, ``results.bp`` and, if it is
+Reads the folder's ``config.resolved.toml``, ``log.csv``, ``results.h5`` and, if it is
 there, ``run.json``. Rebuilds only the geometry, from physcardems' case
 (``case.load_case``, at the run's resolved case directory and ``--tref``), and the
 spaces the run wrote from: no problem and no coupled forms. Writes ``post/``,
@@ -279,7 +279,7 @@ def read_columns(path: Path) -> dict[str, np.ndarray]:
 
 
 # ---------------------------------------------------------------------------
-# The run's fields, from results.bp
+# The run's fields, from results.h5
 # ---------------------------------------------------------------------------
 
 

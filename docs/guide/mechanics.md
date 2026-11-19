@@ -62,7 +62,7 @@ crossbridge object must save is listed by that library's own restart API.
 - `controller.snapshot()` and `controller.restore(snapshot)` copy the whole state in
   memory. The controller takes a snapshot before every step and restores it when the
   step fails.
-- `Checkpointer(controller, folder, physics=...)` writes the same state to `restart.bp`
+- `Checkpointer(controller, folder, physics=...)` writes the same state to `restart.h5`
   and `restart.json`, and `restore()` reads it back in a new process.
 
 ```python
@@ -91,9 +91,9 @@ tools:
 | File | Contents |
 | --- | --- |
 | `config.resolved.toml` | Every setting of the run |
-| `results.bp` | Fields over time (`ResultsWriter`), readable by ParaView and `read_results` |
+| `results.h5` | Fields over time (`ResultsWriter`), as HDF5, read back by `read_results`; each example's `post.py` turns them into `fields.bp` for ParaView |
 | `log.csv` | One row per step (`CsvLog`) |
-| `restart.bp`, `restart.json` | The latest checkpoint |
+| `restart.h5`, `restart.json` | The latest checkpoint |
 | `run.json` | How the run ended, with the software versions and git commit (`simcardemsx.provenance`) |
 | `timings.json` | Where the time went |
 

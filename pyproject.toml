@@ -36,9 +36,9 @@ dependencies = [
     # RDQ20MF can take a step longer than its 25 us RU step (gate X2), and 0.3.4 the
     # first with get_state/set_state, which the backend's checkpoint saves.
     "crossbridge>=0.3.4",
-    # io4dolfinx writes and reads restart.bp and results.bp (simcardemsx.checkpoint,
+    # io4dolfinx writes and reads restart.h5 and results.h5, with its h5py backend (simcardemsx.checkpoint,
     # simcardemsx.results), and is imported at package import time.
-    "io4dolfinx",
+    "io4dolfinx[h5py]",
     # scipy is used by simcardemsx.zero_d for the monolithic reference solve
     "scipy",
     # gotranx 2.2.0 orders the generated states independently of PYTHONHASHSEED, and its
@@ -63,6 +63,10 @@ test = [
     "cardiac-geometriesx",
     # Regazzoni's closed-loop circuit (its .ode file), for the circulation gates
     "circulation>=0.4.0",
+    # The 0D reference of tests/test_zero_mech_reference.py: 0.3.0 is the first with
+    # StretchActiveStress and Holzapfel-Ogden's b = 0 limit (pulse's transversely
+    # isotropic parameters)
+    "zero-mech>=0.3.0",
 ]
 dev = [
     "pdbpp",
@@ -81,7 +85,7 @@ demo = [
     "ukb-atlas",
     "circulation>=0.4.0",
     "gotranx",
-    "io4dolfinx",
+    "io4dolfinx[h5py]",
 ]
 docs = [
     # MyST builds the site (docs/myst.yml); jupytext turns the tutorials into the notebooks
@@ -92,6 +96,8 @@ docs = [
     "ipykernel",
     "jupyter-server",
     "griffe>=2",
+    # Tutorial 5's independent 0D reference
+    "zero-mech>=0.3.0",
     "simcardemsx[demo]",
 ]
 benchmark = [
@@ -142,6 +148,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # circulation (Regazzoni's circuit, for the circulation gates) ships no py.typed marker.
 module = ["circulation", "circulation.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# sympy and zero-mech (the 0D reference of tests/test_zero_mech_reference.py) ship no py.typed
+# marker.
+module = ["sympy", "sympy.*", "zero_mech", "zero_mech.*"]
 ignore_missing_imports = true
 
 

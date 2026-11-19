@@ -38,6 +38,8 @@ project:
         - file: tutorials/02_coupling_schemes_0d.ipynb
         - file: tutorials/03_single_element.ipynb
         - file: tutorials/04_coupled_slab.ipynb
+        - file: tutorials/05_zero_mech_reference.ipynb
+        - file: tutorials/06_thick_cylinder.ipynb
     - title: Applications
       children:
         - file: applications/examples.md

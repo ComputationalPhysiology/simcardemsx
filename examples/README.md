@@ -20,11 +20,13 @@ documentation is built.
 | [`02_coupling_schemes_0d.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/02_coupling_schemes_0d.py) | Monolithic, naive segregated and stabilized coupling in 0D, and why the naive scheme does not converge | ~10 s |
 | [`03_single_element.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/03_single_element.py) | The same three schemes on one finite element, with `GeneratedActivation` and pulse | ~10 s |
 | [`04_coupled_slab.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/04_coupled_slab.py) | EP and mechanics coupled on a slab through `SimulationController` | ~2 min |
+| [`05_zero_mech_reference.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/05_zero_mech_reference.py) | The single element against an independent 0D solution from [zero-mech](https://github.com/ComputationalPhysiology/zero-mech) | ~15 s |
+| [`06_thick_cylinder.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/06_thick_cylinder.py) | Inflation and active contraction of a thick-walled tube against its exact solution, and second-order mesh convergence | ~45 s |
 
 ## Applications
 
 Larger programs with a command line, output in the layout of the pulse and beat CLIs
-(`results.bp`, `log.csv`, …), checkpoints and restarts, and a `post.py` that replots a
+(`results.h5`, `log.csv`, …), checkpoints and restarts, and a `post.py` that replots a
 finished run. Run each from its own directory.
 
 | Example | What it is |

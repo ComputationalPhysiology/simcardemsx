@@ -173,7 +173,7 @@ class Timers:
 @dataclass
 class DataCollector:
     """Deprecated (a ``DeprecationWarning`` at construction): the demos write
-    ``results.bp`` and ``log.csv`` (:mod:`simcardemsx.results`) during the run, and
+    ``results.h5`` and ``log.csv`` (:mod:`simcardemsx.results`) during the run, and
     their ``post.py`` makes these plots from them."""
 
     problem: pulse.StaticProblem
@@ -183,7 +183,7 @@ class DataCollector:
 
     def __post_init__(self):
         warnings.warn(
-            "DataCollector is deprecated: the demos write results.bp and log.csv "
+            "DataCollector is deprecated: the demos write results.h5 and log.csv "
             "(simcardemsx.results) during the run, and their post.py replots from them.",
             DeprecationWarning,
             stacklevel=3,

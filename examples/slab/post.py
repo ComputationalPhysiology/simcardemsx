@@ -1,6 +1,6 @@
 """Replot a slab run from its output folder: ``python post.py --output-dir <folder>``.
 
-Reads the folder's ``config.resolved.toml``, ``results.bp`` and ``log.csv``, rebuilds
+Reads the folder's ``config.resolved.toml``, ``results.h5`` and ``log.csv``, rebuilds
 only the geometry and the spaces the run wrote from (``main.build_geometry``, not the
 coupled problem), and writes ``post/``, replacing it whole:
 
@@ -71,7 +71,7 @@ PLOTS = (
 
 
 def result_functions(settings: Mapping[str, Any]) -> dict[str, dolfinx.fem.Function]:
-    """One Function per ``results.bp`` name, on the space the run wrote it from, as the
+    """One Function per ``results.h5`` name, on the space the run wrote it from, as the
     run's resolved ``settings`` describe it (:func:`demo_io.result_functions`). All on
     one mesh, the slab ``settings["geometry"]`` describes, from
     ``main.build_geometry(settings)``.

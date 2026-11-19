@@ -38,7 +38,7 @@ Get DOLFINx and install simcardemsx.
 
 :::{card} Tutorials
 :link: tutorials/01_cell_model.ipynb
-From one cell to a coupled slab, in four steps.
+From one cell to a coupled slab, and checks against independent and exact solutions.
 :::
 
 :::{card} User guide

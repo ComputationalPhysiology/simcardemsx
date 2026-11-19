@@ -5,7 +5,7 @@ checkpoint, build every object afresh, restore, and run ``N - K`` steps. Everyth
 :func:`conftest._coupled_state` copies (every restart Function and metadata value, and
 EP's whole ``parameters`` and ``missing_variables`` arrays) must then be bit-identical
 to the uninterrupted run's. The restored run must also equal the checkpointed one right
-after the restore: a difference there is the round trip through ``restart.bp``, and one
+after the restore: a difference there is the round trip through ``restart.h5``, and one
 that appears only after stepping is state that no component saves.
 
 The cases are on gate 5's harness (``tests/test_round_trip.py``): beat EP on the 3x3x3
@@ -18,12 +18,12 @@ checkpoint before any step is its own test: EP's crossing rows then hold their
 constructed values, which no backend output reproduces (its λ output is 0 then).
 
 **R3, refusals.** Another physics hash, other function names, or a time that
-``restart.bp`` does not hold raise ``ValueError`` naming what differs, before anything is
+``restart.h5`` does not hold raise ``ValueError`` naming what differs, before anything is
 read; no ``restart.json`` raises ``FileNotFoundError``; writing with a step pending
 raises ``RuntimeError``.
 
-A checkpoint killed after ``restart.bp`` but before ``restart.json`` (Review Focus), or
-partway through ``restart.bp``, is not used: the next restore starts from the previous
+A checkpoint killed after ``restart.h5`` but before ``restart.json`` (Review Focus), or
+partway through ``restart.h5``, is not used: the next restore starts from the previous
 one, and the restarted run writes nothing at the killed time, so ``restart.json`` keeps
 naming the previous checkpoint until the next time after it, which is written as usual
 and read back correctly.
@@ -45,6 +45,7 @@ from conftest import _assert_same_state, _coupled_state, _crossbridge_factory
 
 from simcardemsx import checkpoint
 from simcardemsx.checkpoint import (
+    IO_BACKEND,
     RESTART,
     RESTART_META,
     Checkpointer,
@@ -376,7 +377,12 @@ def test_write_refuses_a_pending_step(tmp_path, build):
 def _stored_times(folder: Path, name: str) -> list[float]:
     return [
         float(t)
-        for t in io4dolfinx.read_timestamps(folder / RESTART, MPI.COMM_WORLD, function_name=name)
+        for t in io4dolfinx.read_timestamps(
+            folder / RESTART,
+            MPI.COMM_WORLD,
+            function_name=name,
+            backend=IO_BACKEND,
+        )
     ]
 
 
@@ -415,7 +421,7 @@ def _killed_at_3(folder: Path, build: _Build) -> Checkpointer:
 
 
 def _continue_past_the_killed_checkpoint(folder: Path, build: _Build, caplog) -> None:
-    """Restore the checkpoint at t = 2 from ``folder``, whose ``restart.bp`` also holds
+    """Restore the checkpoint at t = 2 from ``folder``, whose ``restart.h5`` also holds
     Functions at t = 3 from a process killed before it wrote ``restart.json``.
 
     t = 3 is foreign: the restarted run's write there writes nothing (no Functions, no
@@ -469,7 +475,7 @@ def test_a_checkpoint_killed_before_restart_json_is_not_used(
     with pytest.raises(_Killed):
         killed.write()
     monkeypatch.undo()
-    # restart.bp holds t = 3 for every function, but restart.json still names t = 2.
+    # restart.h5 holds t = 3 for every function, but restart.json still names t = 2.
     assert _meta_t(tmp_path) == 2.0
     for name in _names(tmp_path):
         assert _stored_times(tmp_path, name) == [2.0, 3.0], name
