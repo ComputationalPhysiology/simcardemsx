@@ -9,7 +9,7 @@ requires = [
 
 [project]
 name = "simcardemsx"
-version = "0.1.1"
+version = "0.2.0"
 description = "Next generation cardiac electro-mechanics solver based on FEniCSx"
 authors = [{name = "Henrik Finsberg", email = "henriknf@simula.no"}]
 license = "MIT"
@@ -239,7 +239,7 @@ tag = true
 sign_tags = false
 tag_name = "v{new_version}"
 tag_message = "Bump version: {current_version} → {new_version}"
-current_version = "0.1.1"
+current_version = "0.2.0"
 
 
 [[tool.bumpversion.files]]
