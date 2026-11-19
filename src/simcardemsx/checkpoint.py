@@ -353,8 +353,8 @@ def write_json(path: Path, data: Mapping[str, Any], comm: MPI.Comm = MPI.COMM_WO
 def stored_times(path: Path, name: str, comm: MPI.Intracomm = MPI.COMM_WORLD) -> np.ndarray:
     """Every time the io4dolfinx file ``path`` holds ``name`` at, as written.
 
-    None if the file does not hold ``name``: the h5py backend raises ``KeyError`` for
-    a name it never wrote, where adios2 returned no times. Any other failure propagates.
+    None if the file does not hold ``name``, for which io4dolfinx raises ``KeyError``.
+    Any other failure propagates.
     """
     try:
         times = io4dolfinx.read_timestamps(
