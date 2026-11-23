@@ -614,3 +614,4 @@ lambdify
 radau
 xreplace
 xtol
+eikonal
