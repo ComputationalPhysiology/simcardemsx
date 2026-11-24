@@ -99,9 +99,19 @@ def valve_open_intervals(
     return intervals
 
 
-def summarise(columns: dict[str, np.ndarray], failed_at: float | None) -> dict[str, Any]:
+def summarise(
+    columns: dict[str, np.ndarray],
+    failed_at: float | None,
+    ep: str = "synchronous",
+    t_a: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """The run's summary, from ``log.csv``'s ``columns``. ``ep`` is the run's ``--ep``,
+    and ``t_a`` the activation times (ms) of a reaction-eikonal run, whose largest is
+    the total activation time, ``total_activation_ms``."""
     t = columns["t_ms"]
-    summary: dict[str, Any] = {}
+    summary: dict[str, Any] = {"ep": ep}
+    if t_a is not None:
+        summary["total_activation_ms"] = float(np.max(t_a))
     for c, outflow in OUTFLOW.items():
         V, p = columns[f"V_{c}_mL"], columns[f"p_{c}_mmHg"]
         EDV, ESV = float(V.max()), float(V.min())
@@ -284,7 +294,15 @@ def main(argv: list[str] | None = None) -> None:
     shutil.rmtree(post_dir, ignore_errors=True)
     post_dir.mkdir()
     columns = {key: np.array([row[key] for row in log]) for key in log[0]}
-    summary = summarise(columns, failed_at)
+    # The activation times are not rebuilt here: main.py recorded their largest.
+    info = json.loads(run.read_text()) if run.exists() else {}
+    total = info.get("total_activation_ms")
+    summary = summarise(
+        columns,
+        failed_at,
+        ep=settings["ep_mode"],
+        t_a=None if total is None else np.array([total]),
+    )
     summary["tref_scale"] = settings["tref"]
     (post_dir / "summary.json").write_text(json.dumps(summary, indent=4))
     write_fields_and_stats(

@@ -40,12 +40,29 @@ python3 post.py --output-dir output
 | `--t-end` | End time, in ms (default 1000) |
 | `--tref` | Scale on Land's reference tension of 120 kPa (default 3) |
 | `--scheme`, `--dt-mech` | Coupling scheme and mechanics time step |
+| `--ep` | `synchronous` (default), `re+` or `re-`: see below. Physics |
 | `--outdir` | Where the results go (default `output/`) |
 | `--save-every`, `--save-every-ep`, `--checkpoint-every`, `--restart`, `--overwrite` | As for the [slab](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/slab) |
 
 The mesh, the circulation's operating point and the prestress are cached in
 `meshes/ukb_mean_ed_clipped/`. Delete that folder after changing the mesh resolution
 or the heart rate.
+
+## Reaction-eikonal EP
+
+`--ep re+` and `--ep re-` replace the synchronous firing by reaction-eikonal EP (beat's
+`FootCurrentODESolver`). An eikonal solve gives each point's activation time from the
+whole LV and RV endocardium at t = 0, as in Petras et al. (2023), and the cells are
+driven by a foot current at that time, again every beat (`period`, the beat's 1000 ms).
+`re+` keeps the monodomain PDE and `re-` drops it. The conduction velocities along the
+fibre, sheet and normal directions are CV_F, 2 CV_F / 3 and CV_F / 3, with CV_F tuned once
+so that total activation takes about 80 ms (`CV_F` in `main.py` records how). The eikonal
+is solved on the unloaded geometry, with the fibres averaged onto cell values, since
+beat reads them at cell midpoints. `summary.json` has `ep` and, for `re+` and `re-`,
+`total_activation_ms`.
+
+The choice, the velocities, the sources and the foot are in the physics hash, so a
+restart must use the same `--ep`. Cell conductivities and the PDE are unused by `re-`.
 
 ## Output
 
