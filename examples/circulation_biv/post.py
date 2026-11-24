@@ -300,7 +300,7 @@ def main(argv: list[str] | None = None) -> None:
     summary = summarise(
         columns,
         failed_at,
-        ep=settings["ep_mode"],
+        ep=settings.get("ep_mode", "synchronous"),
         t_a=None if total is None else np.array([total]),
     )
     summary["tref_scale"] = settings["tref"]

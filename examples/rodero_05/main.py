@@ -212,6 +212,8 @@ U_SPACE = "P_2"
 #: The EP half's parameters every node shares; ``celltype`` and ``i_Stim_Start`` are
 #: each node's own (run script, lines 236-241).
 EP_ODE_PARAMETERS = {"i_Stim_Period": PCL_MS, "lmbda": 1.0, "dLambda": 0.0}
+#: The foot current of --ep re+/re-, for the hash and the run alike.
+FOOT = ExponentialFoot()
 
 #: Holzapfel-Ogden, moduli in kPa and exponents dimensionless (run script, line 68).
 MATERIAL_PARAMS = {
@@ -470,7 +472,7 @@ def model_settings(tref: float, ep_mode: str = "lat-stimulus") -> dict[str, Any]
             "activation": {
                 "mode": ep_mode,
                 "t_a": "case LAT",
-                "foot": dataclasses.asdict(ExponentialFoot()),
+                "foot": dataclasses.asdict(FOOT),
                 "period_ms": PCL_MS,
             },
             "theta": inspect.signature(beat.MonodomainSplittingSolver).parameters["theta"].default,
@@ -712,7 +714,7 @@ def make_ep_solver(
     # The ODE space's dofs are the case's per-node order, as for i_Stim_Start above.
     t_a = dolfinx.fem.Function(W, name="t_a")
     t_a.x.array[:] = case.lat_ms
-    foot_ode = FootCurrentODESolver(ode, t_a, period=PCL_MS)
+    foot_ode = FootCurrentODESolver(ode, t_a, foot=FOOT, period=PCL_MS)
     return beat.SplittingSolver(pde=pde if ep == "re+" else None, ode=foot_ode)
 
 

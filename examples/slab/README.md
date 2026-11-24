@@ -44,8 +44,10 @@ python3 post.py --output-dir output/ToRORd_dynCl_endo_zetasplit
 
 `--ep re+` and `--ep re-` replace the PDE stimulus by activation times from an eikonal
 solve, from the stimulus box at a fixed delay, with conduction velocities along the
-fibre, sheet and normal directions (`CV_F`, `CV_S`, `CV_N` in `main.py`, measured from
-this slab's own monodomain run, with the method in a comment there). Each node's cell
+fibre, sheet and normal directions (`CV_F`, `CV_S`, `CV_N` in `main.py`, measured
+on a fine (dx 0.1 mm) slab of the same conductivities, because the default dx 0.5 mm leaves
+too few nodes past the stimulus box, while the delay comes from the default slab, with the
+method in a comment there). Each node's cell
 model is driven by beat's foot current at its activation time. `re+` keeps the
 monodomain PDE (without a stimulus) and `re-` has none, so its `timings.json` has
 `ep_pde_s` equal to 0.
