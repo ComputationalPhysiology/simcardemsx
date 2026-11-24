@@ -175,7 +175,9 @@ EP_MODES = ("synchronous", "re+", "re-")
 #: 0.29 m/s (max t_a 79.99 ms). The mesh is the atlas mean at end diastole, clipped, with
 #: char_length 10 mm (2186 cells), as cached by numerical_experiments/circulation_biv, the
 #: geometry only (not the prestressed one the run activates). The sheet and normal
-#: velocities are 2/3 and 1/3 of it.
+#: velocities are 2/3 and 1/3 of it. The run activates on the unloaded (prestressed-back)
+#: geometry, where a hand run measured total_activation_ms = 81.5 ms (79.99 ms on the
+#: tuning mesh), within the literature's 75-100 ms.
 CV_F = 0.29
 DT_EP = 0.05  # ms
 

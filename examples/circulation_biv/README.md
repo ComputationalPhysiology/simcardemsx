@@ -62,7 +62,10 @@ beat reads them at cell midpoints. `summary.json` has `ep` and, for `re+` and `r
 `total_activation_ms`.
 
 The choice, the velocities, the sources and the foot are in the physics hash, so a
-restart must use the same `--ep`. Cell conductivities and the PDE are unused by `re-`.
+restart must use the same `--ep`.
+A checkpoint written before `--ep` existed cannot be restarted after it: the physics hash
+gained `ep_mode` and the eikonal settings for every mode, the default `synchronous` too,
+so such a run must start afresh. Cell conductivities and the PDE are unused by `re-`.
 
 ## Output
 
