@@ -101,28 +101,29 @@ def test_round_trip_under_reaction_eikonal(
     v = ode.v_ode.x.array
     n = v.size
     first = np.full(n, np.inf)
-    upstrokes = np.zeros(n, dtype=int)
-    previous = v.copy()
+    v_peak = np.full(n, -np.inf)
+    post_min = np.full(n, np.inf)
 
     def record(t, i):
-        nonlocal previous
-        above = v > 0
-        upstrokes[above & ~(previous > 0)] += 1
-        newly = above & np.isinf(first)
+        v_peak[:] = np.maximum(v_peak, v)
+        newly = (v > 0) & np.isinf(first)
         first[newly] = t
-        previous = v.copy()
+        late = t >= first + 1.0
+        post_min[late] = np.minimum(post_min[late], v[late])
 
     for _ in range(10):
         controller.step(ep_callback=record)
 
     ta = t_a.x.array
-    print(mode, split, "activation - t_a: min", (first - ta).min(), "max", (first - ta).max())
     assert np.all(np.isfinite(first))
     assert np.all(first <= ta + 2.0)
-    assert np.all(upstrokes <= 1)
+    # The foot never drives v twice: v stays physiological, and once an AP is a ms old its
+    # plateau holds above the foot's threshold (-30 mV), so the foot has no reason to fire.
+    assert np.all(v_peak < 60.0)
+    assert np.all(np.isfinite(post_min))
+    assert np.all(post_min > -30.0)
     if mode == "re-":
         assert np.all(first >= ta)
     assert any(np.any(f.x.array != 0.0) for f in backend.inputs.values())
-    if split == "zetasplit":
-        mv = ode.missing_variables
-        assert np.ptp(mv, axis=1).max() > 0.0
+    # The backward direction: mechanics' values reached EP (zeta: Zetas, Zetaw; Ca_i: J_TRPN).
+    assert np.ptp(ode.missing_variables, axis=1).max() > 0.0
