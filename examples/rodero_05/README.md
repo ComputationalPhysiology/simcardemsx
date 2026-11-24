@@ -28,6 +28,18 @@ Wang's electromechanics stack, on simcardemsx and pulse. The module docstring of
   stiffer in the plugs), slightly compressible and viscous, with an epicardial spring
   and damper. `Cycle` runs the cycle controller as the controller's mechanics driver.
 
+## Reaction-eikonal EP
+
+`--ep re+` and `--ep re-` replace ToR-ORd's own stimulus with beat's reaction-eikonal
+foot current. The case's per-node local activation time is used directly as the
+activation time `t_a` (there is no eikonal solve), and the foot current fires again
+every 800 ms, the pacing period, as the periodic stimulus does. `re+` keeps the
+monodomain PDE, which the cells then couple through; `re-` has none, so `ep_pde_s` in
+`timings.json` stays 0. `run.json` records the mode as `ep`.
+
+`--ep` is physics: a checkpoint written before this option existed cannot be restarted
+after it, because the physics hash now holds the `ep.activation` settings.
+
 ## Running
 
 The case data is not part of this repository. The example reads it from a checkout of
@@ -44,6 +56,7 @@ python3 post.py --output-dir output
 | --- | --- |
 | `--case-dir` | The physcardems case directory |
 | `--tref` | Scale on Land's reference tension of 120 kPa (default 7) |
+| `--ep` | `lat-stimulus` (default), `re+` or `re-` (below) |
 | `--t-end` | End time, in ms (default 800) |
 | `--output-dir` | Where the results go (default `output/`) |
 | `--save-every`, `--save-every-ep`, `--checkpoint-every`, `--restart`, `--overwrite` | As for the [slab](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/slab) |
