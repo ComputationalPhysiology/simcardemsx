@@ -52,6 +52,9 @@ monodomain PDE (without a stimulus) and `re-` has none, so its `timings.json` ha
 
 `--ep` is physics, as are the eikonal settings: `config.resolved.toml` records them, and
 a restart with another `--ep` is refused like one with another `--scheme`.
+A checkpoint written before `--ep` existed cannot be restarted after it: the physics hash
+gained the `--ep` and eikonal settings for every mode, the default `monodomain` too, so
+such a run must start afresh.
 
 ## Output
 

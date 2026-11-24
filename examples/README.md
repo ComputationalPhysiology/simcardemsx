@@ -36,6 +36,11 @@ finished run. Run each from its own directory.
 | [`rodero_05/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/rodero_05) | A Rodero-cohort biventricular heart driven through the five phases of the cardiac cycle |
 | [`scheme_comparison/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/scheme_comparison) | Batch runs and a report comparing the three coupling schemes |
 
+`--ep` selects the electrophysiology in the first three: `monodomain` (slab), `synchronous`
+(BiV) or `lat-stimulus` (rodero_05) by default, or beat's reaction-eikonal EP with
+(`re+`) or without (`re-`) the monodomain PDE. It is physics, so a restart must use the
+same one. See each application's README.
+
 ## Shared files
 
 - [`odefiles/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/odefiles): the ToR-ORd + Land cell model, split three ways. Each file
