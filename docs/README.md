@@ -25,7 +25,7 @@ done
 # 2. The API reference
 python3 docs/generate_api_pages.py docs/api
 
-# 3. The site; --execute runs the tutorials, one at a time (about 4 minutes)
+# 3. The site; --execute runs the tutorials, one at a time (about 10 minutes)
 cd docs
 myst build --html --execute --execute-parallel 1
 python3 -m http.server -d _build/html    # or: myst start --execute

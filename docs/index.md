@@ -38,7 +38,7 @@ Get DOLFINx and install simcardemsx.
 
 :::{card} Tutorials
 :link: tutorials/01_cell_model.ipynb
-From one cell to a coupled slab, and checks against independent and exact solutions.
+From one cell to a coupled slab, reaction-eikonal EP, composing a cell model from parts, and checks against independent and exact solutions.
 :::
 
 :::{card} User guide
