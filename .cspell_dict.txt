@@ -303,6 +303,7 @@ loglevel
 Lssp
 lvgeometry
 m
+Margara
 Markerwise
 Martyn
 mathjax

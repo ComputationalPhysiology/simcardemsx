@@ -24,6 +24,7 @@ and gotranx ≥ 2.11.0, which the `docs` extra installs.
 | [`05_zero_mech_reference.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/05_zero_mech_reference.py) | The single element against an independent 0D solution from [zero-mech](https://github.com/ComputationalPhysiology/zero-mech) | ~15 s |
 | [`06_thick_cylinder.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/06_thick_cylinder.py) | Inflation and active contraction of a thick-walled tube against its exact solution, and second-order mesh convergence | ~45 s |
 | [`07_reaction_eikonal_slab.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/07_reaction_eikonal_slab.py) | Reaction-eikonal EP (R-E+ and R-E−) on the Niederer slab against coarse and fine monodomain, then coupled to mechanics, with TT06 + Land composed from [odezoo](https://github.com/ComputationalPhysiology/odezoo) models | ~2.5 min |
+| [`08_composed_two_way_coupling.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/08_composed_two_way_coupling.py) | ToR-ORd + Land with two-way coupling (Margara et al.), composed from odezoo models and split two ways with `ODE.split`, against the hand-made files in one cell and coupled on the slab of tutorial 7 | ~4 min |
 
 ## Applications
 
@@ -48,6 +49,7 @@ same one. See each application's README.
 - [`odefiles/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/odefiles): the ToR-ORd + Land cell model, split three ways. Each file
   marks a different set of states as the `mechanics` component (see tutorial 1).
   `tt06_land.glue.ode` is the glue with which tutorial 7 composes TT06 and Land
-  (`gotranx.compose`).
+  (`gotranx.compose`), and `torord_land.glue.ode` the glue with which tutorial 8
+  composes ToR-ORd and Land, coupled both ways.
 - [`demo_io.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/demo_io.py): the output folders, restarts and run records the
   applications share.

@@ -41,6 +41,7 @@ project:
         - file: tutorials/05_zero_mech_reference.ipynb
         - file: tutorials/06_thick_cylinder.ipynb
         - file: tutorials/07_reaction_eikonal_slab.ipynb
+        - file: tutorials/08_composed_two_way_coupling.ipynb
     - title: Applications
       children:
         - file: applications/examples.md

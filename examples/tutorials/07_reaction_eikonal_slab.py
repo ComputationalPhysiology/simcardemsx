@@ -816,5 +816,6 @@ for mode, result in coupled.items():
 #   this kind of EP in a full program, and so do the
 #   [BiV](../applications/circulation-biv.md) and [Rodero](../applications/rodero.md)
 #   examples.
-# - Tutorial 8 composes a model whose contraction feeds back into the calcium, ToR-ORd
-#   with Land, and splits it between EP and mechanics in two ways.
+# - The [next tutorial](08_composed_two_way_coupling.ipynb) composes a model whose
+#   contraction feeds back into the calcium, ToR-ORd with Land, and splits it between EP
+#   and mechanics in two ways.
