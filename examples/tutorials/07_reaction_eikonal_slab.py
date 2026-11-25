@@ -29,8 +29,9 @@
 # over. There are two variants:
 #
 # - **R-E+** keeps the monodomain PDE, without its stimulus. Diffusion still shapes the
-#   upstroke, and the foot sets a latest time of activation: a point can activate earlier,
-#   pulled up by its neighbours.
+#   upstroke. Neic et al. designed the foot as a latest time of activation, and most
+#   points do activate earlier than the foot alone would make them, pulled up by their
+#   neighbours, though a point beside resting tissue can be slightly later.
 # - **R-E−** drops the PDE. Every node is an isolated cell, fired by its own foot current.
 #
 # For electromechanics, what matters is that every point gets its calcium transient at
@@ -455,9 +456,10 @@ assert np.count_nonzero(np.isnan(activation_mono_1)) > activation_mono_1.size / 
 # %% [markdown]
 # R-E+ and R-E− differ in how a node's activation relates to its $t_a$. Under R-E− every
 # node is fired by its foot alone, so it reaches 0 mV one foot latency after $t_a$. Under
-# R-E+ diffusion also pulls nodes up, and some activate milliseconds before their $t_a$.
-# Under R-E+, $t_a$ plus the foot's latency is a latest time of activation, not the
-# activation time.
+# R-E+ diffusion mostly pulls nodes up, and some activate milliseconds before their
+# $t_a$. A node beside tissue still at rest can instead lose current to it, and activate
+# slightly later than an isolated cell would. Under R-E+, $t_a$ is not the activation
+# time.
 
 # %%
 for mode in ("re+", "re-"):
@@ -540,8 +542,9 @@ print(f"{'reference, 0.2 mm':<36}{reference_at[P8]:8.2f}")
 # cube is 1.4 mm rather than 1.5, and `STIM_DELAY` is one mean over its nodes, and each of
 # these moves the comparison. The published 42.5–43 ms is later than both fine monodomain
 # runs (here, and beat's 0.1 mm row), and close to the continuous front from the full
-# 1.5 mm cube. R-E+ is closer to the reference than R-E−, because its diffusion carries the
-# monodomain model's own faster propagation along the diagonal.
+# 1.5 mm cube. R-E+ activates earlier after its $t_a$ than R-E− does (the median lags
+# above), so it runs early. That offsets the far-corner error, and adds an error along
+# the axes (P2, P3, P5), where R-E+ is further from the reference than R-E−.
 #
 # The activation maps on the face $z = 0$. Grey marks nodes that never reach 0 mV.
 
