@@ -1,12 +1,13 @@
 # %% [markdown]
 # # One two-way coupled cell model, split two ways
 #
-# Tutorial 7 composed a cell model with Land's contraction model, and nothing went back
-# from the contraction to the cell. In ToR-ORd and Land as Margara et al. (*Prog Biophys
-# Mol Biol* 2021) couple them, calcium bound to troponin is Land's state `CaTRPN`, and the
-# flux into it, `J_TRPN`, is taken out of the cytosolic calcium of ToR-ORd. The coupling
-# goes both ways: calcium drives the contraction, and the contraction's troponin, whose
-# calcium affinity depends on the fibre stretch, shapes the calcium transient.
+# [Tutorial 7](07_reaction_eikonal_slab.ipynb) composed a cell model with Land's
+# contraction model, and nothing went back from the contraction to the cell. In ToR-ORd
+# and Land as Margara et al. (*Prog Biophys Mol Biol* 2021) couple them, calcium bound to
+# troponin is Land's state `CaTRPN`, and the flux into it, `J_TRPN`, is taken out of the
+# cytosolic calcium of ToR-ORd. The coupling goes both ways: calcium drives the
+# contraction, and the contraction's troponin, whose calcium affinity depends on the fibre
+# stretch, shapes the calcium transient.
 #
 # simcardemsx ships this model in hand-made `.ode` files, one per split (tutorial 1). This
 # tutorial composes it from the published models instead, once, and splits the one
@@ -60,11 +61,12 @@ print("Land:   ", land_file.name)
 # %% [markdown]
 # ## Composing the model
 #
-# ToR-ORd is the dynamic-chloride variant of Tomek et al. (*eLife* 2019), as the CellML
-# file its authors publish, and Land is crossbridge's `.ode` file, as in tutorial 7.
-# ToR-ORd's CellML is licensed GPL-3.0-only, so it is not stored in this repository:
-# odezoo fetches it at run time. Its default cell type, 0, is the endocardial cell of the
-# hand-made files.
+# ToR-ORd is the model of Tomek et al. (*eLife* 2019), in its dynamic-chloride variant
+# (Tomek, Bueno-Orovio & Rodriguez, *bioRxiv* 2020, doi 10.1101/2020.06.01.127043), as
+# the CellML file its authors publish, and Land is crossbridge's `.ode` file, as in
+# tutorial 7. ToR-ORd's CellML is licensed GPL-3.0-only, so it is not stored in this
+# repository: odezoo fetches it at run time. Its default cell type, 0, is the endocardial
+# cell of the hand-made files.
 #
 # The recipe has two parts, `ep` and `land`, and nothing is split yet. ToR-ORd runs in
 # ms and Land in s. Three of Land's names are renamed: ToR-ORd has gates named `a` (of
@@ -154,14 +156,24 @@ for split, signature in SPLITS.items():
     hand_made[split] = load_ode_modules(hand_file, HERE / "generated_odes" / hand_file.stem)
 
 print(f"{'':16}{'mechanics states':<44}{'EP → mechanics':<16}{'mechanics → EP':<16}λ to EP")
+stretch_to_ep = {}
 for split in SPLITS:
     for label, modules in (("composed", composed[split]), ("hand-made", hand_made[split])):
         crossings = resolve(modules.ep, modules.mechanics)
+        stretch_to_ep[split, label] = crossings.stretch_to_ep
         print(
             f"{split:<5}{label:<11}{', '.join(sorted(modules.mechanics.state)):<44}"
             f"{', '.join(crossings.forward):<16}{', '.join(crossings.backward):<16}"
             f"{crossings.stretch_to_ep}",
         )
+
+# λ crosses to EP in every split but the hand-made Ca_i file's
+assert stretch_to_ep == {
+    ("zeta", "composed"): True,
+    ("zeta", "hand-made"): True,
+    ("cai", "composed"): True,
+    ("cai", "hand-made"): False,
+}, stretch_to_ep
 
 # %% [markdown]
 # The crossings are the declared inputs and outputs, under the composed model's names
@@ -177,16 +189,22 @@ for split in SPLITS:
 #
 # In the **Ca$_i$** split all of Land's active states are inside Newton, and EP gets only
 # `J_TRPN`, a step late. Yet λ still crosses to EP, where the hand-made Ca$_i$ file sends
-# none. That is `Cd` again: neither output needs it, so the split leaves it where it was,
-# with ToR-ORd, and `Cd` follows λ. A split's outputs decide what moves. Listing
-# `Cd` among them gives the hand-made file's layout, with all seven of Land's states in
-# `mechanics` and no λ to EP:
+# none. That is `Cd` again, Land's passive state: neither output needs it, so the split
+# leaves it on the EP side, beside ToR-ORd, and its rate depends on λ. A split's outputs
+# decide what moves. Listing `Cd` among them gives the hand-made file's layout, with all
+# seven of Land's states in `mechanics` and no λ to EP:
 
 # %%
 with_cd = ode.split("mechanics", inputs=["cai"], outputs=["Ta", "J_TRPN", "Cd"])
 moved = with_cd.get_component("mechanics")
-print("mechanics states:", ", ".join(sorted(s.name for s in moved.states)))
-print("λ to EP:", "lmbda" in {p.name for p in (with_cd - moved).parameters})
+moved_states = {s.name for s in moved.states}
+lmbda_to_ep = "lmbda" in {p.name for p in (with_cd - moved).parameters}
+print("mechanics states:", ", ".join(sorted(moved_states)))
+print("λ to EP:", lmbda_to_ep)
+
+land_states = {s.name for c in ode.components if c.name.startswith("land.") for s in c.states}
+assert moved_states == land_states and len(land_states) == 7, (moved_states, land_states)
+assert not lmbda_to_ep
 
 # %% [markdown]
 # `Cd` feeds only Land's passive tension, which the mechanics below do not use (their
@@ -201,9 +219,9 @@ print("λ to EP:", "lmbda" in {p.name for p in (with_cd - moved).parameters})
 # with tropomyosin fully blocking, `B` = 1, as the hand-made files do.
 #
 # The whole model, unsplit, runs one beat as one cell at λ = 1, with ToR-ORd's own
-# stimulus at $t = 0$, as in tutorial 1. The zeta and Ca$_i$ hand-made files are the same
-# model when loaded whole (they differ only in which states they mark as `mechanics`), so
-# one of them is run.
+# stimulus at $t = 0$, as in tutorial 1. The zeta and Ca$_i$ hand-made files differ only
+# in which component, `mechanics` or another, their states, parameters and expressions
+# belong to. Loaded whole, their dynamics are identical, so one of them is run.
 
 # %%
 LAND_CALIBRATION = {
@@ -293,9 +311,12 @@ for trace, label in ((composed_cell, "composed"), (hand_cell, "hand-made")):
 # measured once, offline, when this tutorial was written, and is not repeated here. Which
 # `dcai_dt` is right is a question for the model, and this tutorial does not answer it.
 #
-# Land's other differences do not show in one cell at λ = 1. crossbridge writes it with
-# `Min` and `Max` where the hand-made files use `Conditional`, which is the same function.
-# Its passive part is formulated differently, but that does not enter the active tension.
+# Land's other differences do not show in one cell at λ = 1. crossbridge writes its length
+# dependence with `Min` and `Max` where the hand-made files use `Conditional`, which is
+# the same function. The guards differ: crossbridge has `Max(0, Ca)`, `Max(1e-6, Ca50)`
+# and `Max(1e-12, CaTRPN)`, which the hand-made files lack, but they never trigger in
+# these runs. Its passive part is formulated differently, but that does not enter the
+# active tension.
 #
 # ## Coupled, on the slab
 #
@@ -307,9 +328,10 @@ for trace, label in ((composed_cell, "composed"), (hand_cell, "hand-made")):
 # the zeta split keeps `B` on the EP side, the Ca$_i$ split in mechanics.
 #
 # The eikonal is tutorial 7's, with its two conduction velocities and its sources in the
-# stimulated corner, starting at 0.41 ms (tutorial 7 measures 0.395 ms, with its foot on
-# a step boundary). The comparison only needs one activation time $t_a$ for all four runs,
-# which it computes once. ToR-ORd's own stimulus is off: the foot current fires each node.
+# stimulated corner, starting at 0.41 ms, close to tutorial 7's 0.395 ms (the two
+# estimates of the foot's latency differ by where $t_a$ falls in a step). Any one $t_a$
+# shared by the four runs will do, so it is computed once. ToR-ORd's own stimulus is off:
+# the foot current fires each node.
 
 # %%
 DX_EP, DX_MECH, QUADRATURE_DEGREE = 0.5, 2.0, 2  # mm, mm, -
@@ -483,6 +505,8 @@ for split in SPLITS:
             f"{split:<5}{label:<10}: {time.perf_counter() - start:5.1f} s, "
             f"peak mean Ta {peak:.3f} kPa",
         )
+        # The slab contracts, so the comparisons below are not between two runs at rest
+        assert peak > 1.0, (split, label, peak)
 
 # %%
 fig, axes = plt.subplots(1, 2, figsize=(11, 3.6))
@@ -528,16 +552,23 @@ for split in SPLITS:
     for name, tolerance in COUPLED_TOLERANCE.items():
         assert largest[name] < tolerance, (split, name, largest[name])
 print(f"{'tolerance':<10}{'—':>11}" + "".join(f"{t:11.3g}" for t in COUPLED_TOLERANCE.values()))
+print()
+for split in SPLITS:
+    a, b = coupled[split, "composed"], coupled[split, "hand-made"]
+    when = a["t"][np.abs(a["Ta"] - b["Ta"]).max(axis=1).argmax()]
+    when_mean = a["t"][np.abs(a["Ta"].mean(axis=1) - b["Ta"].mean(axis=1)).argmax()]
+    print(f"{split}: largest |ΔTa| at {when:.0f} ms, largest |Δ mean Ta| at {when_mean:.0f} ms")
 
 # %% [markdown]
 # Both splits follow their hand-made counterparts to within about 1 % of the peak mean
-# tension on this ~2 mm mechanics mesh. The differences are largest at the end of the run,
-# while the tension is still rising; in the single cell, the difference in $T_a$ peaks at
-# 177 ms.
+# tension on this ~2 mm mechanics mesh. The differences in the tension are largest at the
+# end of the run (printed above), while the tension is still rising; in the single cell,
+# the difference in $T_a$ peaks at 177 ms.
 #
 # $v$ is compared by its mean, not node by node. The composed cell's upstroke is a
-# fraction of a millisecond earlier, so a node caught in the middle of its upstroke
-# differs by over 10 mV, which says nothing about the agreement.
+# fraction of a millisecond earlier (measured when this tutorial was written), so a node
+# caught in the middle of its upstroke differs by over 10 mV, which says nothing about
+# the agreement.
 #
 # What remains is the single cell's difference, carried into the tissue. With the same
 # four patches as above, the coupled runs of both splits agree with the hand-made files to
@@ -546,7 +577,7 @@ print(f"{'tolerance':<10}{'—':>11}" + "".join(f"{t:11.3g}" for t in COUPLED_TO
 # show only once λ moves, do not reach these numbers:
 #
 # - `Min` and `Max` against `Conditional`: the same function, now with λ moving through
-#   it;
+#   it, and the composed model's guards, which differ but never trigger in these runs;
 # - Land's passive part, formulated differently, which the mechanics do not use;
 # - `Cd`'s placement: the composed zeta split keeps it on the EP side where the hand-made
 #   zeta file has it in `mechanics`, and the composed Ca$_i$ split sends λ to EP for it,

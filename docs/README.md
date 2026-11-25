@@ -31,11 +31,16 @@ myst build --html --execute --execute-parallel 1
 python3 -m http.server -d _build/html    # or: myst start --execute
 ```
 
-MyST bootstraps its own Node.js on first use, or uses one already installed. Two
+MyST bootstraps its own Node.js on first use, or uses one already installed. Three
 problems you may meet:
 
 - the build stops with `ECONNREFUSED 127.0.0.1`: set
   `NODE_OPTIONS=--dns-result-order=ipv4first`;
+- the build stops at tutorial 7 with odezoo's `FetchError` naming a model (`could not
+  fetch tentusscher_2006_epi ...`): tutorials 7 and 8 fetch their cell models from
+  odezoo, which downloads them from GitHub and the Physiome Model Repository on a cold
+  cache, so the first build needs network access. Later builds read odezoo's cache
+  (`$ODEZOO_CACHE_DIR`, by default `~/.cache/odezoo` on Linux);
 - `Jupyter server did not start`, as root (in the DOLFINx container): allow it with a
   Jupyter config, as CI does:
 

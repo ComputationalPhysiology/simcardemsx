@@ -390,14 +390,15 @@ def eikonal(geo, tags):
 # ## Activation, EP only
 #
 # Monodomain, R-E+ and R-E− at 0.5 mm and 1.0 mm. Monodomain runs to 65 ms, since it
-# is slower on these meshes, and R-E to 50 ms. These take seconds each.
+# is slower on these meshes, and R-E to 60 ms, well past its last activation. These take
+# seconds each.
 
 # %%
 MODES = {"monodomain": "monodomain", "re+": "R-E+", "re-": "R-E−"}
 runs = {}
 for dx in (0.5, 1.0):
     for mode in MODES:
-        runs[mode, dx] = run_ep(mode, dx, 65.0 if mode == "monodomain" else 50.0)
+        runs[mode, dx] = run_ep(mode, dx, 65.0 if mode == "monodomain" else 60.0)
         print(f"{MODES[mode]:>10}, {dx} mm: {runs[mode, dx]['seconds']:.1f} s")
 
 # %% [markdown]
@@ -408,7 +409,7 @@ reference_at = reference["at_points"]
 
 
 def row(label, values, signed=False):
-    """One line of a table; "—" where a point never activated."""
+    """One line of a table; "—" where a node of the point's cell never activated."""
     cells = ["—" if np.isnan(v) else f"{v:+.2f}" if signed else f"{v:.2f}" for v in values]
     print(f"{label:<24}" + "".join(f"{cell:>8}" for cell in cells))
 
@@ -428,13 +429,30 @@ for (mode, dx), run in runs.items():
         size = run["activation"].x.array.size
         print(f"{MODES[mode]}, {dx} mm: {never} of {size} nodes never reach 0 mV")
 
+# Where the monodomain model at 1.0 mm does activate
+run = runs["monodomain", 1.0]
+space = run["activation"].function_space
+activated = ~np.isnan(run["activation"].x.array)
+on_edge = np.all(np.isclose(space.tabulate_dof_coordinates()[:, 1:], 0.0), axis=1)
+corner_nodes = np.unique(space.dofmap.list[run["tags"].find(1)].ravel())
+print(
+    f"monodomain, 1.0 mm: {np.count_nonzero(activated & on_edge)} of the "
+    f"{np.count_nonzero(activated)} nodes that activate are on the edge y = z = 0, which has "
+    f"{np.count_nonzero(on_edge)}; {np.count_nonzero(activated[corner_nodes])} of the "
+    f"{corner_nodes.size} stimulated nodes activate",
+)
+
 # %% [markdown]
 # This is the main finding of Neic et al. On a coarse mesh the monodomain model is late,
 # the more so the further the wave has to travel across the fibres: at 0.5 mm it reaches
-# P2 and P6 about 20 ms after the reference. At 1.0 mm it does not propagate at all, and
-# only the stimulated corner and a few of its neighbours activate. R-E is within a few
-# milliseconds at 0.5 mm and within 10 ms at 1.0 mm, since the eikonal's speed is its
-# input and does not depend on the mesh.
+# P2 and P6 about 20 ms after the reference. At 1.0 mm the wave does not enter the slab.
+# Six of the eight stimulated nodes never reach 0 mV, and the nodes that do activate are
+# one row, the whole edge $y = z = 0$ from P1 to P3. A wave runs along that edge while
+# the tissue beside it stays at rest, which is an artefact of this coarse mesh, not
+# propagation through the tissue. The tables show "—" for it even at P1 and P3, which do
+# activate, because a point's value is interpolated from the nodes of its cell, and some
+# of those never activate. R-E is within a few milliseconds at 0.5 mm and within 10 ms at
+# 1.0 mm, since the eikonal's speed is its input and does not depend on the mesh.
 #
 # These are the numbers this tutorial checks. The tolerances are twice the largest errors
 # measured when the tutorial was written.
@@ -449,9 +467,11 @@ for (mode, dx), tolerance in TOLERANCE.items():
 error_P8 = {mode: runs[mode, 0.5]["at_points"][P8] - reference_at[P8] for mode in MODES}
 assert abs(error_P8["monodomain"]) > abs(error_P8["re-"]), error_P8
 
-# At 1.0 mm the monodomain wave does not propagate: most nodes never reach 0 mV
+# At 1.0 mm the monodomain wave does not enter the slab: most nodes never reach 0 mV, and
+# those that do are on the edge y = z = 0
 activation_mono_1 = runs["monodomain", 1.0]["activation"].x.array
 assert np.count_nonzero(np.isnan(activation_mono_1)) > activation_mono_1.size / 2
+assert np.all(on_edge[activated]), np.count_nonzero(activated & ~on_edge)
 
 # %% [markdown]
 # R-E+ and R-E− differ in how a node's activation relates to its $t_a$. Under R-E− every
@@ -476,9 +496,12 @@ for mode in ("re+", "re-"):
 # Niederer et al. report the last activation, at P8, converging to about 42.5–43 ms
 # for three codes at 0.05 mm and 0.001 ms. beat's own Niederer demo
 # (`demos/niederer_benchmark.py` in fenicsx-beat) tabulates its monodomain results at
-# P1–P9, at a time step of 0.05 ms. Its convention differs slightly from the one here:
-# the start of the first time step after which $v$ at the point is above 0 mV, where this
-# tutorial interpolates in time.
+# P1–P9, at a time step of 0.05 ms. Its convention differs slightly from the one here,
+# in time and in space. In time, it takes the start of the first time step after which
+# $v$ is above 0 mV, where this tutorial interpolates linearly in time, a difference of
+# less than a time step. In space, it evaluates $v$ at the point, where this tutorial
+# finds the activation time of every node and interpolates those to the point. At a node
+# the two are the same, but at a point that is not a node they can differ by more.
 
 # %%
 NIEDERER_P8 = (42.5, 43.0)  # ms, Niederer et al. 2011
@@ -493,14 +516,19 @@ for dx, values in BEAT_TABLE.items():
 row(f"monodomain here, {DX_REF} mm", reference_at)
 row("monodomain here, 0.5 mm", runs["monodomain", 0.5]["at_points"])
 for dx, ours in ((0.2, reference_at), (0.5, runs["monodomain", 0.5]["at_points"])):
-    difference = np.max(np.abs(ours - np.array(BEAT_TABLE[dx])))
-    print(f"largest difference from beat's table at {dx} mm: {difference:.2f} ms")
+    difference = np.abs(ours - np.array(BEAT_TABLE[dx]))
+    print(
+        f"largest difference from beat's table at {dx} mm: {difference.max():.2f} ms, "
+        f"at P{difference.argmax() + 1}",
+    )
 print(f"Niederer et al., converged, at P8: {NIEDERER_P8[0]}–{NIEDERER_P8[1]} ms")
 
 # %% [markdown]
 # beat's table agrees with the monodomain runs here to within the difference of the two
-# conventions. Its 0.5 mm row also predates beat 0.13.0, which activates six of the nine
-# points one time step later. Its 0.1 mm row shows that the 0.2 mm reference is not
+# conventions. The largest difference at 0.2 mm is at P9, the centre, which is not a node
+# of that mesh, so it is the convention in space. beat's 0.5 mm row also predates beat
+# 0.13.0, which activates six of the nine points one time step later (measured when this
+# tutorial was written). Its 0.1 mm row shows that the 0.2 mm reference is not
 # converged: across the fibres (P2, P5, P6) the wave arrives up to about 3 ms earlier at
 # 0.1 mm, since $CV_T$ is still too low at 0.2 mm. A 0.1 mm reference would take too long
 # for this tutorial.
@@ -534,17 +562,19 @@ for label, values in rows.items():
 print(f"{'reference, 0.2 mm':<36}{reference_at[P8]:8.2f}")
 
 # %% [markdown]
-# So R-E−'s error at P8 is the eikonal solver's own error, which is of first order in
-# the mesh size, plus the difference between the reference and an ellipsoidal front with
-# the velocities measured along the axes: on these tetrahedra the monodomain model
-# travels faster along the diagonal than that. This is an observation on this set-up, not
-# an established mechanism. $CV_T$ is not converged at 0.2 mm, the reference's stimulated
-# cube is 1.4 mm rather than 1.5, and `STIM_DELAY` is one mean over its nodes, and each of
-# these moves the comparison. The published 42.5–43 ms is later than both fine monodomain
-# runs (here, and beat's 0.1 mm row), and close to the continuous front from the full
-# 1.5 mm cube. R-E+ activates earlier after its $t_a$ than R-E− does (the median lags
-# above), so it runs early. That offsets the far-corner error, and adds an error along
-# the axes (P2, P3, P5), where R-E+ is further from the reference than R-E−.
+# So R-E−'s error at P8 is the eikonal solver's own error, which grows with the mesh
+# size, plus the difference between the reference and an ellipsoidal front with the
+# velocities measured along the axes: on these tetrahedra the 0.2 mm reference travels
+# faster along the diagonal than that front. (The coarse monodomain runs are the other
+# way: at 0.5 mm they reach P2, P4, P6 and P8 17 to 21 ms late, in the table above.)
+# This is an observation on this set-up, not an established mechanism. $CV_T$ is not
+# converged at 0.2 mm, the reference's stimulated cube is 1.4 mm rather than 1.5, and
+# `STIM_DELAY` is one mean over its nodes, and each of these moves the comparison. The
+# published 42.5–43 ms is later than both fine monodomain runs (here, and beat's 0.1 mm
+# row), and close to the continuous front from the full 1.5 mm cube. R-E+ activates
+# earlier after its $t_a$ than R-E− does (the median lags above), so it runs earlier than
+# R-E−. That offsets the far-corner error, and adds an error along the axes (P2, P3, P5),
+# where R-E+ is further from the reference than R-E−.
 #
 # The activation maps on the face $z = 0$. Grey marks nodes that never reach 0 mV.
 
@@ -583,8 +613,8 @@ plt.show()
 # EP runs at 0.5 mm. The mechanics mesh is coarser, about 2 mm (10 × 4 × 2 boxes of
 # tetrahedra), with P2 displacement and the contraction states at the points of a degree 2
 # quadrature rule. A 1 mm mechanics mesh changes $T_a$ at P8 by about 5 %, and would take
-# about 6 minutes more. The two meshes need not match: the controller interpolates between
-# them.
+# about 6 minutes more (both measured when this tutorial was written). The two meshes need
+# not match: the controller interpolates between them.
 #
 # The material is that of tutorial 4, an incompressible Holzapfel-Ogden material with
 # fibres along $x$, held by rollers on the faces $x = 0$, $y = 0$ and $z = 0$. These hold
@@ -781,14 +811,20 @@ for mode, result in coupled.items():
         f"{result['newton']:12d}",
     )
 
+# Every run contracts: Ta at the far corner P8 exceeds 1 kPa at 150 ms
+for mode, result in coupled.items():
+    i = int(np.argmin(np.abs(result["t"] - 150.0)))
+    assert result["Ta"][i, 1] > 1.0, (mode, result["Ta"][i])
+
 # %% [markdown]
 # P1, in the stimulated corner, follows a similar course in all three runs. At P8 the
 # monodomain run's tension lags, because at 0.5 mm its wave reaches P8 well over 10 ms
 # after the reference's (the table above); R-E+ and R-E− are close to each other. The
 # tension is still rising when the runs stop at 150 ms. It stays far below what an
-# isometric cell would develop, because the soft slab shortens by about a fifth along its
-# fibres (on this ~2 mm mechanics mesh), and Land's length and velocity dependence lower
-# the tension as it does.
+# isometric cell would develop, about 62 kPa at its peak (measured when this tutorial was
+# written), because the soft slab shortens by about a fifth along its fibres (on this
+# ~2 mm mechanics mesh), and Land's length and velocity dependence lower the tension as it
+# does.
 #
 # The three runs cost about the same here. EP at 0.5 mm is cheap whichever model runs it,
 # since this slab has a few thousand nodes. R-E pays off on a whole heart, where it allows
@@ -804,7 +840,7 @@ for mode, result in coupled.items():
 #   the foot again every beat (its `period`), which is how R-E studies run several beats.
 # - **R-E−'s repolarisation.** Without diffusion, neighbouring nodes do not even out
 #   their action potentials, and Neic et al. found that R-E− overestimates repolarisation
-#   gradients. R-E+ does not have this problem.
+#   gradients. R-E+ largely avoids it.
 # - **The foot was fitted to one cell model.** Its $A$ and $\tau_F$ were fitted by Neic et
 #   al. to the ten Tusscher-Noble-Noble-Panfilov model, an ancestor of TT06, so they
 #   suit TT06 here. Another cell model has another latency, which is why it is measured
