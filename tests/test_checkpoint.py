@@ -34,7 +34,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mpi4py import MPI
 
@@ -71,10 +71,17 @@ def _unit_cube(n: int) -> dolfinx.mesh.Mesh:
 
 
 @pytest.fixture
-def build(split_modules, make_ep_solver, make_mechanics, make_dynamic_mechanics):
+def build(
+    split_modules,
+    make_ep_solver,
+    make_re_ep_solver,
+    make_mechanics,
+    make_dynamic_mechanics,
+):
     """``build(split, scheme, *, crossbridge=False, dynamic=False, dt_mech=DT_MECH)``:
     gate 5's controller, with every object new: the EP solver, the mechanics problem,
-    the backend and the controller.
+    the backend and the controller. ``ep`` is the EP model: beat's monodomain
+    splitting solver, or reaction-eikonal with (``re+``) or without (``re-``) the PDE.
 
     ``crossbridge`` puts ``CrossbridgeSegregated`` Land2017 in place of the
     ``GeneratedActivation`` (X2's harness; ``scheme`` is then not read), and
@@ -90,6 +97,7 @@ def build(split_modules, make_ep_solver, make_mechanics, make_dynamic_mechanics)
         crossbridge: bool = False,
         dynamic: bool = False,
         dt_mech: float = DT_MECH,
+        ep: Literal["monodomain", "re+", "re-"] = "monodomain",
     ) -> SimulationController:
         modules = split_modules[split]
         ep_mesh = _unit_cube(3)
@@ -110,7 +118,10 @@ def build(split_modules, make_ep_solver, make_mechanics, make_dynamic_mechanics)
                     _crossbridge_factory("Land2017", modules.mechanics) if crossbridge else None
                 ),
             )
-        ep_solver = make_ep_solver(modules.ep, ep_mesh)
+        if ep == "monodomain":
+            ep_solver = make_ep_solver(modules.ep, ep_mesh)
+        else:
+            ep_solver = make_re_ep_solver(modules.ep, ep_mesh, ep)
         return SimulationController(problem, ep_solver, backend, modules, dt_mech, DT_EP)
 
     return build
@@ -169,6 +180,18 @@ def _restart_matches_the_uninterrupted_run(
 
     _steps(c, N - k)
     _assert_same_state(_coupled_state(a), _coupled_state(c))
+
+
+@pytest.mark.parametrize("ep", ["re+", "re-"])
+def test_restart_matches_under_reaction_eikonal(tmp_path, build, ep):
+    """R1 under reaction-eikonal EP: ``t_a`` is rebuilt, not saved, and the foot current
+    and the transfer rows still continue bit for bit."""
+    _restart_matches_the_uninterrupted_run(
+        tmp_path,
+        lambda: build(ep=ep),
+        {**P, "ep": ep},
+        k=K,
+    )
 
 
 @pytest.mark.parametrize(

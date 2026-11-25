@@ -35,6 +35,7 @@ nothing else. If the checkpoint is at or past ``--t-end`` it takes no step.
 """
 
 import argparse
+import dataclasses
 import functools
 import hashlib
 import inspect
@@ -44,7 +45,7 @@ import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from mpi4py import MPI
 
@@ -53,12 +54,14 @@ import dolfinx
 import numpy as np
 import pulse
 import ufl
+from beat.eikonal import Source, solve_eikonal
+from beat.reaction_eikonal import ExponentialFoot, FootCurrentODESolver
 
 import cardiac_geometries
 import cardiac_geometries.geometry
 from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.checkpoint import Checkpointer
-from simcardemsx.controller import SimulationController
+from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.ode_model import load_ode_modules
 from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
@@ -70,6 +73,7 @@ from scheme_comparison.record import Recorder  # noqa: E402
 
 logger = logging.getLogger(__name__)
 DEFAULT_ODEFILE = Path("../odefiles/ToRORd_dynCl_endo_zetasplit.ode")
+EP_MODES = ("monodomain", "re+", "re-")
 SCHEMES = ("monolithic", "segregated", "stabilized")
 CROSSBRIDGE_MODELS = ("Land2017", "RDQ18", "RDQ20MF", "Lewalle2024")
 T_END = 40.0  # ms
@@ -101,6 +105,24 @@ U_SPACE = "P_2"
 STIM_AMPLITUDE = 50_000.0  # uA/cm**3
 STIM_BOX_MM = (1.5, 1.5, 1.5)
 STIM_MARKER = 1
+#: Reaction-eikonal EP's inputs: conduction velocities (mm/ms) along the fibre, sheet and
+#: normal directions, and the delay (ms) of the eikonal source at the stimulus box.
+#: Measured on 2026-11-24 from this slab's monodomain EP with ToR-ORd (the zeta split),
+#: DT_EP 0.05 ms, to 20 ms, as the first time v > 0 per node:
+#:
+#: - STIM_DELAY_MS is the mean activation time of the nodes inside the 1.5 mm stimulus box
+#:   at the default dx 0.5 mm (24 nodes).
+#: - CV_F and CV_S are linear fits of activation time against x (on y = z = 0) and y (on
+#:   x = z = 0) beyond the stimulus. At dx 0.5 the box leaves one node on those lines
+#:   (the stimulus covers all of y), so they were taken on a dx 0.1 mm slab of the same
+#:   conductivities with a 0.5 mm stimulus box: 15 nodes along x (0.6 to 2.0 mm), 5 along y
+#:   (0.6 to 1.0 mm). At dx 0.5 the single pair of nodes past the box gives 2.0 mm/ms
+#:   along x, a coarse-mesh artifact.
+#: - CV_N = CV_S: the slab's transverse directions share their conductivities.
+CV_F = 0.598
+CV_S = 0.233
+CV_N = CV_S
+STIM_DELAY_MS = 1.6125
 #: The compressibility model, a class of ``pulse.compressibility``.
 COMPRESSIBILITY = "Incompressible"
 #: The boundary conditions, as dirichlet_bc in main() codes them.
@@ -161,6 +183,12 @@ def model_settings() -> dict[str, Any]:
                 "duration_ms": stimulus_defaults["duration"].default,
                 "box_mm": list(STIM_BOX_MM),
                 "marker": STIM_MARKER,
+            },
+            "eikonal": {
+                "cv_mm_per_ms": {"fibre": CV_F, "sheet": CV_S, "normal": CV_N},
+                "source": "stimulus box",
+                "delay_ms": STIM_DELAY_MS,
+                "foot": dataclasses.asdict(ExponentialFoot()),
             },
         },
         "mechanics": {
@@ -242,6 +270,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=SCHEMES,
         default="monolithic",
         help="Coupling scheme of the mechanics (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--ep",
+        dest="ep_mode",
+        choices=EP_MODES,
+        default="monodomain",
+        help="EP model: monodomain (default), or reaction-eikonal with (re+) or without "
+        "(re-) the monodomain PDE. Reaction-eikonal activates the cells from eikonal "
+        "activation times and takes no PDE stimulus. The choice is physics.",
     )
     parser.add_argument(
         "--crossbridge",
@@ -420,6 +457,123 @@ def build_geometry(run_settings: Mapping[str, Any]) -> cardiac_geometries.geomet
     return geo
 
 
+def make_ep_solver(
+    ep_module,
+    ep_geo,
+    run_settings: Mapping[str, Any],
+    ep: str,
+    stim_tags,
+) -> beat.SplittingSolver:
+    """EP on ``ep_geo``, from ``run_settings`` (:func:`model_settings`).
+
+    ``monodomain``: beat's monodomain splitting solver, the cells activated by the PDE
+    stimulus on the cells tagged ``STIM_MARKER`` in ``stim_tags``. ``re+`` and ``re-``:
+    reaction-eikonal EP. No PDE stimulus: each node's ODE is driven by beat's
+    :class:`~beat.reaction_eikonal.FootCurrentODESolver` from the activation times of an
+    eikonal solve (CV_F, CV_S, CV_N along the fibre, sheet and normal directions, from
+    the stimulus box at ``STIM_DELAY_MS``). ``re+`` keeps the monodomain PDE, ``re-``
+    has none.
+    """
+    if ep not in EP_MODES:
+        raise ValueError(f"ep must be one of {EP_MODES}, got {ep!r}")
+    ep_mesh = ep_geo.mesh
+    ep_settings = run_settings["ep"]
+    # P1: values going back to EP are averaged onto the EP ODE space, which the
+    # transfer plan supports for P1 and DG0 only.
+    ep_ode_space = dolfinx.fem.functionspace(ep_mesh, tuple(ep_settings["ode_element"]))
+
+    # Every value is read from the run's settings, which config.resolved.toml records.
+    mesh_unit = run_settings["geometry"]["mesh_unit"]
+    chi = ep_settings["chi_per_mm"] * beat.units.ureg("mm**-1")
+    C_m = ep_settings["C_m_uF_per_mm2"] * beat.units.ureg("uF/mm**2")
+    sigma = ep_settings["conductivities_S_per_m"]
+
+    M = beat.conductivities.define_conductivity_tensor(
+        chi=chi,
+        f0=ep_geo.f0,
+        g_il=sigma["sigma_il"] * beat.units.ureg("S/m"),
+        g_it=sigma["sigma_it"] * beat.units.ureg("S/m"),
+        g_el=sigma["sigma_el"] * beat.units.ureg("S/m"),
+        g_et=sigma["sigma_et"] * beat.units.ureg("S/m"),
+    )
+
+    time_ep = dolfinx.fem.Constant(ep_mesh, 0.0)
+
+    stimulus = ep_settings["stimulus"]
+    I_s = None
+    if ep == "monodomain":
+        I_s = beat.stimulation.define_stimulus(
+            mesh=ep_mesh,
+            chi=chi,
+            time=time_ep,
+            subdomain_data=stim_tags,
+            marker=stimulus["marker"],
+            mesh_unit=mesh_unit,
+            amplitude=stimulus["amplitude_uA_per_cm3"] * beat.units.ureg("uA/cm**3"),
+            start=stimulus["start_ms"],
+            duration=stimulus["duration_ms"],
+        )
+
+    pde = beat.MonodomainModel(
+        time=time_ep,
+        mesh=ep_mesh,
+        M=M,
+        I_s=I_s,
+        C_m=C_m.to(f"uF/{mesh_unit}**2").magnitude,
+        dx=ep_geo.dx,
+    )
+
+    v_ode = dolfinx.fem.Function(ep_ode_space)
+    num_points_ep = v_ode.x.array.size
+
+    # One column per point, for states, parameters and missing variables alike: the
+    # transfer plan writes lambda and the values EP needs back into these arrays in
+    # place, and they differ between points.
+    y_ep = np.tile(ep_module.init_state_values()[:, None], (1, num_points_ep))
+    p_ep = np.tile(
+        ep_module.init_parameter_values(**ep_settings["ode_parameters"])[:, None],
+        (1, num_points_ep),
+    )
+    ep_missing = getattr(ep_module, "missing", {})
+
+    ode = beat.odesolver.DolfinODESolver(
+        v_ode=v_ode,
+        v_pde=pde.state,
+        fun=ep_module.generalized_rush_larsen,
+        init_states=y_ep,
+        parameters=p_ep,
+        num_states=len(y_ep),
+        v_index=ep_module.state_index("v"),
+        missing_variables=np.zeros((len(ep_missing), num_points_ep)) if ep_missing else None,
+        num_missing_variables=len(ep_missing),
+    )
+
+    if ep == "monodomain":
+        return beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=ep_settings["theta"])
+
+    eikonal = ep_settings["eikonal"]
+    cvs = eikonal["cv_mm_per_ms"]
+    n0 = ep_geo.n0
+    if n0 is None:
+        n0 = dolfinx.fem.Constant(
+            ep_mesh,
+            np.array([0.0, 0.0, 1.0], dtype=dolfinx.default_scalar_type),
+        )
+    t_a = solve_eikonal(
+        ep_mesh,
+        (cvs["fibre"], cvs["sheet"], cvs["normal"]),
+        (ep_geo.f0, ep_geo.s0, n0),
+        [Source((stim_tags, stimulus["marker"]), eikonal["delay_ms"])],
+        mesh_unit=mesh_unit,
+    )
+    foot_ode = FootCurrentODESolver(ode, t_a, foot=ExponentialFoot(**eikonal["foot"]))
+    return beat.SplittingSolver(
+        pde=pde if ep == "re+" else None,
+        ode=foot_ode,
+        theta=ep_settings["theta"],
+    )
+
+
 def main(argv: list[str] | None = None):
     start_total = time.perf_counter()
     args = parse_args(argv)
@@ -492,71 +646,13 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     # 3. Setup EP Solver (fenicsx-beat)
     # ---------------------------------------------------------
-    # Every value is read from the run's settings, which config.resolved.toml records.
-    mesh_unit = run_settings["geometry"]["mesh_unit"]
-    chi = ep_settings["chi_per_mm"] * beat.units.ureg("mm**-1")
-    C_m = ep_settings["C_m_uF_per_mm2"] * beat.units.ureg("uF/mm**2")
-    sigma = ep_settings["conductivities_S_per_m"]
-
-    M = beat.conductivities.define_conductivity_tensor(
-        chi=chi,
-        f0=ep_geo.f0,
-        g_il=sigma["sigma_il"] * beat.units.ureg("S/m"),
-        g_it=sigma["sigma_it"] * beat.units.ureg("S/m"),
-        g_el=sigma["sigma_el"] * beat.units.ureg("S/m"),
-        g_et=sigma["sigma_et"] * beat.units.ureg("S/m"),
+    # The controller and checkpoint annotate beat's monodomain splitting solver; both
+    # also take the plain SplittingSolver that reaction-eikonal EP returns.
+    ep_solver = cast(
+        beat.MonodomainSplittingSolver,
+        make_ep_solver(ep_module, ep_geo, run_settings, args.ep_mode, stim_tags),
     )
-
-    time_ep = dolfinx.fem.Constant(ep_mesh, 0.0)
-
-    stimulus = ep_settings["stimulus"]
-    I_s = beat.stimulation.define_stimulus(
-        mesh=ep_mesh,
-        chi=chi,
-        time=time_ep,
-        subdomain_data=stim_tags,
-        marker=stimulus["marker"],
-        mesh_unit=mesh_unit,
-        amplitude=stimulus["amplitude_uA_per_cm3"] * beat.units.ureg("uA/cm**3"),
-        start=stimulus["start_ms"],
-        duration=stimulus["duration_ms"],
-    )
-
-    pde = beat.MonodomainModel(
-        time=time_ep,
-        mesh=ep_mesh,
-        M=M,
-        I_s=I_s,
-        C_m=C_m.to(f"uF/{mesh_unit}**2").magnitude,
-        dx=ep_geo.dx,
-    )
-
-    v_ode = dolfinx.fem.Function(ep_ode_space)
-    num_points_ep = v_ode.x.array.size
-
-    # One column per point, for states, parameters and missing variables alike: the
-    # transfer plan writes lambda and the values EP needs back into these arrays in
-    # place, and they differ between points.
-    y_ep = np.tile(ep_module.init_state_values()[:, None], (1, num_points_ep))
-    p_ep = np.tile(
-        ep_module.init_parameter_values(**ep_settings["ode_parameters"])[:, None],
-        (1, num_points_ep),
-    )
-    ep_missing = getattr(ep_module, "missing", {})
-
-    ode = beat.odesolver.DolfinODESolver(
-        v_ode=v_ode,
-        v_pde=pde.state,
-        fun=ep_module.generalized_rush_larsen,
-        init_states=y_ep,
-        parameters=p_ep,
-        num_states=len(y_ep),
-        v_index=ep_module.state_index("v"),
-        missing_variables=np.zeros((len(ep_missing), num_points_ep)) if ep_missing else None,
-        num_missing_variables=len(ep_missing),
-    )
-
-    ep_solver = beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=ep_settings["theta"])
+    ode = dolfin_ode_solver(ep_solver)
 
     # ---------------------------------------------------------
     # 4. Setup Mechanics Solver (fenicsx-pulse)
@@ -670,6 +766,7 @@ def main(argv: list[str] | None = None):
             if args.crossbridge is None
             else f"crossbridge:{args.crossbridge}",
             "scheme": args.scheme,
+            "ep": args.ep_mode,
             "dt_mech_ms": dt_mech,
             "t_end_ms": args.t_end,
             "regime": {
@@ -692,9 +789,9 @@ def main(argv: list[str] | None = None):
     # is deliberate: beat's splitting solver and the controller call them through
     # these attributes, which is what mypy's method-assign objects to.
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0, "mech_s": 0.0}
-    assert ep_solver.pde is not None  # optional since beat 0.11; built above with one
     ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
-    ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
+    if ep_solver.pde is not None:  # none under --ep re-, whose ep_pde_s stays 0
+        ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
     problem.solve = accumulate_time(problem.solve, timings, "mech_s")  # type: ignore[method-assign]
 
     # results.h5's fields. EP's are P1 copies of rows of the ODE's state array, refreshed

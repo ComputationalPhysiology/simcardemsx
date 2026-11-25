@@ -614,3 +614,6 @@ lambdify
 radau
 xreplace
 xtol
+eikonal
+Petras
+CELLTYPES

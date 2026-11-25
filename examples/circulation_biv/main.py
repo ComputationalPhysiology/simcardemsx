@@ -94,6 +94,7 @@ mesh needs none of them.
 """
 
 import argparse
+import dataclasses
 import functools
 import hashlib
 import json
@@ -103,17 +104,20 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from mpi4py import MPI
 
 import beat
+import beat.units
 import dolfinx
 import io4dolfinx
 import numpy as np
 import pint
 import pulse
 import ufl
+from beat.eikonal import Source, solve_eikonal
+from beat.reaction_eikonal import ExponentialFoot, FootCurrentODESolver
 from circulation import base, regazzoni2020
 from circulation.units import mmHg_to_kPa
 from pulse.circulation import ChamberCoupling, GotranxCirculation, mL, mmHg
@@ -122,7 +126,7 @@ import cardiac_geometries
 import cardiac_geometries.geometry
 from simcardemsx.backends import GeneratedActivation
 from simcardemsx.checkpoint import IO_BACKEND, Checkpointer
-from simcardemsx.controller import SimulationController
+from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.mechanics import CirculationClock
 from simcardemsx.ode_model import load_ode_modules
 from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
@@ -159,6 +163,22 @@ PERIOD = 1000.0  # ms: one beat, the circuit's RR = 1 / HR and ToR-ORd's pacing 
 TREF_SCALE = 3.0
 DT_MECH = 2.0  # ms, the demo's; the default of --dt-mech
 SCHEMES = ("monolithic", "segregated", "stabilized")
+#: ``synchronous``: every point fires at t = 0 (ToR-ORd's own stimulus), with beat's
+#: monodomain PDE. ``re+``, ``re-``: reaction-eikonal EP, activated from the whole LV and
+#: RV endocardium at t = 0 (Petras et al. 2023), with (``re+``) or without (``re-``) the
+#: PDE.
+EP_MODES = ("synchronous", "re+", "re-")
+#: Fibre conduction velocity (m/s) of the eikonal solve under ``--ep re+`` and ``re-``,
+#: tuned on 2026-11-24 so that total activation takes about 80 ms: at a fibre CV of 1 m/s
+#: (sheet 2/3, normal 1/3, sources the whole LV and RV endocardium) the largest activation
+#: time of this geometry is 23.2 ms and t_a is proportional to 1/CV, so CV_F = 23.2 / 80 =
+#: 0.29 m/s (max t_a 79.99 ms). The mesh is the atlas mean at end diastole, clipped, with
+#: char_length 10 mm (2186 cells), as cached by numerical_experiments/circulation_biv, the
+#: geometry only (not the prestressed one the run activates). The sheet and normal
+#: velocities are 2/3 and 1/3 of it. The run activates on the unloaded (prestressed-back)
+#: geometry, where a hand run measured total_activation_ms = 81.5 ms (79.99 ms on the
+#: tuning mesh), within the literature's 75-100 ms.
+CV_F = 0.29
 DT_EP = 0.05  # ms
 
 #: Absolute Newton tolerance of the coupled problem, tightened from pulse's default
@@ -215,6 +235,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=SCHEMES,
         default="monolithic",
         help="Coupling scheme of the mechanics (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--ep",
+        dest="ep_mode",
+        choices=EP_MODES,
+        default="synchronous",
+        help="EP model (default: %(default)s: every point fires at t = 0). re+ and re-: "
+        "reaction-eikonal, activated from the LV and RV endocardium at t = 0, with (re+) "
+        "or without (re-) the monodomain PDE. The choice is physics.",
     )
     parser.add_argument(
         "--dt-mech",
@@ -357,6 +386,17 @@ def model_settings() -> dict[str, Any]:
             "ode_element": ["P", 1],
             # ToR-ORd's own stimulus, with its period set to the beat; no PDE stimulus.
             "ode_parameters": {"i_Stim_Period": PERIOD},
+            # Reaction-eikonal EP (--ep re+, re-): the endocardium of both ventricles fires at
+            # t = 0 (Petras et al. 2023), every beat. Conduction velocities along the fibre,
+            # sheet and normal directions; CV_F is tuned so that total activation takes
+            # about 80 ms.
+            "eikonal": {
+                "cv_m_per_s": {"fibre": CV_F, "sheet": 2 * CV_F / 3, "normal": CV_F / 3},
+                "sources": list(CHAMBERS),
+                "t0_ms": 0.0,
+                "foot": dataclasses.asdict(ExponentialFoot()),
+                "period_ms": PERIOD,
+            },
             "theta": 1,
             "chi_per_mm": 140.0,
             "C_m_uF_per_mm2": 0.01,
@@ -732,9 +772,16 @@ def make_ep_solver(
     f0,
     dx: ufl.Measure,
     run_settings: Mapping[str, Any],
-) -> beat.MonodomainSplittingSolver:
+    ep_mode: str = "synchronous",
+    t_a: dolfinx.fem.Function | None = None,
+) -> beat.SplittingSolver:
     """beat's monodomain splitting solver on ``ode_space``'s mesh (in metres), with
     ``ode_space`` (P1) as its ODE space.
+
+    ``ep_mode`` ``re+`` and ``re-`` set ``i_Stim_Amplitude`` to 0 and wrap the ODE solver
+    in :class:`beat.reaction_eikonal.FootCurrentODESolver` on the activation times
+    ``t_a`` (from :func:`eikonal_activation`), which re-fires every ``PERIOD``; ``re+``
+    keeps the monodomain PDE and ``re-`` drops it.
 
     No stimulus current in the PDE: ToR-ORd's own cellular stimulus fires at every
     point at t = 0, with its period set to the beat. States, parameters and missing
@@ -765,8 +812,11 @@ def make_ep_solver(
     v_ode = dolfinx.fem.Function(ode_space)
     num_points = v_ode.x.array.size
     states = np.tile(ep_module.init_state_values()[:, None], (1, num_points))
+    ode_parameters = dict(ep["ode_parameters"])
+    if ep_mode != "synchronous":
+        ode_parameters["i_Stim_Amplitude"] = 0.0
     parameters = np.tile(
-        ep_module.init_parameter_values(**ep["ode_parameters"])[:, None],
+        ep_module.init_parameter_values(**ode_parameters)[:, None],
         (1, num_points),
     )
     missing = getattr(ep_module, "missing", {})
@@ -781,7 +831,84 @@ def make_ep_solver(
         missing_variables=np.zeros((len(missing), num_points)) if missing else None,
         num_missing_variables=len(missing),
     )
-    return beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=ep["theta"])
+    if ep_mode == "synchronous":
+        return beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=ep["theta"])
+    if t_a is None:
+        raise ValueError(f"--ep {ep_mode} needs the activation times t_a")
+    foot_ode = FootCurrentODESolver(
+        ode,
+        t_a,
+        foot=ExponentialFoot(**ep["eikonal"]["foot"]),
+        period=ep["eikonal"]["period_ms"],
+    )
+    return beat.SplittingSolver(
+        pde=pde if ep_mode == "re+" else None,
+        ode=foot_ode,
+        theta=ep["theta"],
+    )
+
+
+def cell_mean_vector(source, mesh: dolfinx.mesh.Mesh, degree: int) -> dolfinx.fem.Function:
+    """The cell mean of the vector field ``source`` (a Function on a quadrature space of
+    ``degree``), as a vector DG0 Function.
+
+    :func:`simcardemsx.averaging.make_averager` takes a Function source and a scalar
+    target, which a component of a vector Function is not, so each component is
+    integrated over its cell here and divided by the cell's volume.
+    """
+    dim = mesh.geometry.dim
+    dx = ufl.dx(domain=mesh, metadata={"quadrature_degree": degree})
+    scalar = dolfinx.fem.functionspace(mesh, ("DG", 0))
+    test = ufl.TestFunction(scalar)
+    volume = dolfinx.fem.assemble_vector(dolfinx.fem.form(test * dx)).array
+    result = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("DG", 0, (dim,))))
+    for i in range(dim):
+        numerator = dolfinx.fem.assemble_vector(dolfinx.fem.form(source[i] * test * dx)).array
+        result.x.array[i::dim] = numerator / volume
+    result.x.scatter_forward()
+    return result
+
+
+def eikonal_activation(
+    geometry: pulse.HeartGeometry,
+    f0,
+    s0,
+    run_settings: Mapping[str, Any],
+) -> dolfinx.fem.Function:
+    """Activation times (ms) of an eikonal solve from the whole LV and RV endocardium at
+    ``t0_ms``, on ``geometry.mesh`` (in metres).
+
+    ``f0`` and ``s0`` are the fibres and sheets on the mechanics' quadrature space; beat's
+    eikonal reads them at cell midpoints, so they are averaged onto vector DG0 first
+    (:func:`cell_mean_vector`) and renormalised, since the mean of unit vectors is
+    shorter, and the normal is ``f0 x s0``. The velocities are the settings'
+    ``cv_m_per_s``.
+    """
+    eikonal = run_settings["ep"]["eikonal"]
+    mesh = geometry.mesh
+    degree = run_settings["mechanics"]["quadrature_degree"]
+    f_mean, s_mean = (cell_mean_vector(field, mesh, degree) for field in (f0, s0))
+    f = f_mean / ufl.sqrt(ufl.dot(f_mean, f_mean))
+    s = s_mean - ufl.dot(s_mean, f) * f
+    s = s / ufl.sqrt(ufl.dot(s, s))
+    space = f_mean.function_space
+    directions = []
+    for vector in (f, s, ufl.cross(f, s)):
+        function = dolfinx.fem.Function(space)
+        function.interpolate(dolfinx.fem.Expression(vector, space.element.interpolation_points))
+        directions.append(function)
+    cvs = eikonal["cv_m_per_s"]
+    assert geometry.facet_tags is not None  # the geometry is built with its facet tags
+    return solve_eikonal(
+        mesh,
+        tuple(beat.units.ureg.Quantity(cvs[k], "m/s") for k in ("fibre", "sheet", "normal")),
+        tuple(directions),
+        [
+            Source((geometry.facet_tags, geometry.markers[name][0]), eikonal["t0_ms"])
+            for name in eikonal["sources"]
+        ],
+        mesh_unit=run_settings["geometry"]["mesh_unit"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -976,9 +1103,18 @@ def main(argv: list[str] | None = None):
         geometry.mesh,
         tuple(run_settings["ep"]["ode_element"]),
     )
-    ep_solver = make_ep_solver(modules.ep, ep_ode_space, f0, geometry.dx, run_settings)
-    ode = ep_solver.ode
-    assert isinstance(ode, beat.odesolver.DolfinODESolver)  # as make_ep_solver builds it
+    t_a = (
+        None
+        if args.ep_mode == "synchronous"
+        else eikonal_activation(geometry, f0, s0, run_settings)
+    )
+    # The controller and checkpoint annotate beat's monodomain splitting solver; both
+    # also take the plain SplittingSolver that reaction-eikonal EP returns.
+    ep_solver = cast(
+        beat.MonodomainSplittingSolver,
+        make_ep_solver(modules.ep, ep_ode_space, f0, geometry.dx, run_settings, args.ep_mode, t_a),
+    )
+    ode = dolfin_ode_solver(ep_solver)  # the wrapped ODE solver under reaction-eikonal EP
     clock = CirculationClock(
         problem,
         time_unit=circulation_settings["time_unit"],
@@ -1011,6 +1147,8 @@ def main(argv: list[str] | None = None):
             "geometry": "biv",
             "split": "zetasplit",
             "scheme": args.scheme,
+            "ep": args.ep_mode,
+            **({} if t_a is None else {"total_activation_ms": float(t_a.x.array.max())}),
             "dt_mech_ms": dt_mech,
             "t_end_ms": args.t_end,
             "regime": {
@@ -1029,9 +1167,9 @@ def main(argv: list[str] | None = None):
     newton_its = 0
 
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0, "mech_s": 0.0}
-    assert ep_solver.pde is not None  # optional since beat 0.11; make_ep_solver builds one
     ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
-    ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
+    if ep_solver.pde is not None:  # re- has none: ep_pde_s stays 0
+        ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
     problem.solve = accumulate_time(problem.solve, timings, "mech_s")  # type: ignore[method-assign]
 
     # ---------------------------------------------------------
@@ -1183,7 +1321,12 @@ def main(argv: list[str] | None = None):
             return {key: np.array([row[key] for row in rows]) for key in log.fields}
 
         def write_summary() -> None:
-            summary = summarise(columns(), t_fail)
+            summary = summarise(
+                columns(),
+                t_fail,
+                ep=args.ep_mode,
+                t_a=None if t_a is None else t_a.x.array,
+            )
             summary["tref_scale"] = args.tref
             if comm.rank == 0:
                 (outdir / "summary.json").write_text(json.dumps(summary, indent=4))

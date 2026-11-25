@@ -17,10 +17,12 @@ import numpy as np
 import pulse
 import pytest
 import ufl
+from beat.eikonal import Source, solve_eikonal
+from beat.reaction_eikonal import FootCurrentODESolver
 
 from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.checkpoint import Checkpointable
-from simcardemsx.controller import SimulationController
+from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.mechanics import MechanicsDriver
 from simcardemsx.ode_model import ODEModules, load_ode_modules
 
@@ -242,6 +244,59 @@ def _ep_solver(
         num_missing_variables=len(missing),
     )
     return beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=1)
+
+
+def _re_ep_solver(
+    ep_module: ModuleType,
+    mesh: dolfinx.mesh.Mesh,
+    mode: Literal["re+", "re-"],
+    t_a: dolfinx.fem.Function | None = None,
+) -> beat.SplittingSolver:
+    """Reaction-eikonal EP: ``_ep_solver``'s set-up, no cellular stimulus, foot-current wrapped.
+
+    ``re+`` keeps the monodomain PDE; ``re-`` has none. The default activation times
+    come from an eikonal solve from the plane ``x = 0`` at t = 0.
+    """
+    V = dolfinx.fem.functionspace(mesh, ("P", 1))
+    time = dolfinx.fem.Constant(mesh, dolfinx.default_scalar_type(0.0))
+    pde = beat.MonodomainModel(time=time, mesh=mesh, M=0.01)
+    v_ode = dolfinx.fem.Function(V)
+    num_points = v_ode.x.array.size
+    states = np.tile(ep_module.init_state_values()[:, None], (1, num_points))
+    params = ep_module.init_parameter_values().copy()
+    params[ep_module.parameter_index("i_Stim_Amplitude")] = 0.0
+    parameters = np.tile(params[:, None], (1, num_points))
+    missing = getattr(ep_module, "missing", {})
+    inner = beat.odesolver.DolfinODESolver(
+        v_ode=v_ode,
+        v_pde=pde.state,
+        init_states=states,
+        parameters=parameters,
+        fun=ep_module.generalized_rush_larsen,
+        num_states=states.shape[0],
+        v_index=ep_module.state_index("v"),
+        missing_variables=np.zeros((len(missing), num_points)) if missing else None,
+        num_missing_variables=len(missing),
+    )
+    if t_a is None:
+        axes = [
+            dolfinx.fem.Constant(mesh, np.array(e, dtype=dolfinx.default_scalar_type))
+            for e in ([1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0])
+        ]
+        t_a = solve_eikonal(
+            mesh,
+            (0.6, 0.3, 0.3),
+            tuple(axes),
+            [Source(lambda x: np.isclose(x[0], 0.0), 0.0)],
+        )
+    wrapped = FootCurrentODESolver(inner, t_a)
+    return beat.SplittingSolver(pde=pde if mode == "re+" else None, ode=wrapped, theta=1)
+
+
+@pytest.fixture
+def make_re_ep_solver():
+    """Factory for :func:`_re_ep_solver`: ``make_re_ep_solver(ep_module, mesh, mode)``."""
+    return _re_ep_solver
 
 
 @pytest.fixture
@@ -937,8 +992,7 @@ def _coupled_state(
             assert key not in arrays, key
             arrays[key] = f.x.array.copy()
         metadata[component.namespace] = json.loads(json.dumps(component.restart_metadata()))
-    ode = controller.ep_solver.ode
-    assert isinstance(ode, beat.odesolver.DolfinODESolver)
+    ode = dolfin_ode_solver(controller.ep_solver)
     arrays["ep/parameters"] = ode.parameters.copy()
     if ode.missing_variables is not None:
         arrays["ep/missing_variables"] = ode.missing_variables.copy()

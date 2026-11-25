@@ -163,11 +163,12 @@ import dolfinx
 import numpy as np
 import pulse
 import ufl
+from beat.reaction_eikonal import ExponentialFoot, FootCurrentODESolver
 from pulse.cycle import CycleController, Phase
 
 from simcardemsx.backends import GeneratedActivation
 from simcardemsx.checkpoint import Checkpointer, write_json
-from simcardemsx.controller import SimulationController
+from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.mechanics import Cycle
 from simcardemsx.ode_model import ODEModules, load_ode_modules
 from simcardemsx.provenance import provenance
@@ -211,6 +212,8 @@ U_SPACE = "P_2"
 #: The EP half's parameters every node shares; ``celltype`` and ``i_Stim_Start`` are
 #: each node's own (run script, lines 236-241).
 EP_ODE_PARAMETERS = {"i_Stim_Period": PCL_MS, "lmbda": 1.0, "dLambda": 0.0}
+#: The foot current of --ep re+/re-, for the hash and the run alike.
+FOOT = ExponentialFoot()
 
 #: Holzapfel-Ogden, moduli in kPa and exponents dimensionless (run script, line 68).
 MATERIAL_PARAMS = {
@@ -308,6 +311,12 @@ NOT_PHYSICS = (
 )
 
 
+#: EP: ``lat-stimulus``, ToR-ORd's own stimulus at each node's local activation time
+#: (physcardems); ``re+`` and ``re-``, reaction-eikonal EP with the case's LAT as the
+#: activation time, with (``re+``) or without (``re-``) the monodomain PDE.
+EP_MODES = ("lat-stimulus", "re+", "re-")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, with ``save_every`` resolved from its default."""
     parser = argparse.ArgumentParser(
@@ -326,6 +335,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=case_data.TREF_SCALE,
         help="Scale of Land's Tref, 120 kPa (default: %(default)s, em_tref7). The "
         "steady states do not depend on it.",
+    )
+    parser.add_argument(
+        "--ep",
+        dest="ep_mode",
+        choices=EP_MODES,
+        default="lat-stimulus",
+        help="EP model (default: %(default)s: ToR-ORd's stimulus fires at each node's LAT). "
+        "re+ and re-: reaction-eikonal, the case's LAT map as the activation time (no "
+        "eikonal solve), re-firing every pacing period, with (re+) or without (re-) the "
+        "monodomain PDE. The choice is physics.",
     )
     parser.add_argument(
         "--t-end",
@@ -407,7 +426,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def model_settings(tref: float) -> dict[str, Any]:
+def model_settings(tref: float, ep_mode: str = "lat-stimulus") -> dict[str, Any]:
     """The model as the run reads it, as plain values: the time steps; what ``case.py``
     copies from physcardems (where the files are, the cell types, tags, valve-plug
     stiffness, reference scaling, pacing period, Land parameters and their calibration,
@@ -449,6 +468,13 @@ def model_settings(tref: float) -> dict[str, Any]:
             "ode_parameters": dict(EP_ODE_PARAMETERS),
             "per_node": "steady state, celltype and i_Stim_Start (the LAT) of the case",
             "pde_stimulus": "none",
+            # --ep re+, re-: the case's LAT map is the activation time t_a, every period.
+            "activation": {
+                "mode": ep_mode,
+                "t_a": "case LAT",
+                "foot": dataclasses.asdict(FOOT),
+                "period_ms": PCL_MS,
+            },
             "theta": inspect.signature(beat.MonodomainSplittingSolver).parameters["theta"].default,
             "conductivities": {
                 "name": "Niederer",
@@ -528,7 +554,7 @@ def settings(
         "files_sha256": files_sha256(case_dir),
     }
     arguments["odefile"] = {"path": str(ODEFILE), "name": ODEFILE.name, "sha256": _sha256(ODEFILE)}
-    result = {**arguments, **model_settings(args.tref), "solver": solver_settings()}
+    result = {**arguments, **model_settings(args.tref, args.ep_mode), "solver": solver_settings()}
     if land_placement is not None:
         result["land_placement"] = land_placement
     return result
@@ -616,14 +642,22 @@ def make_ep_solver(
     case: Case,
     ep_module,
     ep_land: dict[str, float],
-) -> beat.MonodomainSplittingSolver:
+    ep: str = "lat-stimulus",
+) -> beat.SplittingSolver:
     """beat's monodomain on the case's mesh, P1, no PDE stimulus (run script, lines 201-258).
 
     States, missing variables (the contraction states EP reads) and parameters have one
     column per P1 dof: each dof starts from its cell type's steady state, and has its
     own cell type and ``i_Stim_Start`` (its activation time). The transfer plan writes
     lambda and the backend's outputs back into these arrays in place.
+
+    ``ep`` ``re+`` and ``re-`` keep that set-up but set ``i_Stim_Amplitude`` to 0 and wrap
+    the ODE solver in :class:`beat.reaction_eikonal.FootCurrentODESolver`, whose
+    activation time ``t_a`` is the case's LAT (a P1 Function on the EP ODE space), firing
+    again every ``PCL_MS``. ``re-`` has no PDE.
     """
+    if ep not in EP_MODES:
+        raise ValueError(f"ep must be one of {EP_MODES}, not {ep!r}")
     mesh = case.geometry.mesh
     W = dolfinx.fem.functionspace(mesh, EP_ODE_ELEMENT)
     num_points = W.dofmap.index_map.size_local + W.dofmap.index_map.num_ghosts
@@ -647,6 +681,8 @@ def make_ep_solver(
     )
     parameters[ep_module.parameter_index("celltype")] = celltype.astype(float)
     parameters[ep_module.parameter_index("i_Stim_Start")] = case.lat_ms
+    if ep != "lat-stimulus":
+        parameters[ep_module.parameter_index("i_Stim_Amplitude")] = 0.0
     for name, value in ep_land.items():
         parameters[ep_module.parameter_index(name)] = value
     for name, scale in case.ep_scales.items():
@@ -673,7 +709,13 @@ def make_ep_solver(
         missing_variables=missing,
         num_missing_variables=missing.shape[0],
     )
-    return beat.MonodomainSplittingSolver(pde=pde, ode=ode)
+    if ep == "lat-stimulus":
+        return beat.MonodomainSplittingSolver(pde=pde, ode=ode)
+    # The ODE space's dofs are the case's per-node order, as for i_Stim_Start above.
+    t_a = dolfinx.fem.Function(W, name="t_a")
+    t_a.x.array[:] = case.lat_ms
+    foot_ode = FootCurrentODESolver(ode, t_a, foot=FOOT, period=PCL_MS)
+    return beat.SplittingSolver(pde=pde if ep == "re+" else None, ode=foot_ode)
 
 
 # ---------------------------------------------------------------------------
@@ -877,14 +919,19 @@ def main(argv: list[str] | None = None) -> None:
         {"LV": case.lv, "RV": case.rv},
         preconditioner_lag=PRECONDITIONER_LAG,
     )
-    ep_solver = make_ep_solver(case, modules.ep, placed["ep"])
+    # The controller's annotation is MonodomainSplittingSolver; it also takes the plain
+    # SplittingSolver that reaction-eikonal EP returns.
+    ep_solver = cast(
+        beat.MonodomainSplittingSolver,
+        make_ep_solver(case, modules.ep, placed["ep"], args.ep_mode),
+    )
     # Cycle(cycle) itself, not wrapped: the controller then checkpoints the cycle too.
     controller = SimulationController(Cycle(cycle), ep_solver, backend, modules, DT_MECH, DT_EP)
 
     timings = {"ep_ode_s": 0.0, "ep_pde_s": 0.0}
-    assert ep_solver.pde is not None  # optional since beat 0.11; make_ep_solver builds one
     ep_solver.ode.step = accumulate_time(ep_solver.ode.step, timings, "ep_ode_s")  # type: ignore[method-assign]
-    ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
+    if ep_solver.pde is not None:  # re- has none: ep_pde_s stays 0
+        ep_solver.pde.step = accumulate_time(ep_solver.pde.step, timings, "ep_pde_s")  # type: ignore[method-assign]
     solves = SolveLog(problem)
 
     # ---------------------------------------------------------
@@ -897,8 +944,7 @@ def main(argv: list[str] | None = None) -> None:
     detF = dolfinx.fem.Expression(ufl.det(ufl.Identity(3) + ufl.grad(problem.u)), points)
     cells = np.arange(mesh.topology.index_map(3).size_local, dtype=np.int32)
     v_index = modules.ep.state_index("v")
-    ode = ep_solver.ode
-    assert isinstance(ode, beat.odesolver.DolfinODESolver)  # make_ep_solver's
+    ode = dolfin_ode_solver(ep_solver)
 
     checkpointer = Checkpointer(controller, outdir, physics=run_physics)
     results = ResultsWriter(outdir)
@@ -1041,6 +1087,7 @@ def main(argv: list[str] | None = None) -> None:
                 "history": extra["history"],
                 "restart": extra["restart"],
                 "status": status,
+                "ep": args.ep_mode,
                 "failure": failure,
                 "t_fail_ms": t_fail,
                 "reached_t_end": reached,

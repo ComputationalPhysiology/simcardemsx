@@ -477,3 +477,40 @@ def test_slab_refuses_existing_results_without_flags(tmp_path):
     run = json.loads((output_dir / "run.json").read_text())
     assert run["reached_t_end"] is True
     assert len(run["history"]) == 1
+
+
+def test_ep_option_is_physics():
+    """``--ep`` changes the EP model, so it moves the physics hash (and the setting is
+    not hidden behind the ``ep`` key of ``model_settings()``)."""
+    slab = _import("main")
+    BASE = ["--odefile", str(_odefile())]
+    default = physics_hash(slab.physics(slab.parse_args(BASE)))
+    assert physics_hash(slab.physics(slab.parse_args([*BASE, "--ep", "monodomain"]))) == default
+    for mode in ("re+", "re-"):
+        assert physics_hash(slab.physics(slab.parse_args([*BASE, "--ep", mode]))) != default
+
+
+def test_eikonal_settings_are_physics():
+    slab = _import("main")
+    BASE = ["--odefile", str(_odefile())]
+    eikonal = slab.physics(slab.parse_args(BASE))["ep"]["eikonal"]
+    assert eikonal["cv_mm_per_ms"] == {
+        "fibre": slab.CV_F,
+        "sheet": slab.CV_S,
+        "normal": slab.CV_N,
+    }
+    assert eikonal["delay_ms"] == slab.STIM_DELAY_MS
+    assert eikonal["source"] == "stimulus box"
+    assert set(eikonal["foot"]) == {"A", "tau_F", "V_th", "duration"}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("mode", ["re+", "re-"])
+def test_slab_runs_reaction_eikonal(tmp_path, mode):
+    result = _run_slab("--ep", mode, "--t-end", "2", output_dir=tmp_path / "o")
+    assert result.returncode == 0, result.stderr[-3000:]
+    run = json.loads((tmp_path / "o" / "run.json").read_text())
+    assert run["reached_t_end"]
+    assert run["ep"] == mode
+    timings = json.loads((tmp_path / "o" / "timings.json").read_text())
+    assert (timings["ep_pde_s"] == 0.0) == (mode == "re-")

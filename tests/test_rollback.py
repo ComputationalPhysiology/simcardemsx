@@ -20,6 +20,7 @@ the backend and the cycle's mechanics; these check everything, EP included.
 
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 
 from mpi4py import MPI
 
@@ -67,11 +68,17 @@ def _controller(
     scheme: str = "monolithic",
     driver=None,
     dt_mech: float = DT_MECH,
+    ep: Literal["monodomain", "re+", "re-"] = "monodomain",
+    make_re_ep_solver=None,
 ) -> SimulationController:
     """Gate 5's controller. ``driver(problem)`` builds the mechanics driver; without it
-    the controller wraps the problem in :class:`Solve`."""
+    the controller wraps the problem in :class:`Solve`. ``ep`` other than ``monodomain``
+    is reaction-eikonal, built by ``make_re_ep_solver``."""
     modules = split_modules[SPLIT]
-    ep_solver = make_ep_solver(modules.ep, _unit_cube(3))
+    if ep == "monodomain":
+        ep_solver = make_ep_solver(modules.ep, _unit_cube(3))
+    else:
+        ep_solver = make_re_ep_solver(modules.ep, _unit_cube(3), ep)
     problem, backend = make_mechanics(
         modules.mechanics,
         _unit_cube(1),
@@ -176,6 +183,40 @@ def test_failed_step_rolls_everything_back_and_a_retry_matches(
     controller.step()
 
     uninterrupted = _controller(split_modules, make_ep_solver, make_mechanics, scheme=scheme)
+    for _ in range(3):
+        uninterrupted.step()
+    _assert_same_state(_coupled_state(controller), _coupled_state(uninterrupted))
+
+
+def test_failed_step_rolls_back_under_reaction_eikonal(
+    split_modules,
+    make_ep_solver,
+    make_re_ep_solver,
+    make_mechanics,
+):
+    """R2 under R-E-: the foot current's own state, the transfer rows and everything
+    else come back bit for bit, and the retry matches the uninterrupted run."""
+    inner: list[_RecordingSolve] = []
+
+    def failing(problem):
+        inner.append(_RecordingSolve(problem))
+        return _FailOnce(inner[0], at_step=2)
+
+    kw = {"ep": "re-", "make_re_ep_solver": make_re_ep_solver}
+    controller = _controller(split_modules, make_ep_solver, make_mechanics, driver=failing, **kw)
+    controller.step()
+    before = _coupled_state(controller)
+
+    with pytest.raises(RuntimeError, match="did not converge"):
+        controller.step()
+    assert not np.array_equal(inner[0].u_after[-1], before[0]["mechanics/mechanics_u"])
+    _assert_same_state(_coupled_state(controller), before)
+    assert controller.t == 1.0
+    assert controller.t_failed == 2.0
+
+    controller.step()
+    controller.step()
+    uninterrupted = _controller(split_modules, make_ep_solver, make_mechanics, **kw)
     for _ in range(3):
         uninterrupted.step()
     _assert_same_state(_coupled_state(controller), _coupled_state(uninterrupted))
