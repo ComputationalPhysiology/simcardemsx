@@ -12,7 +12,8 @@ python3 -m pip install "simcardemsx[demo]"
 Short scripts that build up the ideas one at a time. Each is a
 [jupytext](https://jupytext.readthedocs.io) percent-format script, so it runs as
 `python3 <script>.py` or opens as a notebook. All of them are executed when the
-documentation is built.
+documentation is built. Tutorials 7 and 8 also need [odezoo](https://github.com/ComputationalPhysiology/odezoo)
+and gotranx ≥ 2.11.0, which the `docs` extra installs.
 
 | Tutorial | What it shows | Run time |
 | --- | --- | --- |
@@ -22,6 +23,7 @@ documentation is built.
 | [`04_coupled_slab.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/04_coupled_slab.py) | EP and mechanics coupled on a slab through `SimulationController` | ~2 min |
 | [`05_zero_mech_reference.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/05_zero_mech_reference.py) | The single element against an independent 0D solution from [zero-mech](https://github.com/ComputationalPhysiology/zero-mech) | ~15 s |
 | [`06_thick_cylinder.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/06_thick_cylinder.py) | Inflation and active contraction of a thick-walled tube against its exact solution, and second-order mesh convergence | ~45 s |
+| [`07_reaction_eikonal_slab.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/tutorials/07_reaction_eikonal_slab.py) | Reaction-eikonal EP (R-E+ and R-E−) on the Niederer slab against coarse and fine monodomain, then coupled to mechanics, with TT06 + Land composed from [odezoo](https://github.com/ComputationalPhysiology/odezoo) models | ~2.5 min |
 
 ## Applications
 
@@ -45,5 +47,7 @@ same one. See each application's README.
 
 - [`odefiles/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples/odefiles): the ToR-ORd + Land cell model, split three ways. Each file
   marks a different set of states as the `mechanics` component (see tutorial 1).
+  `tt06_land.glue.ode` is the glue with which tutorial 7 composes TT06 and Land
+  (`gotranx.compose`).
 - [`demo_io.py`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/examples/demo_io.py): the output folders, restarts and run records the
   applications share.

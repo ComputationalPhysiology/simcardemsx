@@ -100,6 +100,10 @@ docs = [
     "griffe>=2",
     # Tutorial 5's independent 0D reference
     "zero-mech>=0.3.0",
+    # Tutorials 7 and 8 fetch their cell models
+    "odezoo",
+    # The first release with gotranx.compose, which tutorials 7 and 8 compose their models with
+    "gotranx>=2.11.0",
     "simcardemsx[demo]",
 ]
 benchmark = [

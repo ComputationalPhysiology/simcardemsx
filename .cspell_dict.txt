@@ -353,6 +353,7 @@ numpyfy
 odefile
 odefiles
 odesolver
+odezoo
 onlylastbeat
 opencarp
 opencmiss
