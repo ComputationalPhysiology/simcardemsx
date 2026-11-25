@@ -139,6 +139,12 @@ testpaths = [
 ]
 markers = ["slow: takes more than a few seconds"]
 
+[tool.coverage.run]
+# Before Python 3.14 coverage defaults to the C tracer (sys.settrace), which slows every Python
+# call in the process: CI's stable job (3.12) ran 7x longer than nightly (3.14). sys.monitoring
+# works from 3.12 while branch coverage is off.
+core = "sysmon"
+
 
 [[tool.mypy.overrides]]
 # scipy ships no types of its own. scipy-stubs would supply them, but it installs optype, and
