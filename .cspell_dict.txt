@@ -303,6 +303,7 @@ loglevel
 Lssp
 lvgeometry
 m
+Margara
 Markerwise
 Martyn
 mathjax
@@ -353,6 +354,7 @@ numpyfy
 odefile
 odefiles
 odesolver
+odezoo
 onlylastbeat
 opencarp
 opencmiss
@@ -617,3 +619,9 @@ xtol
 eikonal
 Petras
 CELLTYPES
+tentusscher
+Physiome
+libgl
+libosmesa
+imageio
+trame

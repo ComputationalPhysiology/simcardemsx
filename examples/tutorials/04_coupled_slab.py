@@ -22,7 +22,8 @@
 #   states.
 # - **Mechanics**: quasistatic, solved by
 #   [fenicsx-pulse](https://github.com/finsberg/fenicsx-pulse), with the contraction half
-#   of the cell model stepped inside Newton by `GeneratedActivation`, as in tutorial 3.
+#   of the cell model stepped inside Newton by `GeneratedActivation`, as in
+#   [the single-element tutorial](03_single_element.ipynb).
 #
 # `simcardemsx.controller.SimulationController` runs the coupled loop. Every mechanics
 # step of $\Delta t_{mech}$ it
@@ -33,9 +34,10 @@
 # 4. sends what EP needs back (here the distortion states and the stretch $\lambda$),
 #    averaged onto the EP mesh.
 #
-# What crosses is not configured by hand. It is read off the generated modules'
-# `missing` and `provides` dictionaries, which tutorial 1 printed. If a step fails, the
-# controller restores every component to where it was before the step and raises.
+# What crosses is not configured by hand. It is read off the generated modules' `missing`
+# and `provides` dictionaries, which [the cell-model tutorial](01_cell_model.ipynb)
+# printed. If a step fails, the controller restores every component to where it was before
+# the step and raises.
 
 # %%
 import time
@@ -157,9 +159,10 @@ ep_solver = beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=1)
 # %% [markdown]
 # ## Mechanics
 #
-# This is the problem of tutorial 3 on the slab, with rollers on the three faces
-# through the origin. The displacement is P2, and the contraction states live at the
-# quadrature points of a degree 4 rule, which must match the form's.
+# This is the problem of [the single-element tutorial](03_single_element.ipynb) on the
+# slab, with rollers on the three faces through the origin. The displacement is P2, and
+# the contraction states live at the quadrature points of a degree 4 rule, which must
+# match the form's.
 
 # %%
 QUADRATURE_DEGREE = 4
@@ -308,8 +311,8 @@ print(f"conduction velocity along the fibres: {1.0 / slope:.2f} mm/ms = {100.0 /
 # %% [markdown]
 # ## Contraction
 #
-# Tension builds up over the 150 ms after the action potential, as in tutorial 1, and
-# the slab shortens along its fibres.
+# Tension builds up over the 150 ms after the action potential, as in
+# [the single cell](01_cell_model.ipynb), and the slab shortens along its fibres.
 
 # %%
 t = np.array(trace["t"])

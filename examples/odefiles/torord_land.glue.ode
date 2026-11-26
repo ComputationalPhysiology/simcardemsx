@@ -1,0 +1,17 @@
+# How ep (ToR-ORd) and land (Land 2017) are coupled.
+# In a block for part X, bare names are X's; another part's are written part.name.
+
+parameters("land",
+lmbda = 1.0,                              # new: fibre stretch, set by simcardemsx
+dLambda = ScalarParam(0.0, unit="1/ms")   # new: its rate
+)
+
+expressions("land")
+replace Ca = 1000.0*ep.cai                # parameter -> input: mM to uM
+replace SL = lmbda*SL0
+replace dSL = 1000.0*dLambda*SL0          # 1/ms to um/s, Land's own unit
+J_TRPN = ep.trpnmax*dCaTRPN_dt            # new: troponin flux, mM/ms
+
+expressions("ep")
+replace Bcai = 1.0/(1.0 + cmdnmax*kmcmdn/(cai + kmcmdn)**2)   # troponin is Land's state now
+dcai_dt += -Bcai*land.J_TRPN                                   # Margara 2021
