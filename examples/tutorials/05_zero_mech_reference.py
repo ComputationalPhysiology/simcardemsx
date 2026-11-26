@@ -1,15 +1,16 @@
 # %% [markdown]
 # # Checking against an independent 0D solution
 #
-# Tutorial 3 compared the coupling schemes with each other, and with a run at a smaller
-# time step. That shows the schemes converge, but not that they converge to the solution
-# of the problem we meant to pose. This tutorial checks that against an independent
-# reference: [zero-mech](https://github.com/ComputationalPhysiology/zero-mech), a library
-# of 0D mechanics whose stresses are written as sympy strain energies.
+# [The single-element tutorial](03_single_element.ipynb) compared the coupling schemes
+# with each other, and with a run at a smaller time step. That shows the schemes converge,
+# but not that they converge to the solution of the problem we meant to pose. This
+# tutorial checks that against an independent reference:
+# [zero-mech](https://github.com/ComputationalPhysiology/zero-mech), a library of 0D
+# mechanics whose stresses are written as sympy strain energies.
 #
-# The element of tutorial 3 is held by rollers on the three faces through the origin and
-# is otherwise free, and everything acting on it is uniform. So it deforms homogeneously,
-# on any mesh:
+# The element of [the single-element tutorial](03_single_element.ipynb) is held by rollers
+# on the three faces through the origin and is otherwise free, and everything acting on it
+# is uniform. So it deforms homogeneously, on any mesh:
 #
 # $$
 # \mathbf{F} = \operatorname{diag}(\lambda_1, \lambda_2, \lambda_3), \qquad
@@ -46,12 +47,13 @@ modules = load_ode_modules(odefile, HERE / "generated_odes" / odefile.stem)
 # %% [markdown]
 # ## The active stress in zero-mech
 #
-# simcardemsx adds the active tension along the fibres with the normalization of
-# Regazzoni & Quarteroni, $\mathbf{P}_a = T_a \mathbf{F} f_0 \otimes f_0 / |\mathbf{F} f_0|$
-# (tutorial 3). In zero-mech, that is `StretchActiveStress`, the strain energy
-# $T_a(\lambda_f - 1)$ with $\lambda_f = |\mathbf{F} f_0|$. zero-mech's `ActiveStress` is
-# the older form, $\frac{1}{2} T_a (I_{4f} - 1)$, whose stress $T_a \mathbf{F} f_0
-# \otimes f_0$ is larger by a factor of the stretch. On our diagonal $\mathbf{F}$:
+# simcardemsx adds the active tension along the fibres with the normalization of Regazzoni
+# & Quarteroni, $\mathbf{P}_a = T_a \mathbf{F} f_0 \otimes f_0 / |\mathbf{F} f_0|$
+# ([the single-element tutorial](03_single_element.ipynb)). In zero-mech, that is
+# `StretchActiveStress`, the strain energy $T_a(\lambda_f - 1)$ with
+# $\lambda_f = |\mathbf{F} f_0|$. zero-mech's `ActiveStress` is the older form,
+# $\frac{1}{2} T_a (I_{4f} - 1)$, whose stress $T_a \mathbf{F} f_0 \otimes f_0$ is larger
+# by a factor of the stretch. On our diagonal $\mathbf{F}$:
 
 # %%
 f0 = sp.Matrix([1, 0, 0])
@@ -67,8 +69,9 @@ for active in (zero_mech.StretchActiveStress(f0=f0), zero_mech.ActiveStress(f0=f
 # With `StretchActiveStress`, the fibres pull with exactly $T_a$, whatever their stretch.
 #
 # The passive material is pulse's transversely isotropic Holzapfel-Ogden, incompressible,
-# with fibres along $x$ and sheets along $y$, as in tutorial 3. We write it in zero-mech
-# with pulse's parameter values, which are in pascals, and turn the stress into a numpy
+# with fibres along $x$ and sheets along $y$, as in
+# [the single-element tutorial](03_single_element.ipynb). We write it in zero-mech with
+# pulse's parameter values, which are in pascals, and turn the stress into a numpy
 # function of $(\lambda_1, \lambda_2, p, T_a)$.
 
 # %%
@@ -120,10 +123,11 @@ print("states:", list(land.state), "\ninputs:", land.missing)
 # %% [markdown]
 # Under `scheme="monolithic"`, the backend takes one step of the Land model *inside*
 # Newton, at the stretch $\lambda$ Newton is iterating on and the stretch rate
-# $(\lambda - \lambda_n)/\Delta t$ (tutorial 3). The 0D twin does the same inside a root
-# find. Each step looks for $(\lambda_1, \lambda_2, p)$ at which the stress vanishes,
-# where the tension is the Land model advanced from the last accepted states at the trial
-# $\lambda_1$. It then accepts the states of the solution.
+# $(\lambda - \lambda_n)/\Delta t$
+# ([the single-element tutorial](03_single_element.ipynb)). The 0D twin does the same
+# inside a root find. Each step looks for $(\lambda_1, \lambda_2, p)$ at which the stress
+# vanishes, where the tension is the Land model advanced from the last accepted states at
+# the trial $\lambda_1$. It then accepts the states of the solution.
 
 
 # %%
@@ -170,8 +174,8 @@ class Homogeneous0D:
 # %% [markdown]
 # ## The finite element run
 #
-# This is tutorial 3's element, under the monolithic scheme, with the same calcium
-# transient.
+# This is the element of [the single-element tutorial](03_single_element.ipynb), under the
+# monolithic scheme, with the same calcium transient.
 
 # %%
 QUADRATURE_DEGREE = 2
@@ -307,14 +311,16 @@ plt.show()
 #
 # Both sides take the same time step, the same generalized Rush-Larsen step of the same
 # Land model, by design. So the comparison checks the *spatial* problem and the coupling
-# inside it, against the discrete problem in time. Whether the time stepping converges
-# is the question tutorial 3 answered, with its run at a smaller time step.
+# inside it, against the discrete problem in time. Whether the time stepping converges is
+# the question [the single-element tutorial](03_single_element.ipynb) answered, with its
+# run at a smaller time step.
 #
 # The test suite runs this comparison (`tests/test_zero_mech_reference.py`) for both the
-# Ca$_i$ and the zeta split. It also runs a second one, on the coupled loop of tutorial 4
-# with an EP solver: EP on a uniform mesh, stimulated everywhere at once, stays uniform
-# too. So a 0D twin of the whole controller step must match $\lambda$, $v$, Ca$_i$ and
-# $T_a$, which it does to about $10^{-12}$ of their largest values.
+# Ca$_i$ and the zeta split. It also runs a second one, on the loop of
+# [the coupled slab](04_coupled_slab.ipynb) with an EP solver: EP on a uniform mesh,
+# stimulated everywhere at once, stays uniform too. So a 0D twin of the whole controller
+# step must match $\lambda$, $v$, Ca$_i$ and $T_a$, which it does to about $10^{-12}$ of
+# their largest values.
 #
 # The [next tutorial](06_thick_cylinder.ipynb) drops the homogeneity: a thick-walled tube,
 # whose stretch varies through the wall, against its exact solution.

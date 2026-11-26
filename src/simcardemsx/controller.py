@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 import beat
 import pulse
+from beat.reaction_eikonal import FootCurrentODESolver
 
 from .checkpoint import (
     Checkpointable,
@@ -45,6 +46,25 @@ logger = logging.getLogger(__name__)
 
 #: Relative tolerance on ``dt_mech == n * dt_ep``: round-off, not a real remainder.
 _DT_RTOL = 1e-9
+
+
+def dolfin_ode_solver(ep_solver: Any) -> beat.odesolver.DolfinODESolver:
+    """The one-model ODE solver inside ``ep_solver.ode``.
+
+    Returns ``ep_solver.ode``, or the solver it wraps when that is a
+    :class:`beat.reaction_eikonal.FootCurrentODESolver` (reaction-eikonal EP).
+    The transfer plan writes into the ``missing_variables``/``parameters`` arrays of
+    beat's :class:`~beat.odesolver.DolfinODESolver`, which no other solver has.
+    """
+    ode = ep_solver.ode
+    if isinstance(ode, FootCurrentODESolver):
+        ode = ode.ode
+    if not isinstance(ode, beat.odesolver.DolfinODESolver):
+        raise TypeError(
+            "ep_solver.ode must be a beat.odesolver.DolfinODESolver "
+            f"(optionally inside a FootCurrentODESolver), got {type(ode).__name__}",
+        )
+    return ode
 
 
 class SimulationController:
@@ -92,7 +112,8 @@ class SimulationController:
         ``parameters["dt"]`` does not equal ``dt_mech``, or if the backend stores its
         states on a quadrature space whose degree differs from the mechanics form's.
     TypeError
-        If ``ep_solver.ode`` is not a :class:`beat.odesolver.DolfinODESolver`.
+        If ``ep_solver.ode`` is neither a :class:`beat.odesolver.DolfinODESolver` nor a
+        :class:`beat.reaction_eikonal.FootCurrentODESolver` around one.
     NotImplementedError
         From :class:`~simcardemsx.transfer_plan.TransferPlan`, if the EP ODE space is
         neither P1 nor DG0.
@@ -151,11 +172,7 @@ class SimulationController:
 
         # beat types this as its generic ODE-solver protocol. The transfer plan needs
         # the one-model solver: it writes into its missing_variables and parameters arrays.
-        ode = ep_solver.ode
-        if not isinstance(ode, beat.odesolver.DolfinODESolver):
-            raise TypeError(
-                f"ep_solver.ode must be a beat.odesolver.DolfinODESolver, got {type(ode).__name__}",
-            )
+        ode = dolfin_ode_solver(ep_solver)
 
         self.ep_solver = ep_solver
         self.backend = backend

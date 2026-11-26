@@ -32,7 +32,7 @@ finally:
     sys.path.remove(str(EXAMPLES))
 
 #: The options that define the physics; every other option must be in ``NOT_PHYSICS``.
-PHYSICS_OPTIONS = {"case_dir", "tref"}
+PHYSICS_OPTIONS = {"case_dir", "tref", "ep_mode"}
 
 
 def _fake_case(folder: Path) -> Path:
@@ -417,3 +417,77 @@ def test_a_point_between_endo_and_mid_is_never_epi():
     DG1 = dolfinx.fem.functionspace(mesh, ("DG", 1))
     expected = [vertex_type(p) for p in DG1.tabulate_dof_coordinates()]
     np.testing.assert_array_equal(post.celltype_at_points(celltype, DG1), expected)
+
+
+def test_ep_changes_the_hash(fake_case):
+    assert physics_hash(_physics(fake_case, "--ep", "re-")) != physics_hash(_physics(fake_case))
+    assert physics_hash(_physics(fake_case, "--ep", "re+")) != physics_hash(
+        _physics(fake_case, "--ep", "re-"),
+    )
+
+
+def _tiny_case(ep_module, lat):
+    """A one-element case with the fields ``make_ep_solver`` reads: 8 P1 nodes."""
+    mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_WORLD, 1, 1, 1)
+    f0 = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("DG", 0, (3,))))
+    f0.x.array[:] = np.tile([1.0, 0.0, 0.0], f0.x.array.size // 3)
+    names = {*ep_module.state, *ep_module.missing}
+    steady = {
+        name: float(ep_module.init_state_values()[ep_module.state[name]])
+        if name in ep_module.state
+        else 0.0
+        for name in names
+    }
+    return SimpleNamespace(
+        geometry=SimpleNamespace(mesh=mesh),
+        celltype=np.zeros(lat.size),
+        initial_states={c: steady for c in case_module.CELLTYPES},
+        lat_ms=lat,
+        f0=f0,
+        ep_scales={},
+    )
+
+
+def test_re_takes_the_lat_as_activation_time(split_modules):
+    from beat.reaction_eikonal import FootCurrentODESolver
+
+    from simcardemsx.controller import dolfin_ode_solver
+
+    ep_module = split_modules["zetasplit"].ep
+    lat = np.arange(8, dtype=float) * 3.0
+    case = _tiny_case(ep_module, lat)
+    solver = rodero.make_ep_solver(case, ep_module, {}, "re-")
+    assert isinstance(solver.ode, FootCurrentODESolver)
+    assert solver.pde is None
+    np.testing.assert_array_equal(solver.ode._t_a, lat)
+    ode = dolfin_ode_solver(solver)
+    row = ode.parameters[ep_module.parameter_index("i_Stim_Amplitude")]
+    assert np.all(row == 0.0)
+    # re+ keeps the PDE; lat-stimulus is the plain monodomain solver, with its stimulus
+    assert rodero.make_ep_solver(case, ep_module, {}, "re+").pde is not None
+    plain = rodero.make_ep_solver(case, ep_module, {})
+    assert not isinstance(plain.ode, FootCurrentODESolver)
+    amplitude = plain.ode.parameters[ep_module.parameter_index("i_Stim_Amplitude")]
+    assert np.all(amplitude != 0.0)
+
+
+@pytest.mark.slow
+def test_re_fires_again_after_one_period(split_modules):
+    """Review Focus 5: with ``period=PCL_MS`` the foot current fires again 800 ms later."""
+    ep_module = split_modules["zetasplit"].ep
+    case = _tiny_case(ep_module, np.full(8, 10.0))
+    solver = rodero.make_ep_solver(case, ep_module, {}, "re-")
+    ode = solver.ode.ode
+    v_index = ep_module.state_index("v")
+    dt, t, rises = 0.05, 0.0, []
+    previous = ode.values[v_index].max()
+    while t < 815.0:
+        solver.ode.step(t, dt)
+        t += dt
+        v = ode.values[v_index].max()
+        if previous < 0.0 <= v:
+            rises.append(t)
+        previous = v
+    assert len(rises) == 2, rises
+    assert abs(rises[0] - 10.0) < 5.0
+    assert abs(rises[1] - rises[0] - case_module.PCL_MS) < 2.0

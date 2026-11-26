@@ -353,3 +353,7 @@ plt.show()
 # through the wall, so that is possible, but it is not done here. And a ventricle has no
 # exact solution: zero-mech's `ThickSphere` is exact for a sphere, but only for a passive
 # wall, since no single fibre direction is tangent to a sphere everywhere.
+#
+# The [next tutorial](07_reaction_eikonal_slab.ipynb) returns to electrophysiology. It
+# replaces the monodomain model by the reaction-eikonal model on the Niederer benchmark
+# slab, and couples it to mechanics.

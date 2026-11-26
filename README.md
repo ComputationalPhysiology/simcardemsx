@@ -108,7 +108,7 @@ coupled slab.
 
 ## Examples
 
-[`examples/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples) holds four short tutorials and four larger
+[`examples/`](https://github.com/ComputationalPhysiology/simcardemsx/tree/main/examples) holds eight short tutorials and four larger
 applications:
 
 - an electro-mechanical slab, for any split, scheme or contraction model;
@@ -127,6 +127,8 @@ pre-commit run --all              # ruff, mypy, cspell, …
 
 The documentation is built with [MyST](https://mystmd.org). See
 [`docs/README.md`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/docs/README.md).
+[`CONTRIBUTING.md`](https://github.com/ComputationalPhysiology/simcardemsx/blob/main/CONTRIBUTING.md)
+describes the development environment and how to open a pull request.
 
 ## References
 

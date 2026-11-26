@@ -29,7 +29,7 @@ def _physics(*argv: str) -> dict:
 
 
 #: The options that define the physics; every other option must be in ``NOT_PHYSICS``.
-PHYSICS_OPTIONS = {"tref", "scheme", "dt_mech"}
+PHYSICS_OPTIONS = {"tref", "scheme", "dt_mech", "ep_mode"}
 
 
 def test_every_option_is_physics_or_not():
@@ -54,7 +54,7 @@ def test_every_option_is_physics_or_not():
 
 @pytest.mark.parametrize(
     "argv",
-    [("--tref", "5"), ("--scheme", "stabilized"), ("--dt-mech", "1")],
+    [("--tref", "5"), ("--scheme", "stabilized"), ("--dt-mech", "1"), ("--ep", "re-")],
     ids=lambda argv: argv[0],
 )
 def test_physics_options_change_the_hash(argv):
@@ -185,3 +185,69 @@ def test_summarise_synthetic_columns():
         "failed_at_ms": 8.5,
     }
     assert summary["peak_Ta_mean_kPa"] == 5.0
+
+
+def test_eikonal_settings_are_physics():
+    """The eikonal's velocities, sources and foot are in the physics, so a change to
+    them refuses a restart; CV_F sets the other two."""
+    eikonal = _physics()["ep"]["eikonal"]
+    assert eikonal["cv_m_per_s"]["fibre"] == biv.CV_F
+    assert eikonal["cv_m_per_s"]["sheet"] == pytest.approx(2 * biv.CV_F / 3)
+    assert eikonal["cv_m_per_s"]["normal"] == pytest.approx(biv.CV_F / 3)
+    assert eikonal["sources"] == ["LV", "RV"]
+    assert eikonal["period_ms"] == biv.PERIOD
+    assert eikonal["foot"]
+
+
+def test_biv_eikonal_fibres_are_cell_averages():
+    """``cell_mean_vector`` gives each cell the mean of its quadrature values of a vector
+    field, which is what beat's eikonal reads at cell midpoints."""
+    from mpi4py import MPI
+
+    import basix.ufl
+    import dolfinx
+
+    mesh = dolfinx.mesh.create_box(
+        MPI.COMM_WORLD,
+        [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+        [1, 1, 1],
+        dolfinx.mesh.CellType.tetrahedron,
+    )
+    degree = 2
+    element = basix.ufl.quadrature_element(mesh.basix_cell(), (3,), degree=degree)
+    space = dolfinx.fem.functionspace(mesh, element)
+    source = dolfinx.fem.Function(space)
+    rng = np.random.default_rng(0)
+    source.x.array[:] = rng.random(source.x.array.size)
+
+    mean = biv.cell_mean_vector(source, mesh, degree)
+
+    cells = mesh.topology.index_map(3).size_local
+    values = source.x.array.reshape(cells, -1, 3)
+    # Equal quadrature weights are not assumed: weight by the rule's own weights.
+    _, weights = basix.make_quadrature(mesh.basix_cell(), degree)
+    expected = (values * weights[None, :, None]).sum(axis=1) / weights.sum()
+    assert cells == 6
+    np.testing.assert_allclose(mean.x.array.reshape(cells, 3), expected, rtol=1e-12)
+
+
+def test_summarise_reports_activation_time():
+    t = np.array([0.0, 2.0, 4.0])
+    columns = {
+        "t_ms": t,
+        "V_LV_mL": np.array([100.0, 90.0, 80.0]),
+        "p_LV_mmHg": np.array([10.0, 50.0, 90.0]),
+        "circuit_p_AR_SYS": np.full_like(t, 80.0),
+        "V_RV_mL": np.array([70.0, 71.0, 72.0]),
+        "p_RV_mmHg": np.array([4.0, 6.0, 8.0]),
+        "circuit_p_AR_PUL": np.full_like(t, 15.0),
+        "conservation_drift": np.zeros_like(t),
+        "Ta_mean_kPa": np.array([0.0, 1.0, 5.0]),
+        "newton_iterations": np.array([0.0, 3.0, 2.0]),
+    }
+    reaction_eikonal = post.summarise(columns, None, ep="re-", t_a=np.array([0.0, 79.5, 12.0]))
+    assert reaction_eikonal["ep"] == "re-"
+    assert reaction_eikonal["total_activation_ms"] == 79.5
+    synchronous = post.summarise(columns, None)
+    assert synchronous["ep"] == "synchronous"
+    assert "total_activation_ms" not in synchronous

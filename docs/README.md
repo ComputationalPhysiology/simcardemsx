@@ -25,17 +25,22 @@ done
 # 2. The API reference
 python3 docs/generate_api_pages.py docs/api
 
-# 3. The site; --execute runs the tutorials, one at a time (about 4 minutes)
+# 3. The site; --execute runs the tutorials, one at a time (about 10 minutes)
 cd docs
 myst build --html --execute --execute-parallel 1
 python3 -m http.server -d _build/html    # or: myst start --execute
 ```
 
-MyST bootstraps its own Node.js on first use, or uses one already installed. Two
+MyST bootstraps its own Node.js on first use, or uses one already installed. Four
 problems you may meet:
 
 - the build stops with `ECONNREFUSED 127.0.0.1`: set
   `NODE_OPTIONS=--dns-result-order=ipv4first`;
+- the build stops at tutorial 7 with odezoo's `FetchError` naming a model (`could not
+  fetch tentusscher_2006_epi ...`): tutorials 7 and 8 fetch their cell models from
+  odezoo, which downloads them from GitHub and the Physiome Model Repository on a cold
+  cache, so the first build needs network access. Later builds read odezoo's cache
+  (`$ODEZOO_CACHE_DIR`, by default `~/.cache/odezoo` on Linux);
 - `Jupyter server did not start`, as root (in the DOLFINx container): allow it with a
   Jupyter config, as CI does:
 
@@ -43,6 +48,17 @@ problems you may meet:
   export JUPYTER_CONFIG_DIR=/tmp/jupyter-config
   mkdir -p $JUPYTER_CONFIG_DIR
   echo "c.ServerApp.allow_root = True" > $JUPYTER_CONFIG_DIR/jupyter_server_config.py
+  ```
+
+- `bad X server connection` in the pages of tutorials 7 and 8, or VTK failing to open a
+  window: they render with pyvista off screen, and VTK tries the X display named by
+  `DISPLAY` first. Unset it, and render through EGL where it is installed, or through
+  OSMesa, in software, as CI does (`apt-get install libgl1 libosmesa6`):
+
+  ```bash
+  unset DISPLAY
+  export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow        # EGL
+  # export VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow # OSMesa, as CI
   ```
 
 Figures appear in the pages only with an inline matplotlib backend:
