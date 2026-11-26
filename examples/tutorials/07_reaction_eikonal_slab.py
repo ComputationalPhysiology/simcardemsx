@@ -739,10 +739,10 @@ plt.show()
 # %% [markdown]
 # The same in 3D, on the 0.5 mm mesh: the reference's activation times, interpolated at its
 # nodes, and R-E−'s error there, its activation time minus the reference's. Drag to turn
-# the slab and scroll to zoom: the two views turn together. P1–P8 are the corners, and the
-# stalk on the top face stands over P9, inside the slab. R-E− is late towards the far
-# corners P4 and P8, by up to about 5 ms, and within a millisecond or two elsewhere, a
-# little early across the fibres.
+# the slab and scroll to zoom: the two views turn together. P1–P8 are the corners (P4, at
+# the back, is hidden until the slab is turned), and the stalk on the top face stands over
+# P9, inside the slab. R-E− is late towards the far corners P4 and P8, by up to about
+# 5 ms, and within a millisecond or two elsewhere, a little early across the fibres.
 #
 # The view is a standalone vtk.js page, which `show_scene` writes from the pyvista scene
 # with trame-vtk, as pyvista's `export_html` does, and shows in an inline frame.
@@ -758,8 +758,13 @@ def show_scene(plotter, name, height=400):
     plotter.render()
     initialize_serializers()
     context = SynchronizationContext()
+    context.set_ignore_last_dependencies(True)  # all of it, not what changed since a last call
     window = plotter.render_window
     scene = serialize(None, window, "scene", context, 1)
+    props = [prop for renderer in window.GetRenderers() for prop in renderer.GetViewProps()]
+    found = {prop["id"] for renderer in scene["dependencies"] for prop in renderer["dependencies"]}
+    missing = [prop.GetClassName() for prop in props if reference_id(prop) not in found]
+    assert not missing, f"trame-vtk cannot serialize {missing}"
     camera = window.GetRenderers().GetFirstRenderer().GetActiveCamera()
     scene["extra"] = {
         "vtkRefId": reference_id(window),
@@ -775,7 +780,7 @@ def show_scene(plotter, name, height=400):
         file.writestr("index.json", json.dumps({"hashes": arrays, "scene": scene}))
     page = io.StringIO()
     write_html(archive.getvalue(), page)
-    (OUTPUT / name).write_text(page.getvalue())
+    (OUTPUT / name).write_text(page.getvalue(), encoding="utf-8")
     attributes = f'width="100%" height="{height}" style="border:none"'
     frame = f'<iframe srcdoc="{html.escape(page.getvalue())}" {attributes}></iframe>'
     # In a <div>, since IPython warns about HTML that starts with an <iframe>
@@ -791,7 +796,7 @@ mesh["error"] = run["activation"].x.array[dofs] - mesh["reference"]
 corners = POINTS[:8]
 outward = np.where(corners == 0.0, -1.0, 1.0) * [0.9, 0.0, 0.7]
 markers = pyvista.PolyData(corners).glyph(
-    geom=pyvista.Sphere(radius=0.2),
+    geom=pyvista.Sphere(radius=0.2, theta_resolution=12, phi_resolution=12),
     scale=False,
     orient=False,
 )
@@ -830,7 +835,9 @@ plotter.add_mesh(
 )
 plotter.add_mesh(points.copy(), color="black")
 plotter.link_views()
-plotter.camera_position = CAMERA
+# Further back than CAMERA, since only the camera's position reaches vtk.js, not a zoom
+focus = np.array(CAMERA[1])
+plotter.camera_position = [tuple(focus + 1.25 * (np.array(CAMERA[0]) - focus)), *CAMERA[1:]]
 show_scene(plotter, "07_activation_times.html")
 plotter.close()
 
@@ -1092,8 +1099,11 @@ plotter.add_mesh(
         "title": "Ta [kPa]",
         "n_labels": round(top / 2.0) + 1,
         "fmt": "%.0f",
-        "position_x": 0.25,
-        "width": 0.5,
+        "vertical": True,
+        "position_x": 0.86,
+        "position_y": 0.15,
+        "width": 0.08,
+        "height": 0.7,
     },
     **SHADING,
 )

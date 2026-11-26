@@ -316,7 +316,7 @@ plt.show()
 # run at a smaller time step.
 #
 # The test suite runs this comparison (`tests/test_zero_mech_reference.py`) for both the
-# Ca$_i$ and the zeta split. It also runs a second one, on the coupled loop of
+# Ca$_i$ and the zeta split. It also runs a second one, on the loop of
 # [the coupled slab](04_coupled_slab.ipynb) with an EP solver: EP on a uniform mesh,
 # stimulated everywhere at once, stays uniform too. So a 0D twin of the whole controller
 # step must match $\lambda$, $v$, Ca$_i$ and $T_a$, which it does to about $10^{-12}$ of

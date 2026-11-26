@@ -107,10 +107,11 @@ docs = [
     # Tutorials 7 and 8 render with pyvista, off screen: imageio writes the animations, and
     # trame-vtk turns a scene into the standalone vtk.js page each interactive view embeds.
     # Not through pyvista's export_html, which since pyvista 0.49 needs trame-pyvista, and
-    # that pins every trame package.
+    # that pins every trame package. trame-vtk 2.11.15 is the first that serializes VTK 9.7's
+    # scenes (trame-pyvista refuses an older one with VTK 9.7).
     "pyvista",
     "imageio",
-    "trame-vtk",
+    "trame-vtk>=2.11.15",
     "simcardemsx[demo]",
 ]
 benchmark = [

@@ -12,8 +12,9 @@ python3 -m pip install "simcardemsx[demo]"
 Short scripts that build up the ideas one at a time. Each is a
 [jupytext](https://jupytext.readthedocs.io) percent-format script, so it runs as
 `python3 <script>.py` or opens as a notebook. All of them are executed when the
-documentation is built. Tutorials 7 and 8 also need [odezoo](https://github.com/ComputationalPhysiology/odezoo)
-and gotranx ≥ 2.11.0, which the `docs` extra installs.
+documentation is built. Tutorials 7 and 8 also need [odezoo](https://github.com/ComputationalPhysiology/odezoo),
+gotranx ≥ 2.11.0, pyvista, imageio and trame-vtk, which the `docs` extra installs, and they
+render off screen: if VTK cannot open a window, see `docs/README.md`.
 
 | Tutorial | What it shows | Run time |
 | --- | --- | --- |

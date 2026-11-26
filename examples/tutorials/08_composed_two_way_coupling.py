@@ -114,8 +114,9 @@ print(glue_file.read_text())
 # calcium. Its last two lines make the coupling two-way. ToR-ORd buffers its cytosolic
 # calcium on calmodulin and troponin with a rapid-equilibrium factor `Bcai`, and
 # `replace Bcai` drops troponin from that factor, since troponin is now Land's state. The
-# flux into Land's troponin, `J_TRPN`, is then taken out of `dcai_dt`. `replace` and `+=`
-# are what a glue file adds to the `.ode` grammar
+# flux into Land's troponin, `J_TRPN`, is then taken out of `dcai_dt`. References to
+# another part's names, such as `ep.cai`, `replace` and `+=` are what a glue file adds to
+# the `.ode` grammar
 # ([the glue file](https://finsberg.github.io/gotranx/docs/composition.html#the-glue-file)
 # in gotranx's guide).
 #
@@ -599,8 +600,13 @@ def show_scene(plotter, name, height=400):
     plotter.render()
     initialize_serializers()
     context = SynchronizationContext()
+    context.set_ignore_last_dependencies(True)  # all of it, not what changed since a last call
     window = plotter.render_window
     scene = serialize(None, window, "scene", context, 1)
+    props = [prop for renderer in window.GetRenderers() for prop in renderer.GetViewProps()]
+    found = {prop["id"] for renderer in scene["dependencies"] for prop in renderer["dependencies"]}
+    missing = [prop.GetClassName() for prop in props if reference_id(prop) not in found]
+    assert not missing, f"trame-vtk cannot serialize {missing}"
     camera = window.GetRenderers().GetFirstRenderer().GetActiveCamera()
     scene["extra"] = {
         "vtkRefId": reference_id(window),
@@ -616,7 +622,7 @@ def show_scene(plotter, name, height=400):
         file.writestr("index.json", json.dumps({"hashes": arrays, "scene": scene}))
     page = io.StringIO()
     write_html(archive.getvalue(), page)
-    (OUTPUT / name).write_text(page.getvalue())
+    (OUTPUT / name).write_text(page.getvalue(), encoding="utf-8")
     attributes = f'width="100%" height="{height}" style="border:none"'
     frame = f'<iframe srcdoc="{html.escape(page.getvalue())}" {attributes}></iframe>'
     # In a <div>, since IPython warns about HTML that starts with an <iframe>
