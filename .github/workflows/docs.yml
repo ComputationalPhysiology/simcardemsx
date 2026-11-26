@@ -31,6 +31,10 @@ jobs:
       NODE_OPTIONS: --dns-result-order=ipv4first
       # The container runs as root, which the Jupyter server MyST starts refuses by default.
       JUPYTER_CONFIG_DIR: /tmp/jupyter-config
+      # Tutorials 7 and 8 render with pyvista, and the container has no GPU: render in software.
+      LIBGL_ALWAYS_SOFTWARE: 1
+      # It has no display either, so VTK renders off screen through OSMesa (installed below).
+      VTK_DEFAULT_OPENGL_WINDOW: vtkOSOpenGLRenderWindow
     steps:
       - uses: actions/checkout@v7
 
@@ -38,6 +42,12 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+
+      # The OpenGL libraries VTK loads, and OSMesa for the off-screen rendering above.
+      - name: Install OpenGL for VTK
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libgl1 libosmesa6
 
       - name: Install build requirements
         run: python3 -m pip install --group build

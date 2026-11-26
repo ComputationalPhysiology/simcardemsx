@@ -104,6 +104,13 @@ docs = [
     "odezoo",
     # The first release with gotranx.compose, which tutorials 7 and 8 compose their models with
     "gotranx>=2.11.0",
+    # Tutorials 7 and 8 render with pyvista, off screen: imageio writes the animations, and
+    # trame-vtk turns a scene into the standalone vtk.js page each interactive view embeds.
+    # Not through pyvista's export_html, which since pyvista 0.49 needs trame-pyvista, and
+    # that pins every trame package.
+    "pyvista",
+    "imageio",
+    "trame-vtk",
     "simcardemsx[demo]",
 ]
 benchmark = [
@@ -166,6 +173,12 @@ ignore_missing_imports = true
 # sympy and zero-mech (the 0D reference of tests/test_zero_mech_reference.py) ship no py.typed
 # marker.
 module = ["sympy", "sympy.*", "zero_mech", "zero_mech.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# trame-vtk (the scene serializer of tutorials 7 and 8's interactive views) ships no py.typed
+# marker.
+module = ["trame_vtk", "trame_vtk.*"]
 ignore_missing_imports = true
 
 

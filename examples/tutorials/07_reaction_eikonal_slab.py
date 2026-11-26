@@ -57,7 +57,11 @@
 # 4. couples each of the three to mechanics.
 
 # %%
+import html
+import io
+import json
 import time
+import zipfile
 from pathlib import Path
 
 from mpi4py import MPI
@@ -69,10 +73,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import odezoo
 import pulse
+import pyvista
 from beat.activation import ActivationTracker
 from beat.conduction_velocity import measure_conduction_velocity
 from beat.eikonal import Source, solve_eikonal
 from beat.reaction_eikonal import ExponentialFoot, FootCurrentODESolver
+from IPython.display import HTML, Image, display
+from trame_vtk.modules.vtk.serializers import (
+    SynchronizationContext,
+    extract_array_hash,
+    initialize_serializers,
+    reference_id,
+    serialize,
+)
+from trame_vtk.tools.vtksz2html import write_html
 
 from simcardemsx.averaging import make_averager
 from simcardemsx.backends import GeneratedActivation
@@ -301,20 +315,28 @@ def ep_solver(mode, geo, tags, t_a=None, solver_type="direct"):
 # `run_ep` runs EP alone and records when each node first rises through 0 mV
 # (`beat.activation.ActivationTracker`, interpolated linearly in time). The activation
 # times at P1–P9 are interpolated in space from the node values, since P9 is not a node
-# of every mesh.
+# of every mesh. It also keeps $v$ at every node, every millisecond up to 45 ms, for the
+# animation below.
 
 
 # %%
+FRAME_DT, FRAME_END = 1.0, 45.0  # ms
+
+
 def run_ep(mode, dx, t_end, solver_type="direct"):
     geo, tags = slab(dx)
     t_a = None if mode == "monodomain" else eikonal(geo, tags)
     solver = ep_solver(mode, geo, tags, t_a=t_a, solver_type=solver_type)
     tracker = ActivationTracker(solver.v, method="threshold", threshold=0.0)
+    frames = [solver.v.x.array.astype(np.float32)]
+    steps_per_frame = round(FRAME_DT / DT_EP)
     start = time.perf_counter()
     for k in range(round(t_end / DT_EP)):
         t = k * DT_EP
         solver.step((t, t + DT_EP))
         tracker.update((k + 1) * DT_EP)
+        if (k + 1) % steps_per_frame == 0 and (k + 1) * DT_EP <= FRAME_END + 1e-9:
+            frames.append(solver.v.x.array.astype(np.float32))
     activation = tracker.t_a
     return {
         "geo": geo,
@@ -323,6 +345,8 @@ def run_ep(mode, dx, t_end, solver_type="direct"):
         "eikonal": t_a,
         "at_points": beat.utils.PointEvaluator(geo.mesh, POINTS)(activation),
         "seconds": time.perf_counter() - start,
+        "v": np.array(frames),
+        "space": solver.v.function_space,
     }
 
 
@@ -491,6 +515,94 @@ assert np.count_nonzero(np.isnan(activation_mono_1)) > activation_mono_1.size / 
 assert np.all(on_edge[activated]), np.count_nonzero(activated & ~on_edge)
 
 # %% [markdown]
+# ### The waves
+#
+# The membrane potential on the surface of the slab over the first 45 ms, from the frames
+# `run_ep` kept: the reference, and the three methods at 0.5 mm. The stimulated corner, P1,
+# is at the front on the left, and the fibres run along the slab. Coarse monodomain falls
+# behind, most across the fibres, and by 45 ms it has not activated the whole slab, while
+# R-E+ and R-E− keep pace with the reference. R-E−'s front is brighter: its nodes fire on
+# their own, with no resting neighbours to draw current from them, so their upstrokes peak
+# higher.
+#
+# pyvista renders the frames off screen into a GIF, in the folder `output` beside this
+# tutorial.
+
+# %%
+OUTPUT = HERE / "output"
+OUTPUT.mkdir(exist_ok=True)
+THEME = pyvista.themes.DocumentTheme()  # white, with black text
+CAMERA = [(-14.0, -24.0, 20.0), (LX / 2, LY / 2, LZ / 2), (0.0, 0.0, 1.0)]
+SHADING: dict = {"ambient": 0.3, "diffuse": 0.7, "specular": 0.0}
+
+
+def surface(space):
+    """The surface of a P1 space's mesh, and the dof at each of its points."""
+    grid = pyvista.UnstructuredGrid(*dolfinx.plot.vtk_mesh(space))
+    boundary = grid.extract_surface(
+        pass_pointid=True,
+        pass_cellid=False,
+        algorithm="dataset_surface",
+    )
+    return boundary, boundary["vtkOriginalPointIds"]
+
+
+movie = {"reference, 0.2 mm": reference}
+movie.update({f"{MODES[mode]}, 0.5 mm": runs[mode, 0.5] for mode in MODES})
+plotter = pyvista.Plotter(
+    off_screen=True,
+    shape=(2, 3),
+    col_weights=[5, 5, 2],
+    window_size=[880, 460],
+    border=False,
+    theme=THEME,
+)
+panels = []
+for i, (title, run) in enumerate(movie.items()):
+    plotter.subplot(i // 2, i % 2)
+    mesh, dofs = surface(run["space"])
+    mesh["v"] = run["v"][0, dofs]
+    actor = plotter.add_mesh(
+        mesh,
+        scalars="v",
+        clim=(-90.0, 50.0),
+        cmap="viridis",
+        show_scalar_bar=False,
+        **SHADING,
+    )
+    plotter.add_text(title, font_size=9)
+    panels.append((mesh, run["v"][:, dofs]))
+plotter.link_views()
+plotter.camera_position = CAMERA
+plotter.camera.zoom(1.2)
+# The time, and one colour bar for the four, in the narrow column on the right
+plotter.subplot(0, 2)
+clock = plotter.add_text("", position=(0.1, 0.2), viewport=True, font_size=12)
+plotter.subplot(1, 2)
+plotter.scalar_bars.add_scalar_bar(
+    title="v [mV]",
+    mapper=actor.mapper,
+    vertical=True,
+    n_labels=8,
+    fmt="%.0f",
+    position_x=0.2,
+    position_y=0.1,
+    width=0.3,
+    height=0.8,
+    title_font_size=14,
+    label_font_size=12,
+)
+gif = OUTPUT / "07_membrane_potential.gif"
+plotter.open_gif(gif, fps=8)
+for k in range(len(reference["v"])):
+    for mesh, frames in panels:
+        mesh["v"] = frames[k]
+    clock.input = f"t = {k * FRAME_DT:2.0f} ms"
+    plotter.write_frame()
+plotter.close()
+display(Image(filename=gif))
+
+# %% [markdown]
 # R-E+ and R-E− differ in how a node's activation relates to its $t_a$. Under R-E− every
 # node is fired by its foot alone, so it reaches 0 mV one foot latency after $t_a$. Under
 # R-E+ diffusion mostly pulls nodes up, and some activate milliseconds before their
@@ -623,6 +735,104 @@ for ax in axes[:, 0]:
     ax.set_ylabel("y [mm]")
 fig.colorbar(contours, ax=axes, label="activation time [ms]", shrink=0.8)
 plt.show()
+
+# %% [markdown]
+# The same in 3D, on the 0.5 mm mesh: the reference's activation times, interpolated at its
+# nodes, and R-E−'s error there, its activation time minus the reference's. Drag to turn
+# the slab and scroll to zoom: the two views turn together. P1–P8 are the corners, and the
+# stalk on the top face stands over P9, inside the slab. R-E− is late towards the far
+# corners P4 and P8, by up to about 5 ms, and within a millisecond or two elsewhere, a
+# little early across the fibres.
+#
+# The view is a standalone vtk.js page, which `show_scene` writes from the pyvista scene
+# with trame-vtk, as pyvista's `export_html` does, and shows in an inline frame.
+
+
+# %%
+def show_scene(plotter, name, height=400):
+    """Show the plotter's scene as an interactive page, and write it to OUTPUT / name.
+
+    This is the page pyvista's `export_html` writes, serialized here by trame-vtk directly:
+    since pyvista 0.49, `export_html` also needs the trame-pyvista plugin and a trame server.
+    """
+    plotter.render()
+    initialize_serializers()
+    context = SynchronizationContext()
+    window = plotter.render_window
+    scene = serialize(None, window, "scene", context, 1)
+    camera = window.GetRenderers().GetFirstRenderer().GetActiveCamera()
+    scene["extra"] = {
+        "vtkRefId": reference_id(window),
+        "centerOfRotation": camera.GetFocalPoint(),
+        "camera": reference_id(camera),
+    }
+    arrays = {
+        item["hash"]: {**item, "content": context.get_cached_data_array(item["hash"], False)}
+        for item in extract_array_hash(scene)
+    }
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as file:
+        file.writestr("index.json", json.dumps({"hashes": arrays, "scene": scene}))
+    page = io.StringIO()
+    write_html(archive.getvalue(), page)
+    (OUTPUT / name).write_text(page.getvalue())
+    attributes = f'width="100%" height="{height}" style="border:none"'
+    frame = f'<iframe srcdoc="{html.escape(page.getvalue())}" {attributes}></iframe>'
+    # In a <div>, since IPython warns about HTML that starts with an <iframe>
+    display(HTML(f"<div>{frame}</div>"))
+
+
+run = runs["re-", 0.5]
+mesh, dofs = surface(run["space"])
+nodes = run["space"].tabulate_dof_coordinates()[dofs]
+mesh["reference"] = beat.utils.PointEvaluator(reference["geo"].mesh, nodes)(activation_ref)
+mesh["error"] = run["activation"].x.array[dofs] - mesh["reference"]
+
+corners = POINTS[:8]
+outward = np.where(corners == 0.0, -1.0, 1.0) * [0.9, 0.0, 0.7]
+markers = pyvista.PolyData(corners).glyph(
+    geom=pyvista.Sphere(radius=0.2),
+    scale=False,
+    orient=False,
+)
+stalk = pyvista.Line(POINTS[8], POINTS[8] + [0.0, 0.0, LZ])
+labels = [
+    pyvista.Text3D(f"P{i + 1}", depth=0.05, height=0.8, normal=(0, -1, 0), center=center)
+    for i, center in enumerate([*(corners + outward), POINTS[8] + [0.0, 0.0, LZ + 0.6]])
+]
+
+plotter = pyvista.Plotter(
+    off_screen=True,
+    shape=(1, 2),
+    window_size=[900, 400],
+    border=False,
+    theme=THEME,
+)
+points = pyvista.merge([markers, stalk, *labels])
+plotter.subplot(0, 0)
+plotter.add_mesh(
+    mesh.copy(),
+    scalars="reference",
+    clim=(0.0, 45.0),
+    cmap="viridis",
+    scalar_bar_args={"title": "reference activation time [ms]"},
+    **SHADING,
+)
+plotter.add_mesh(points.copy(), color="black")
+plotter.subplot(0, 1)
+plotter.add_mesh(
+    mesh.copy(),
+    scalars="error",
+    clim=(-6.0, 6.0),
+    cmap="coolwarm",
+    scalar_bar_args={"title": "R-E− minus reference [ms]"},
+    **SHADING,
+)
+plotter.add_mesh(points.copy(), color="black")
+plotter.link_views()
+plotter.camera_position = CAMERA
+show_scene(plotter, "07_activation_times.html")
+plotter.close()
 
 # %% [markdown]
 # ## Coupled runs
@@ -771,6 +981,12 @@ def run_coupled(mode):
     average_lmbda = make_averager(backend.lmbda_prev, lmbda_p1)
     probe = beat.utils.PointEvaluator(geo.mesh, POINTS[[P1, P8, P3]])
     trace = {"t": [0.0], "Ta": [[0.0, 0.0]], "lmbda": [[1.0, 1.0]], "shortening": [0.0]}
+    # u and Ta at the nodes every 2 ms, for the animation below
+    u_p1 = dolfinx.fem.Function(dolfinx.fem.functionspace(geo.mesh, ("P", 1, (3,))))
+    frames = {
+        "u": [u_p1.x.array.reshape(-1, 3).copy()],
+        "Ta": [backend.active_tension.x.array.copy()],
+    }
     clock = {"ep": 0.0, "mark": 0.0, "newton": 0}
 
     def on_ep_step(t, ep_step):
@@ -785,12 +1001,20 @@ def run_coupled(mode):
         trace["lmbda"].append(probe(lmbda_p1)[:2])
         trace["shortening"].append(-probe(problem.u.sub(0).collapse())[2])
         clock["newton"] += newton_iterations
+        if round(t / DT_MECH) % 2 == 0:
+            u_p1.interpolate(problem.u)
+            frames["u"].append(u_p1.x.array.reshape(-1, 3).copy())
+            frames["Ta"].append(backend.active_tension.x.array.copy())
 
     while controller.t < T_END - 1e-9:
         clock["mark"] = time.perf_counter()
         controller.step(ep_callback=on_ep_step, mech_callback=on_mech_step)
     result = {key: np.array(value) for key, value in trace.items()}
     result.update(ep_seconds=clock["ep"], mech_seconds=driver.seconds, newton=clock["newton"])
+    result.update(
+        space=backend.active_tension.function_space,
+        **{f"{name}_frames": np.array(values) for name, values in frames.items()},
+    )
     return result
 
 
@@ -845,6 +1069,49 @@ for mode, result in coupled.items():
 # ~2 mm mechanics mesh), and Land's length and velocity dependence lower the tension as it
 # does.
 #
+# The R-E− run on the mechanics mesh, warped by its displacement at true scale and
+# coloured by $T_a$, a frame every 2 ms, with the slab at rest in grey: the tension rises
+# first in the stimulated corner and follows the activation along the slab, which shortens
+# towards the face $x = 0$ that the rollers hold, and thickens, since the material is
+# incompressible.
+
+# %%
+run = coupled["re-"]
+mesh, dofs = surface(run["space"])
+rest = mesh.points.copy()
+mesh["Ta"] = run["Ta_frames"][0, dofs]
+top = 2.0 * np.ceil(run["Ta_frames"].max() / 2.0)
+plotter = pyvista.Plotter(off_screen=True, window_size=[640, 360], theme=THEME)
+plotter.add_mesh(mesh.outline(), color="grey")
+plotter.add_mesh(
+    mesh,
+    scalars="Ta",
+    clim=(0.0, top),
+    cmap="viridis",
+    scalar_bar_args={
+        "title": "Ta [kPa]",
+        "n_labels": round(top / 2.0) + 1,
+        "fmt": "%.0f",
+        "position_x": 0.25,
+        "width": 0.5,
+    },
+    **SHADING,
+)
+plotter.camera_position = CAMERA
+plotter.camera.zoom(1.5)
+clock = plotter.add_text("", position=(15, 320), font_size=11)
+gif = OUTPUT / "07_coupled_re-.gif"
+plotter.open_gif(gif, fps=10)
+for k, (u, Ta) in enumerate(zip(run["u_frames"], run["Ta_frames"])):
+    mesh.points = rest + u[dofs]
+    mesh["Ta"] = Ta[dofs]
+    clock.input = f"t = {2 * k * DT_MECH:3.0f} ms"
+    plotter.write_frame()
+plotter.close()
+del plotter  # now, rather than at exit, where pyvista prints errors freeing it
+display(Image(filename=gif))
+
+# %% [markdown]
 # The three runs cost about the same here. EP at 0.5 mm is cheap whichever model runs it,
 # since this slab has a few thousand nodes. R-E pays off on a whole heart, where it allows
 # a mesh that monodomain cannot use: Neic et al. report three orders of magnitude.

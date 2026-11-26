@@ -32,8 +32,12 @@
 #    counterpart.
 
 # %%
+import html
+import io
+import json
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 from mpi4py import MPI
@@ -45,8 +49,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import odezoo
 import pulse
+import pyvista
 from beat.eikonal import Source, solve_eikonal
 from beat.reaction_eikonal import ExponentialFoot, FootCurrentODESolver
+from IPython.display import HTML, display
+from trame_vtk.modules.vtk.serializers import (
+    SynchronizationContext,
+    extract_array_hash,
+    initialize_serializers,
+    reference_id,
+    serialize,
+)
+from trame_vtk.tools.vtksz2html import write_html
 
 from simcardemsx.backends import GeneratedActivation
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
@@ -478,8 +492,10 @@ def mechanics(mech_module, calibration):
 
 # %% [markdown]
 # Each run records, after every mechanics step, $v$ and the calcium at every EP node, and
-# the tension and λ at every quadrature point. The calibration goes to the composed model
-# only: the hand-made files have their own values, in other units.
+# the tension and λ at every quadrature point. At the end it also keeps the displacement
+# and the tension at the nodes of the mechanics mesh, for the view below. The calibration
+# goes to the composed model only: the hand-made files have their own values, in other
+# units.
 
 
 # %%
@@ -507,7 +523,16 @@ def run_coupled(modules, calibration):
 
     while controller.t < T_END - 1e-9:
         controller.step(mech_callback=on_mech_step)
-    return {key: np.array(value) for key, value in trace.items()}
+    result = {key: np.array(value) for key, value in trace.items()}
+    space = backend.active_tension.function_space
+    u_p1 = dolfinx.fem.Function(dolfinx.fem.functionspace(space.mesh, ("P", 1, (3,))))
+    u_p1.interpolate(problem.u)
+    result["end"] = {
+        "space": space,
+        "u": u_p1.x.array.reshape(-1, 3).copy(),
+        "Ta": backend.active_tension.x.array.copy(),
+    }
+    return result
 
 
 coupled = {}
@@ -541,6 +566,101 @@ for ax in axes:
     ax.set_xlabel("time [ms]")
 fig.tight_layout()
 plt.show()
+
+# %% [markdown]
+# The zeta split at 100 ms, composed beside hand-made: the mechanics mesh warped by the
+# displacement at true scale and coloured by $T_a$, with the slab at rest in grey. Drag
+# to turn either and scroll to zoom; the two views turn together. The tension is highest
+# in the stimulated corner, which activated first, and the slab has shortened along its
+# fibres. The two are hard to tell apart, and the largest differences between them,
+# printed below the view, are small beside the tension and the displacement themselves.
+#
+# `surface` and `show_scene` are copied from
+# [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb), which explains them.
+
+# %%
+OUTPUT = HERE / "output"
+OUTPUT.mkdir(exist_ok=True)
+
+
+def surface(space):
+    """The surface of a P1 space's mesh, and the dof at each of its points."""
+    grid = pyvista.UnstructuredGrid(*dolfinx.plot.vtk_mesh(space))
+    boundary = grid.extract_surface(
+        pass_pointid=True,
+        pass_cellid=False,
+        algorithm="dataset_surface",
+    )
+    return boundary, boundary["vtkOriginalPointIds"]
+
+
+def show_scene(plotter, name, height=400):
+    """Show the plotter's scene as an interactive page, and write it to OUTPUT / name."""
+    plotter.render()
+    initialize_serializers()
+    context = SynchronizationContext()
+    window = plotter.render_window
+    scene = serialize(None, window, "scene", context, 1)
+    camera = window.GetRenderers().GetFirstRenderer().GetActiveCamera()
+    scene["extra"] = {
+        "vtkRefId": reference_id(window),
+        "centerOfRotation": camera.GetFocalPoint(),
+        "camera": reference_id(camera),
+    }
+    arrays = {
+        item["hash"]: {**item, "content": context.get_cached_data_array(item["hash"], False)}
+        for item in extract_array_hash(scene)
+    }
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as file:
+        file.writestr("index.json", json.dumps({"hashes": arrays, "scene": scene}))
+    page = io.StringIO()
+    write_html(archive.getvalue(), page)
+    (OUTPUT / name).write_text(page.getvalue())
+    attributes = f'width="100%" height="{height}" style="border:none"'
+    frame = f'<iframe srcdoc="{html.escape(page.getvalue())}" {attributes}></iframe>'
+    # In a <div>, since IPython warns about HTML that starts with an <iframe>
+    display(HTML(f"<div>{frame}</div>"))
+
+
+LABELS = ("composed", "hand-made")
+top = max(coupled["zeta", label]["end"]["Ta"].max() for label in LABELS)
+plotter = pyvista.Plotter(
+    off_screen=True,
+    shape=(1, 2),
+    window_size=[900, 400],
+    border=False,
+    theme=pyvista.themes.DocumentTheme(),
+)
+for column, label in enumerate(LABELS):
+    end = coupled["zeta", label]["end"]
+    mesh, dofs = surface(end["space"])
+    plotter.subplot(0, column)
+    plotter.add_mesh(mesh.outline(), color="grey")
+    mesh.points += end["u"][dofs]
+    mesh["Ta"] = end["Ta"][dofs]
+    plotter.add_mesh(
+        mesh,
+        scalars="Ta",
+        clim=(0.0, top),
+        cmap="viridis",
+        scalar_bar_args={"title": f"Ta [kPa], zeta split, {label}"},
+        ambient=0.3,
+        diffuse=0.7,
+        specular=0.0,
+    )
+plotter.link_views()
+plotter.camera_position = [(-14.0, -24.0, 20.0), (LX / 2, LY / 2, LZ / 2), (0.0, 0.0, 1.0)]
+show_scene(plotter, "08_tension.html")
+plotter.close()
+del plotter  # now, rather than at exit, where pyvista prints errors freeing it
+
+a, b = (coupled["zeta", label]["end"] for label in LABELS)
+print(
+    f"at {T_END:.0f} ms, max |ΔTa| = {np.abs(a['Ta'] - b['Ta']).max():.2f} kPa, of up to "
+    f"{top:.1f} kPa, and max |Δu| = {np.linalg.norm(a['u'] - b['u'], axis=1).max():.3f} mm, "
+    f"of up to {np.linalg.norm(a['u'], axis=1).max():.1f} mm",
+)
 
 # %% [markdown]
 # The largest differences over the run, composed against hand-made, at every node or

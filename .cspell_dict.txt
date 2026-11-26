@@ -621,3 +621,5 @@ Petras
 CELLTYPES
 tentusscher
 Physiome
+libgl
+libosmesa
