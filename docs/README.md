@@ -31,7 +31,7 @@ myst build --html --execute --execute-parallel 1
 python3 -m http.server -d _build/html    # or: myst start --execute
 ```
 
-MyST bootstraps its own Node.js on first use, or uses one already installed. Three
+MyST bootstraps its own Node.js on first use, or uses one already installed. Four
 problems you may meet:
 
 - the build stops with `ECONNREFUSED 127.0.0.1`: set
@@ -48,6 +48,17 @@ problems you may meet:
   export JUPYTER_CONFIG_DIR=/tmp/jupyter-config
   mkdir -p $JUPYTER_CONFIG_DIR
   echo "c.ServerApp.allow_root = True" > $JUPYTER_CONFIG_DIR/jupyter_server_config.py
+  ```
+
+- `bad X server connection` in the pages of tutorials 7 and 8, or VTK failing to open a
+  window: they render with pyvista off screen, and VTK tries the X display named by
+  `DISPLAY` first. Unset it, and render through EGL where it is installed, or through
+  OSMesa, in software, as CI does (`apt-get install libgl1 libosmesa6`):
+
+  ```bash
+  unset DISPLAY
+  export VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow        # EGL
+  # export VTK_DEFAULT_OPENGL_WINDOW=vtkOSOpenGLRenderWindow # OSMesa, as CI
   ```
 
 Figures appear in the pages only with an inline matplotlib backend:
