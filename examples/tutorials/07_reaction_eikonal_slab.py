@@ -34,6 +34,11 @@
 #   neighbours, though a point beside resting tissue can be slightly later.
 # - **R-E−** drops the PDE. Every node is an isolated cell, fired by its own foot current.
 #
+# fenicsx-beat's
+# [wedge activation demo](https://finsberg.github.io/fenicsx-beat/demos/reaction_eikonal_wedge_activation.html)
+# reproduces Neic et al.'s activation results with both variants and this foot current, on
+# their ventricular wedge.
+#
 # For electromechanics, what matters is that every point gets its calcium transient at
 # the right time, and R-E gives that at a fraction of the cost. Strocchi et al. (*PLoS
 # Comput Biol* 2023) drive ToR-ORd and Land with R-E− in a four-chamber heart, with
@@ -99,8 +104,12 @@ print("Land:", land_file.name)
 # unit (TT06 runs in ms, Land in s), and the composed model runs in ms. The part names
 # matter: the Land part is called `mechanics`, which is the component simcardemsx puts on
 # the mechanics side, so the composed model is already split. Two of Land's names are
-# renamed, since TT06 has an `h` (a sodium-channel gate) and simcardemsx sets a
-# `dLambda` of its own.
+# renamed, since TT06 has an `h` (a sodium-channel gate) and simcardemsx sets a `dLambda`
+# of its own. gotranx's
+# [guide to composing models](https://finsberg.github.io/gotranx/docs/composition.html)
+# describes the recipe and the glue file below, and its
+# [worked example](https://finsberg.github.io/gotranx/examples/split-ode/main.html)
+# composes O'Hara-Rudy's model with Land's the same way and then splits the result.
 
 # %%
 glue_file = ODEFILES / "tt06_land.glue.ode"
@@ -161,7 +170,10 @@ print("λ sent to EP:  ", crossings.stretch_to_ep)
 # of the fine reference below, 0.2 mm, with the benchmark's conductivities, $\chi$ and
 # $C_m$, and the activation time is the 0 mV crossing, the benchmark's definition. TT06's
 # own stimulus is switched off here and everywhere below: the stimulus is applied to the
-# tissue.
+# tissue. beat's
+# [Durrer demo](https://finsberg.github.io/fenicsx-beat/demos/durrer_activation.html#calibrating-the-conductivities)
+# uses the same measurement the other way round, to calibrate the conductivities of a
+# coarse mesh to target velocities.
 
 # %%
 DT_EP = 0.05  # ms
@@ -321,7 +333,10 @@ def run_ep(mode, dx, t_end, solver_type="direct"):
 # iterative solver (conjugate gradients with algebraic multigrid) for the PDE. It runs to
 # 45 ms, past the last activation. Its stimulated nodes reach 0 mV some time after the
 # stimulus starts, and the mean of those times, `STIM_DELAY`, is when the eikonal's
-# sources must reach 0 mV too.
+# sources must reach 0 mV too. beat's
+# [wedge activation demo](https://finsberg.github.io/fenicsx-beat/demos/reaction_eikonal_wedge_activation.html)
+# likewise starts its sources a measured delay after the stimulus, where Neic et al. start
+# them with it.
 
 # %%
 reference = run_ep("monodomain", DX_REF, 45.0, solver_type="iterative")
@@ -373,7 +388,9 @@ print(f"the eikonal's sources start at {SOURCE_TIME:.3f} ms")
 # %% [markdown]
 # The eikonal's sources are the stimulated cells' vertices, all at `SOURCE_TIME`, and
 # `beat.eikonal.solve_eikonal` solves it with the two velocities, $CV_T$ both across the
-# fibres and normal to the sheets.
+# fibres and normal to the sheets. beat's
+# [eikonal demo](https://finsberg.github.io/fenicsx-beat/demos/eikonal.html) shows the
+# solver on its own, from a point source to colliding fronts and Neic et al.'s wedge.
 
 
 # %%
@@ -493,15 +510,16 @@ for mode in ("re+", "re-"):
 # %% [markdown]
 # ### Against the published numbers
 #
-# Niederer et al. report the last activation, at P8, converging to about 42.5–43 ms
-# for three codes at 0.05 mm and 0.001 ms. beat's own Niederer demo
-# (`demos/niederer_benchmark.py` in fenicsx-beat) tabulates its monodomain results at
-# P1–P9, at a time step of 0.05 ms. Its convention differs slightly from the one here,
-# in time and in space. In time, it takes the start of the first time step after which
-# $v$ is above 0 mV, where this tutorial interpolates linearly in time, a difference of
-# less than a time step. In space, it evaluates $v$ at the point, where this tutorial
-# finds the activation time of every node and interpolates those to the point. At a node
-# the two are the same, but at a point that is not a node they can differ by more.
+# Niederer et al. report the last activation, at P8, converging to about 42.5–43 ms for
+# three codes at 0.05 mm and 0.001 ms. beat's own
+# [Niederer benchmark demo](https://finsberg.github.io/fenicsx-beat/demos/niederer_benchmark.html)
+# tabulates its monodomain results at P1–P9, at a time step of 0.05 ms. Its convention
+# differs slightly from the one here, in time and in space. In time, it takes the start of
+# the first time step after which $v$ is above 0 mV, where this tutorial interpolates
+# linearly in time, a difference of less than a time step. In space, it evaluates $v$ at
+# the point, where this tutorial finds the activation time of every node and interpolates
+# those to the point. At a node the two are the same, but at a point that is not a node
+# they can differ by more.
 
 # %%
 NIEDERER_P8 = (42.5, 43.0)  # ms, Niederer et al. 2011
@@ -839,9 +857,11 @@ for mode, result in coupled.items():
 # - **No re-entry.** The eikonal gives every point one activation time, so a wave that
 #   breaks up or comes back cannot be represented. beat's `FootCurrentODESolver` can fire
 #   the foot again every beat (its `period`), which is how R-E studies run several beats.
-# - **R-E−'s repolarisation.** Without diffusion, neighbouring nodes do not even out
-#   their action potentials, and Neic et al. found that R-E− overestimates repolarisation
-#   gradients. R-E+ largely avoids it.
+# - **R-E−'s repolarisation.** Without diffusion, neighbouring nodes do not even out their
+#   action potentials, and Neic et al. found that R-E− overestimates repolarisation
+#   gradients. R-E+ largely avoids it. beat's
+#   [repolarisation demo](https://finsberg.github.io/fenicsx-beat/demos/reaction_eikonal_wedge_repolarization.html)
+#   shows both on their wedge.
 # - **The foot was fitted to one cell model.** Its $A$ and $\tau_F$ were fitted by Neic et
 #   al. to the ten Tusscher-Noble-Noble-Panfilov model, an ancestor of TT06, so they
 #   suit TT06 here. Another cell model has another latency, which is why it is measured
@@ -853,6 +873,10 @@ for mode, result in coupled.items():
 #   this kind of EP in a full program, and so do the
 #   [BiV](../applications/circulation-biv.md) and [Rodero](../applications/rodero.md)
 #   examples.
+# - beat's
+#   [electrogram demo](https://finsberg.github.io/fenicsx-beat/demos/reaction_eikonal_wedge_electrograms.html)
+#   computes the extracellular potential and an electrogram from R-E+ and R-E− on Neic et
+#   al.'s wedge, in a bath.
 # - The [next tutorial](08_composed_two_way_coupling.ipynb) composes a model whose
 #   contraction feeds back into the calcium, ToR-ORd with Land, and splits it between EP
 #   and mechanics in two ways.

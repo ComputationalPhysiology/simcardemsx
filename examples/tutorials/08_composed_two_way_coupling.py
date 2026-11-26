@@ -71,9 +71,11 @@ print("Land:   ", land_file.name)
 # licensed GPL-3.0-only, so it is not stored in this repository: odezoo fetches it at run
 # time. Its default cell type, 0, is the endocardial cell of the hand-made files.
 #
-# The recipe has two parts, `ep` and `land`, and nothing is split yet. ToR-ORd runs in
-# ms and Land in s. Three of Land's names are renamed: ToR-ORd has gates named `a` (of
-# `Ito`) and `h` (of `INa`), and simcardemsx sets a `dLambda` of its own.
+# The recipe has two parts, `ep` and `land`, and nothing is split yet (gotranx's
+# [guide to composing models](https://finsberg.github.io/gotranx/docs/composition.html)
+# describes recipes and glue files). ToR-ORd runs in ms and Land in s. Three of Land's
+# names are renamed: ToR-ORd has gates named `a` (of `Ito`) and `h` (of `INa`), and
+# simcardemsx sets a `dLambda` of its own.
 
 # %%
 glue_file = ODEFILES / "torord_land.glue.ode"
@@ -98,7 +100,10 @@ print(glue_file.read_text())
 # calcium. Its last two lines make the coupling two-way. ToR-ORd buffers its cytosolic
 # calcium on calmodulin and troponin with a rapid-equilibrium factor `Bcai`, and
 # `replace Bcai` drops troponin from that factor, since troponin is now Land's state. The
-# flux into Land's troponin, `J_TRPN`, is then taken out of `dcai_dt`.
+# flux into Land's troponin, `J_TRPN`, is then taken out of `dcai_dt`. `replace` and `+=`
+# are what a glue file adds to the `.ode` grammar
+# ([the glue file](https://finsberg.github.io/gotranx/docs/composition.html#the-glue-file)
+# in gotranx's guide).
 #
 # Composing converts the CellML file, which takes a few seconds, and gotranx may warn
 # that it drops a guard on a concentration, which is harmless here.
@@ -134,8 +139,11 @@ print("composing twice saves byte-identical text")
 #
 # `ODE.split(name, inputs, outputs)` carves a new component `name` out of the model, like
 # a function signature: it holds the outputs and everything they depend on, up to the
-# inputs and the parameters. Naming it `mechanics` makes it the component simcardemsx
-# puts on the mechanics side. Two splits of the one composed model:
+# inputs and the parameters. Naming it `mechanics` makes it the component simcardemsx puts
+# on the mechanics side. gotranx's
+# [worked example](https://finsberg.github.io/gotranx/examples/split-ode/main.html) splits
+# O'Hara-Rudy's model with Land's the way the Ca$_i$ split below does. Two splits of the
+# one composed model:
 #
 # - **zeta**: `S` and `W` (Land's strongly and weakly bound crossbridges) in; the two
 #   distortion states `Zs`, `Zw` and the tension out. Only these are inside Newton.
