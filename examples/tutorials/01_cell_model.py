@@ -131,10 +131,10 @@ print(f"peak Ta     {Ta.max():7.2f} kPa at {times[Ta.argmax()]:6.1f} ms")
 #
 # Each `.ode` file therefore marks one component as `"mechanics"`. Those states are
 # stepped on the mechanics mesh, and everything else is stepped by EP.
-# `simcardemsx.ode_model.load_ode_modules` cuts the file along that line and
-# generates two modules. The EP half is NumPy code for beat. The mechanics half is
-# **UFL**, the symbolic form language of FEniCSx, so the mechanics solver can
-# differentiate through it (tutorial 3 shows why that matters).
+# `simcardemsx.ode_model.load_ode_modules` cuts the file along that line and generates two
+# modules. The EP half is NumPy code for beat. The mechanics half is **UFL**, the symbolic
+# form language of FEniCSx, so the mechanics solver can differentiate through it
+# ([the single-element tutorial](03_single_element.ipynb) shows why that matters).
 #
 # Generating ToR-ORd takes about 15 seconds. The code is cached in the output folder and
 # reused until the `.ode` file or gotranx changes.

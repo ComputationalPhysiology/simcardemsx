@@ -32,8 +32,9 @@
 # The element is held on three faces by rollers and is otherwise free, so it shortens
 # along the fibre when it contracts.
 #
-# We use the **Ca$_i$ split** from tutorial 1, where the whole Land model is on the
-# mechanics side and its only input is the cytosolic calcium `cai`.
+# We use the **Ca$_i$ split** from [the cell-model tutorial](01_cell_model.ipynb), where
+# the whole Land model is on the mechanics side and its only input is the cytosolic
+# calcium `cai`.
 
 # %%
 from pathlib import Path
@@ -120,8 +121,8 @@ def build(scheme):
 # %% [markdown]
 # ## The time loop
 #
-# Each mechanics step follows the same protocol, which tutorial 4's controller also
-# follows:
+# Each mechanics step follows the same protocol, which the controller of
+# [the coupled slab](04_coupled_slab.ipynb) also follows:
 #
 # 1. write the inputs at the new time into `backend.inputs`, here a prescribed calcium
 #    transient peaking at 1 µM;
@@ -191,10 +192,11 @@ for scheme, (times, lmbda, Ta) in results.items():
     )
 
 # %% [markdown]
-# The passive material is soft enough here that the active stiffness exceeds the
-# passive one during the twitch, which is the regime of tutorial 2. As in 0D, the naive
-# segregated scheme oscillates from one step to the next from about 20 ms on, until
-# Newton gives up. The other two shorten the element smoothly as the tension rises.
+# The passive material is soft enough here that the active stiffness exceeds the passive
+# one during the twitch, which is the regime of
+# [the 0D coupling tutorial](02_coupling_schemes_0d.ipynb). As in 0D, the naive segregated
+# scheme oscillates from one step to the next from about 20 ms on, until Newton gives up.
+# The other two shorten the element smoothly as the tension rises.
 #
 # They do not agree with each other at this time step, though. The stabilized scheme
 # adds a term of order $\Delta t$, so it is *consistent*: it converges to the same
@@ -267,7 +269,8 @@ plt.show()
 # | `stiffness_kPa` | the active stiffness $K_a = \partial T_a/\partial\lambda$, in kPa |
 # | `active_tension` | $T_a$ averaged onto P1, for plotting |
 #
-# The active stiffness is the quantity tutorial 2 compared with the passive one.
+# The active stiffness is the quantity
+# [the 0D coupling tutorial](02_coupling_schemes_0d.ipynb) compared with the passive one.
 
 # %%
 problem, backend = build("monolithic")

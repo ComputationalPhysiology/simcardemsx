@@ -56,7 +56,7 @@ from simcardemsx import zero_d
 # $$
 #
 # in the quasistatic regime they analyse ($M = \sigma = 0$). The contraction model is
-# Land's (2017), as in tutorial 1, here from the
+# Land's (2017), as in [the cell-model tutorial](01_cell_model.ipynb), here from the
 # [crossbridge](https://github.com/ComputationalPhysiology/crossbridge) package.
 #
 # The passive stiffness `Kp` is the knob that decides everything. With a stiff tissue the
@@ -183,7 +183,8 @@ plt.show()
 # the time-step frequency, which is easy to misread as a Newton tolerance problem or a
 # mesh problem.
 #
-# simcardemsx offers two ways out, and both are used in the next tutorial.
+# simcardemsx offers two ways out, and both are used in the
+# [next tutorial](03_single_element.ipynb).
 #
 # - **Monolithic**: `GeneratedActivation(..., scheme="monolithic")`, the default, steps
 #   the contraction model *inside* the mechanics Newton iteration. The model is generated

@@ -1,22 +1,23 @@
 # %% [markdown]
 # # One two-way coupled cell model, split two ways
 #
-# [Tutorial 7](07_reaction_eikonal_slab.ipynb) composed a cell model with Land's
-# contraction model, and nothing went back from the contraction to the cell. In ToR-ORd
-# and Land as Margara et al. (*Prog Biophys Mol Biol* 2021) couple them, calcium bound to
-# troponin is Land's state `CaTRPN`, and the flux into it, `J_TRPN`, is taken out of the
-# cytosolic calcium of ToR-ORd. The coupling goes both ways: calcium drives the
-# contraction, and the contraction's troponin, whose calcium affinity depends on the fibre
-# stretch, shapes the calcium transient.
+# [The reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb) composed a cell model
+# with Land's contraction model, and nothing went back from the contraction to the cell.
+# In ToR-ORd and Land as Margara et al. (*Prog Biophys Mol Biol* 2021) couple them,
+# calcium bound to troponin is Land's state `CaTRPN`, and the flux into it, `J_TRPN`, is
+# taken out of the cytosolic calcium of ToR-ORd. The coupling goes both ways: calcium
+# drives the contraction, and the contraction's troponin, whose calcium affinity depends
+# on the fibre stretch, shapes the calcium transient.
 #
-# simcardemsx ships this model in hand-made `.ode` files, one per split (tutorial 1). This
-# tutorial composes it from the published models instead, once, and splits the one
-# composed model in two places with gotranx's `ODE.split`. In simcardemsx a split decides
-# two things:
+# simcardemsx ships this model in hand-made `.ode` files, one per split
+# ([the cell-model tutorial](01_cell_model.ipynb)). This tutorial composes it from the
+# published models instead, once, and splits the one composed model in two places with
+# gotranx's `ODE.split`. In simcardemsx a split decides two things:
 #
 # - **What is inside Newton.** The mechanics side is stepped at the quadrature points of
-#   the mechanics mesh, inside the mechanics solve under the monolithic scheme (tutorial
-#   3), so its states see the stretch that Newton is converging to.
+#   the mechanics mesh, inside the mechanics solve under the monolithic scheme
+#   ([the single-element tutorial](03_single_element.ipynb)), so its states see the
+#   stretch that Newton is converging to.
 # - **What is lagged a step.** Each step, EP runs first, with what came back from the
 #   previous mechanics step, the stretch $\lambda$ included. Everything on the EP side
 #   that depends on what mechanics returns sees it one mechanics step late.
@@ -26,7 +27,9 @@
 # 1. composes ToR-ORd and Land, both fetched from a model registry, with a two-way glue;
 # 2. splits the composed model two ways and prints what crosses in each;
 # 3. checks one cell of the composed model against simcardemsx's hand-made files;
-# 4. runs each split coupled on tutorial 7's slab, beside its hand-made counterpart.
+# 4. runs each split coupled on the slab of
+#    [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb), beside its hand-made
+#    counterpart.
 
 # %%
 import tempfile
@@ -62,11 +65,11 @@ print("Land:   ", land_file.name)
 # ## Composing the model
 #
 # ToR-ORd is the model of Tomek et al. (*eLife* 2019), in its dynamic-chloride variant
-# (Tomek, Bueno-Orovio & Rodriguez, *bioRxiv* 2020, doi 10.1101/2020.06.01.127043), as
-# the CellML file its authors publish, and Land is crossbridge's `.ode` file, as in
-# tutorial 7. ToR-ORd's CellML is licensed GPL-3.0-only, so it is not stored in this
-# repository: odezoo fetches it at run time. Its default cell type, 0, is the endocardial
-# cell of the hand-made files.
+# (Tomek, Bueno-Orovio & Rodriguez, *bioRxiv* 2020, doi 10.1101/2020.06.01.127043), as the
+# CellML file its authors publish, and Land is crossbridge's `.ode` file, as in
+# [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb). ToR-ORd's CellML is
+# licensed GPL-3.0-only, so it is not stored in this repository: odezoo fetches it at run
+# time. Its default cell type, 0, is the endocardial cell of the hand-made files.
 #
 # The recipe has two parts, `ep` and `land`, and nothing is split yet. ToR-ORd runs in
 # ms and Land in s. Three of Land's names are renamed: ToR-ORd has gates named `a` (of
@@ -90,7 +93,8 @@ recipe = {
 print(glue_file.read_text())
 
 # %% [markdown]
-# The glue gives Land the stretch and its rate, as in tutorial 7, and feeds it ToR-ORd's
+# The glue gives Land the stretch and its rate, as in
+# [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb), and feeds it ToR-ORd's
 # calcium. Its last two lines make the coupling two-way. ToR-ORd buffers its cytosolic
 # calcium on calmodulin and troponin with a rapid-equilibrium factor `Bcai`, and
 # `replace Bcai` drops troponin from that factor, since troponin is now Land's state. The
@@ -139,7 +143,8 @@ print("composing twice saves byte-identical text")
 #   are inside Newton.
 #
 # Each is saved and generated into its own folder, and its hand-made counterpart in
-# `examples/odefiles` beside it, in the folder tutorial 1 generated it into.
+# `examples/odefiles` beside it, in the folder
+# [the cell-model tutorial](01_cell_model.ipynb) generated it into.
 
 # %%
 SPLITS = {
@@ -184,8 +189,9 @@ assert stretch_to_ep == {
 # on the EP side, and troponin's calcium sensitivity depends on the stretch (Land's `Ca50`
 # falls as λ grows), so EP needs λ, and gets it a step late. The distortion states, which
 # carry the stretch rate, are inside Newton with the tension: lagging the stretch there is
-# what makes the naive scheme of tutorial 2 unstable. Land's passive state `Cd` also stays
-# on the EP side, where the hand-made zeta file keeps it in `mechanics`.
+# what makes the naive scheme of [the 0D coupling tutorial](02_coupling_schemes_0d.ipynb)
+# unstable. Land's passive state `Cd` also stays on the EP side, where the hand-made zeta
+# file keeps it in `mechanics`.
 #
 # In the **Ca$_i$** split all of Land's active states are inside Newton, and EP gets only
 # `J_TRPN`, a step late. Yet λ still crosses to EP, where the hand-made Ca$_i$ file sends
@@ -215,13 +221,15 @@ assert not lmbda_to_ep
 #
 # The hand-made files carry the Land values of Margara et al., in ms and kPa.
 # crossbridge's Land has values from skinned fibres, so the composed model is given the
-# same calibration as in tutorial 7, in Land's own units (µM, Pa and 1/s), and starts
-# with tropomyosin fully blocking, `B` = 1, as the hand-made files do.
+# same calibration as in [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb),
+# in Land's own units (µM, Pa and 1/s), and starts with tropomyosin fully blocking,
+# `B` = 1, as the hand-made files do.
 #
 # The whole model, unsplit, runs one beat as one cell at λ = 1, with ToR-ORd's own
-# stimulus at $t = 0$, as in tutorial 1. The zeta and Ca$_i$ hand-made files differ only
-# in which component, `mechanics` or another, their states, parameters and expressions
-# belong to. Loaded whole, their dynamics are identical, so one of them is run.
+# stimulus at $t = 0$, as in [the cell-model tutorial](01_cell_model.ipynb). The zeta and
+# Ca$_i$ hand-made files differ only in which component, `mechanics` or another, their
+# states, parameters and expressions belong to. Loaded whole, their dynamics are
+# identical, so one of them is run.
 
 # %%
 LAND_CALIBRATION = {
@@ -320,25 +328,26 @@ for trace, label in ((composed_cell, "composed"), (hand_cell, "hand-made")):
 #
 # ## Coupled, on the slab
 #
-# Each split now runs coupled, beside its hand-made counterpart, for 100 ms on tutorial
-# 7's slab: EP at 0.5 mm under R-E−, and mechanics on the ~2 mm mesh with P2
-# displacement, the contraction states at the points of a degree-2 quadrature rule, the
-# monolithic scheme, and rollers on $x = 0$, $y = 0$ and $z = 0$. Each Land parameter of
-# the calibration goes to whichever side of the split declares it, and so does `B` = 1:
-# the zeta split keeps `B` on the EP side, the Ca$_i$ split in mechanics.
+# Each split now runs coupled, beside its hand-made counterpart, for 100 ms on the slab of
+# [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb): EP at 0.5 mm under
+# R-E−, and mechanics on the ~2 mm mesh with P2 displacement, the contraction states at
+# the points of a degree-2 quadrature rule, the monolithic scheme, and rollers on $x = 0$,
+# $y = 0$ and $z = 0$. Each Land parameter of the calibration goes to whichever side of
+# the split declares it, and so does `B` = 1: the zeta split keeps `B` on the EP side, the
+# Ca$_i$ split in mechanics.
 #
-# The eikonal is tutorial 7's, with its two conduction velocities and its sources in the
-# stimulated corner, starting at 0.41 ms, close to tutorial 7's 0.395 ms (the two
-# estimates of the foot's latency differ by where $t_a$ falls in a step). Any one $t_a$
-# shared by the four runs will do, so it is computed once. ToR-ORd's own stimulus is off:
-# the foot current fires each node.
+# The eikonal is that of [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb),
+# with its two conduction velocities and its sources in the stimulated corner, starting at
+# 0.41 ms, close to the 0.395 ms found there (the two estimates of the foot's latency
+# differ by where $t_a$ falls in a step). Any one $t_a$ shared by the four runs will do,
+# so it is computed once. ToR-ORd's own stimulus is off: the foot current fires each node.
 
 # %%
 DX_EP, DX_MECH, QUADRATURE_DEGREE = 0.5, 2.0, 2  # mm, mm, -
 DT_MECH, T_END = 1.0, 100.0  # ms
 LX, LY, LZ = 20.0, 7.0, 3.0  # mm
 STIM_SIZE = 1.5  # mm
-CV_L, CV_T = 0.5906, 0.2024  # mm/ms, measured in tutorial 7
+CV_L, CV_T = 0.5906, 0.2024  # mm/ms, measured in the reaction-eikonal tutorial
 SOURCE_TIME = 0.41  # ms
 
 
@@ -372,9 +381,10 @@ def on_side(values, module):
 
 
 # %% [markdown]
-# `ep_solver` is tutorial 7's R-E− without the other two kinds of EP. The EP half now has
-# missing variables, what comes back from mechanics, so the ODE solver is given room for
-# them. `mechanics` is tutorial 7's, for any split.
+# `ep_solver` is the R-E− of
+# [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb), without the other two
+# kinds of EP. The EP half now has missing variables, what comes back from mechanics, so
+# the ODE solver is given room for them. `mechanics` is that tutorial's, for any split.
 
 
 # %%
@@ -586,9 +596,9 @@ for split in SPLITS:
 # ## Where to go next
 #
 # - A split is a choice of what is inside Newton, and these two are not the only ones.
-#   `inputs=["CaTRPN"], outputs=["Ta"]` cuts the composed model at Land's troponin, as
-#   the hand-made `catrpnsplit` file of [tutorial 1](01_cell_model.ipynb) does, and
-#   `resolve` says what then crosses.
-# - [Tutorial 2](02_coupling_schemes_0d.ipynb) shows, in 0D, why it matters what is
-#   lagged a step: a contraction model stepped at the previous step's stretch does not
-#   converge once its active stiffness exceeds the passive stiffness.
+#   `inputs=["CaTRPN"], outputs=["Ta"]` cuts the composed model at Land's troponin, as the
+#   hand-made `catrpnsplit` file of [the cell-model tutorial](01_cell_model.ipynb) does,
+#   and `resolve` says what then crosses.
+# - [Why the coupling scheme matters](02_coupling_schemes_0d.ipynb) shows, in 0D, why it
+#   matters what is lagged a step: a contraction model stepped at the previous step's
+#   stretch does not converge once its active stiffness exceeds the passive stiffness.

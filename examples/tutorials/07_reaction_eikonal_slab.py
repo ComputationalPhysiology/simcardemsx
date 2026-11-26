@@ -1,11 +1,11 @@
 # %% [markdown]
 # # Reaction-eikonal electromechanics on the Niederer slab
 #
-# The monodomain model of tutorial 4 resolves the upstroke of the action potential in
-# space, and that needs a fine mesh. On a coarse one the wave travels too slowly, or not at
-# all. A whole heart at 0.2 mm has millions of nodes, so many electromechanics studies
-# replace the monodomain model by the **reaction-eikonal** (R-E) model of Neic et al.
-# (*J Comput Phys* 2017).
+# The monodomain model of [the coupled slab](04_coupled_slab.ipynb) resolves the upstroke
+# of the action potential in space, and that needs a fine mesh. On a coarse one the wave
+# travels too slowly, or not at all. A whole heart at 0.2 mm has millions of nodes, so
+# many electromechanics studies replace the monodomain model by the **reaction-eikonal**
+# (R-E) model of Neic et al. (*J Comput Phys* 2017).
 #
 # R-E separates *when* a point activates from *how* its cells respond. An eikonal equation
 #
@@ -86,9 +86,9 @@ print("Land:", land_file.name)
 # %% [markdown]
 # ## The cell model
 #
-# The benchmark's cell model is the ten Tusscher-Panfilov 2006 epicardial model (TT06;
-# ten Tusscher & Panfilov, *Am J Physiol Heart Circ Physiol* 2006). Here it drives the Land
-# contraction model of tutorial 1. Both come from
+# The benchmark's cell model is the ten Tusscher-Panfilov 2006 epicardial model (TT06; ten
+# Tusscher & Panfilov, *Am J Physiol Heart Circ Physiol* 2006). Here it drives the Land
+# contraction model of [the cell-model tutorial](01_cell_model.ipynb). Both come from
 # [odezoo](https://github.com/ComputationalPhysiology/odezoo), a registry of cell models:
 # `odezoo.get` downloads a model once, by a pinned version, checks its sha256, and returns
 # the path of the cached file. TT06 is the CellML file of the Physiome Model Repository,
@@ -236,10 +236,10 @@ def slab(dx):
 
 # %% [markdown]
 # `ep_solver` builds the three kinds of EP on a slab. The cell model is stepped at the
-# nodes of a P1 space, as in tutorial 4. For monodomain, the stimulus is the benchmark's,
-# 50 000 µA/cm³ for 2 ms in the tagged cells. For R-E, beat's `FootCurrentODESolver` wraps
-# the ODE solver and adds the foot current at each node's $t_a$, and the PDE is kept
-# without a stimulus (R-E+) or dropped (R-E−).
+# nodes of a P1 space, as in [the coupled slab](04_coupled_slab.ipynb). For monodomain,
+# the stimulus is the benchmark's, 50 000 µA/cm³ for 2 ms in the tagged cells. For R-E,
+# beat's `FootCurrentODESolver` wraps the ODE solver and adds the foot current at each
+# node's $t_a$, and the PDE is kept without a stimulus (R-E+) or dropped (R-E−).
 
 
 # %%
@@ -609,18 +609,19 @@ plt.show()
 # %% [markdown]
 # ## Coupled runs
 #
-# Now each of the three drives mechanics, through `SimulationController` as in tutorial 4.
-# EP runs at 0.5 mm. The mechanics mesh is coarser, about 2 mm (10 × 4 × 2 boxes of
-# tetrahedra), with P2 displacement and the contraction states at the points of a degree 2
-# quadrature rule. A 1 mm mechanics mesh changes $T_a$ at P8 by about 5 %, and would take
-# about 6 minutes more (both measured when this tutorial was written). The two meshes need
-# not match: the controller interpolates between them.
+# Now each of the three drives mechanics, through `SimulationController` as in
+# [the coupled slab](04_coupled_slab.ipynb). EP runs at 0.5 mm. The mechanics mesh is
+# coarser, about 2 mm (10 × 4 × 2 boxes of tetrahedra), with P2 displacement and the
+# contraction states at the points of a degree 2 quadrature rule. A 1 mm mechanics mesh
+# changes $T_a$ at P8 by about 5 %, and would take about 6 minutes more (both measured
+# when this tutorial was written). The two meshes need not match: the controller
+# interpolates between them.
 #
-# The material is that of tutorial 4, an incompressible Holzapfel-Ogden material with
-# fibres along $x$, held by rollers on the faces $x = 0$, $y = 0$ and $z = 0$. These hold
-# the face $x = 0$ in $x$ and let the slab shorten freely along its fibres. Rollers on
-# $x = 0$ alone would leave the slab free to slide and rotate, a singular problem, and a
-# fixed face would clamp the corner P1.
+# The material is that of [the coupled slab](04_coupled_slab.ipynb), an incompressible
+# Holzapfel-Ogden material with fibres along $x$, held by rollers on the faces $x = 0$,
+# $y = 0$ and $z = 0$. These hold the face $x = 0$ in $x$ and let the slab shorten freely
+# along its fibres. Rollers on $x = 0$ alone would leave the slab free to slide and
+# rotate, a singular problem, and a fixed face would clamp the corner P1.
 #
 # Land is all on the mechanics side, in `GeneratedActivation` under the `monolithic`
 # scheme, so the whole contraction model is stepped inside Newton. Two things are changed
@@ -706,8 +707,8 @@ def mechanics():
 # %% [markdown]
 # The controller calls a *mechanics driver* once per step. A driver is anything with a
 # `problem` and an `advance(t_n, dt)` that returns whether the step converged. Passing a
-# problem, as tutorial 4 did, wraps it in one that just solves; this one also times the
-# solves. EP's time is taken between the EP callbacks.
+# problem, as [the coupled slab](04_coupled_slab.ipynb) did, wraps it in one that just
+# solves; this one also times the solves. EP's time is taken between the EP callbacks.
 #
 # For R-E, `ep_solver.ode` is beat's `FootCurrentODESolver`, and the cell states live in
 # the `DolfinODESolver` inside it. The controller reaches that with
