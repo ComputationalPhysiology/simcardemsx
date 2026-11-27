@@ -21,7 +21,9 @@ Wang's electromechanics stack, on simcardemsx and pulse. The module docstring of
 
 - **EP**: beat's monodomain on P1, with the EP half of the zeta split. Every node
   starts from the steady state of its cell type (endo, mid or epi) and is activated by
-  the cell model's own stimulus at its local activation time, read from the case.
+  the cell model's own stimulus at its local activation time, read from the case. EP
+  runs under Strang splitting with the second-order Rush-Larsen cell scheme, where
+  physcardems' run is first order in time, so its numbers differ at O(dt).
 - **Activation**: `GeneratedActivation`, monolithic, with the tension masked out of
   the valve plugs through `tension_scale`.
 - **Mechanics**: `pulse.DynamicProblem` with a 2 ms step, Holzapfel-Ogden (three times

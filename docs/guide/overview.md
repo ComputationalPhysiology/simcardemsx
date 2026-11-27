@@ -62,7 +62,7 @@ sequenceDiagram
     participant M as Mechanics (pulse)
     C->>C: snapshot of every component
     loop Δt_mech / Δt_ep times
-        C->>EP: step (ODE, then PDE)
+        C->>EP: Strang step (½ ODE, PDE, ½ ODE)
     end
     C->>T: forward(t_{n+1})
     T->>B: inputs

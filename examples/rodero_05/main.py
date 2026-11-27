@@ -18,7 +18,8 @@ The set-up, following the run script:
   the single-cell steady state of its ToR-ORd cell type, with its cell type and its
   ``i_Stim_Start`` set to the case's activation time, so ToR-ORd's own stimulus
   activates the tissue (no PDE stimulus); Niederer's conductivities and chi, C_m = 1
-  uF/cm^2; 0.05 ms steps.
+  uF/cm^2; 0.05 ms steps, under Strang splitting with the cells stepped by gotranx's
+  second-order ``rush_larsen_2`` (beat 0.14's defaults; not the run script's, below).
 - **Parameters**: every Land parameter goes to each half of the split that declares
   it, and ``PCa_b`` x 2 to the EP half (:func:`place_land`).
 - **Activation**: ``GeneratedActivation``, monolithic, its states on quadrature of
@@ -36,6 +37,11 @@ The set-up, following the run script:
 
 Known differences from physcardems, kept rather than removed:
 
+- EP's numerics are second order in time: Strang splitting, with the cells stepped by
+  ``rush_larsen_2``. The run script generates generalized Rush-Larsen code and steps it
+  with ``MonodomainSplittingSolver``, which is Godunov splitting (theta 1, beat's
+  default before 0.14). EP, and with it every coupled number, therefore differs from
+  em_tref7's at O(dt) in the 0.05 ms EP step.
 - Values crossing back to EP (``Zetas``, ``Zetaw``, lambda) are averaged onto P1, not
   point-interpolated from DG1.
 - The contraction states live on quadrature points of degree 4, not in DG1.
@@ -928,11 +934,7 @@ def main(argv: list[str] | None = None) -> None:
         {"LV": case.lv, "RV": case.rv},
         preconditioner_lag=PRECONDITIONER_LAG,
     )
-    # Every EP mode returns beat's SplittingSolver (the controller's annotation).
-    ep_solver = cast(
-        beat.SplittingSolver,
-        make_ep_solver(case, modules.ep, placed["ep"], args.ep_mode),
-    )
+    ep_solver = make_ep_solver(case, modules.ep, placed["ep"], args.ep_mode)
     # Cycle(cycle) itself, not wrapped: the controller then checkpoints the cycle too.
     controller = SimulationController(Cycle(cycle), ep_solver, backend, modules, DT_MECH, DT_EP)
 

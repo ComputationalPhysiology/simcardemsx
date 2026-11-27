@@ -45,7 +45,7 @@ import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 from mpi4py import MPI
 
@@ -108,15 +108,20 @@ STIM_MARKER = 1
 #: Reaction-eikonal EP's inputs: conduction velocities (mm/ms) along the fibre, sheet and
 #: normal directions, and the delay (ms) of the eikonal source at the stimulus box.
 #: Measured on 2026-11-27 with Strang splitting and the ``rush_larsen_2`` cell scheme
-#: (ToR-ORd, the zeta split; DT_EP 0.05 ms), as the first time v > 0 per node:
+#: (ToR-ORd, the zeta split; DT_EP 0.05 ms), on EP alone, so with the zero
+#: ``missing_variables`` (the zeta split's ``Zetas`` and ``Zetaw``) of the slab's
+#: uncoupled EP:
 #:
-#: - STIM_DELAY_MS is the mean activation time of the nodes inside the 1.5 mm stimulus box
-#:   of this slab's monodomain EP at the default dx 0.5 mm, to 20 ms (24 nodes).
-#: - CV_F and CV_S are ``beat.conduction_velocity.measure_conduction_velocity`` along and
-#:   across the fibres, at dx 0.1 mm and dt 0.05 ms, with this slab's conductivities,
-#:   chi 140/mm and C_m 0.01 uF/mm^2, threshold 0 mV.
-#: - Before (generalized Rush-Larsen, theta splitting): 0.598, 0.233 and 1.6125, with CV_F
-#:   and CV_S fitted by hand on a dx 0.1 mm slab with a 0.5 mm stimulus box.
+#: - STIM_DELAY_MS is the mean activation time, the first time v > 0 per node, of the
+#:   nodes inside the 1.5 mm stimulus box of this slab's monodomain EP at the default
+#:   dx 0.5 mm, to 20 ms (24 nodes).
+#: - CV_F and CV_S are beat's own measurement,
+#:   ``beat.conduction_velocity.measure_conduction_velocity``, along and across the
+#:   fibres, at dx 0.1 mm and dt 0.05 ms, with this slab's conductivities, chi 140/mm and
+#:   C_m 0.01 uF/mm^2, threshold 0 mV.
+#: - Before (generalized Rush-Larsen and Godunov splitting, theta 1): 0.598, 0.233 and
+#:   1.6125, with CV_F and CV_S fitted by hand on a dx 0.1 mm slab with a 0.5 mm stimulus
+#:   box.
 #: - CV_N = CV_S: the slab's transverse directions share their conductivities.
 CV_F = 0.5728
 CV_S = 0.2104
@@ -646,11 +651,7 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     # 3. Setup EP Solver (fenicsx-beat)
     # ---------------------------------------------------------
-    # Every EP mode returns beat's SplittingSolver (the controller and checkpoint annotate it).
-    ep_solver = cast(
-        beat.SplittingSolver,
-        make_ep_solver(ep_module, ep_geo, run_settings, args.ep_mode, stim_tags),
-    )
+    ep_solver = make_ep_solver(ep_module, ep_geo, run_settings, args.ep_mode, stim_tags)
     ode = dolfin_ode_solver(ep_solver)
 
     # ---------------------------------------------------------

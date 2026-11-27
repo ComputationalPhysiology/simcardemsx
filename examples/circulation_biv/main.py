@@ -104,7 +104,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 from mpi4py import MPI
 
@@ -1109,10 +1109,14 @@ def main(argv: list[str] | None = None):
         if args.ep_mode == "synchronous"
         else eikonal_activation(geometry, f0, s0, run_settings)
     )
-    # Every EP mode returns beat's SplittingSolver (the controller and checkpoint annotate it).
-    ep_solver = cast(
-        beat.SplittingSolver,
-        make_ep_solver(modules.ep, ep_ode_space, f0, geometry.dx, run_settings, args.ep_mode, t_a),
+    ep_solver = make_ep_solver(
+        modules.ep,
+        ep_ode_space,
+        f0,
+        geometry.dx,
+        run_settings,
+        args.ep_mode,
+        t_a,
     )
     ode = dolfin_ode_solver(ep_solver)  # the wrapped ODE solver under reaction-eikonal EP
     clock = CirculationClock(
