@@ -631,7 +631,10 @@ for mode in ("re+", "re-"):
 # Niederer et al. report the last activation, at P8, converging to about 42.5–43 ms for
 # three codes at 0.05 mm and 0.001 ms. beat's own
 # [Niederer benchmark demo](https://finsberg.github.io/fenicsx-beat/demos/niederer_benchmark.html)
-# tabulates its monodomain results at P1–P9, at a time step of 0.05 ms. Its convention
+# tabulates its monodomain results at P1–P9, at time steps of 0.05, 0.01 and 0.005 ms. The
+# table was computed with first-order numerics, Godunov splitting and generalized
+# Rush-Larsen, before beat 0.14 made Strang splitting and the second-order Rush-Larsen
+# scheme its defaults, and its rows at 0.005 ms are the ones compared here. Its convention
 # differs slightly from the one here, in time and in space. In time, it takes the start of
 # the first time step after which $v$ is above 0 mV, where this tutorial interpolates
 # linearly in time, a difference of less than a time step. In space, it evaluates $v$ at
@@ -641,10 +644,10 @@ for mode in ("re+", "re-"):
 
 # %%
 NIEDERER_P8 = (42.5, 43.0)  # ms, Niederer et al. 2011
-BEAT_TABLE = {  # ms, fenicsx-beat's demos/niederer_benchmark.py, dt 0.05 ms
-    0.5: [1.25, 51.1, 34.9, 58.9, 14.1, 49.5, 34.0, 56.65, 26.05],
-    0.2: [1.25, 29.7, 32.9, 40.2, 9.55, 30.0, 32.95, 39.9, 18.9],
-    0.1: [1.25, 26.85, 33.3, 40.35, 8.4, 27.5, 33.85, 40.55, 18.95],
+BEAT_TABLE = {  # ms, fenicsx-beat's demos/niederer_benchmark.py, dt 0.005 ms
+    0.5: [1.215, 50.775, 33.825, 57.96, 13.97, 49.345, 32.945, 55.825, 25.595],
+    0.2: [1.235, 29.015, 31.05, 38.475, 9.315, 29.32, 31.08, 38.235, 18.045],
+    0.1: [1.225, 25.5, 31.26, 37.81, 7.99, 26.09, 31.72, 37.93, 17.835],
 }
 print(f"{'activation (ms)':<24}" + "".join(f"{f'P{i}':>8}" for i in range(1, 10)))
 for dx, values in BEAT_TABLE.items():
@@ -653,23 +656,24 @@ row(f"monodomain here, {DX_REF} mm", reference_at)
 row("monodomain here, 0.5 mm", runs["monodomain", 0.5]["at_points"])
 for dx, ours in ((0.2, reference_at), (0.5, runs["monodomain", 0.5]["at_points"])):
     difference = np.abs(ours - np.array(BEAT_TABLE[dx]))
+    corners = difference[:8]  # P1–P8; P9 is the centre
     print(
-        f"largest difference from beat's table at {dx} mm: {difference.max():.2f} ms, "
-        f"at P{difference.argmax() + 1}",
+        f"difference from beat's table at {dx} mm: at most {corners.max():.2f} ms at the "
+        f"corners (P{corners.argmax() + 1}), {difference[8]:.2f} ms at P9",
     )
 print(f"Niederer et al., converged, at P8: {NIEDERER_P8[0]}–{NIEDERER_P8[1]} ms")
 
 # %% [markdown]
-# beat's table agrees with the monodomain runs here to within the difference of the two
-# conventions. The largest difference at 0.2 mm is 1.9 ms, at P7. P7 is a corner, a node of
-# that mesh, so it is more than the convention in space, and the demo's numerics may differ
-# from this tutorial's (Strang splitting and the second-order Rush-Larsen cell scheme, beat
-# 0.14's defaults). beat's 0.5 mm row also predates beat
-# 0.13.0, which activates six of the nine points one time step later (measured when this
-# tutorial was written). Its 0.1 mm row shows that the 0.2 mm reference is not
-# converged: across the fibres (P2, P5, P6) the wave arrives up to about 3 ms earlier at
-# 0.1 mm, since $CV_T$ is still too low at 0.2 mm. A 0.1 mm reference would take too long
-# for this tutorial.
+# The monodomain runs here, at a time step of 0.05 ms, agree with beat's rows at 0.005 ms:
+# to within 0.07 ms at the corners at 0.2 mm, and to within 0.1 ms at every point at
+# 0.5 mm. The largest difference at 0.2 mm, 0.26 ms, is at P9, the centre, which is not a
+# node of that mesh, so it is the convention in space; at 0.5 mm P9 is a node. A
+# second-order run at 0.05 ms thus reaches beat's first-order rows at a time step ten
+# times smaller. beat's own first-order rows at 0.05 ms, in the demo, are up to 1.1 ms
+# (0.5 mm) to 2.6 ms (0.1 mm) later than its rows at 0.005 ms. Its 0.1 mm row shows that
+# the 0.2 mm reference is not converged: across the fibres (P2, P5, P6) the wave arrives
+# up to about 3.5 ms earlier at 0.1 mm, since $CV_T$ is still too low at 0.2 mm. A 0.1 mm
+# reference would take too long for this tutorial.
 #
 # R-E−'s errors, and R-E+'s at 1.0 mm, are largest at the far corners, P4 and P8. Two
 # parts of that error can be seen at P8. A continuous eikonal front, an ellipsoid growing from the
