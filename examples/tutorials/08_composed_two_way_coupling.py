@@ -361,7 +361,7 @@ for trace, label in ((composed_cell, "composed"), (hand_cell, "hand-made")):
 #
 # The eikonal is that of [the reaction-eikonal tutorial](07_reaction_eikonal_slab.ipynb),
 # with its two conduction velocities and its sources in the stimulated corner, starting at
-# 0.41 ms, close to the 0.395 ms found there (the two estimates of the foot's latency
+# 0.41 ms, close to the 0.324 ms found there (the two estimates of the foot's latency
 # differ by where $t_a$ falls in a step). Any one $t_a$ shared by the four runs will do,
 # so it is computed once. ToR-ORd's own stimulus is off: the foot current fires each node.
 

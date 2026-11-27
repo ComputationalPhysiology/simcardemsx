@@ -91,7 +91,7 @@ from trame_vtk.tools.vtksz2html import write_html
 from simcardemsx.averaging import make_averager
 from simcardemsx.backends import GeneratedActivation
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
-from simcardemsx.ode_model import load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, load_ode_modules
 from simcardemsx.transfer_plan import resolve
 
 HERE = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
@@ -203,7 +203,7 @@ ep_parameters = ep_module.init_parameter_values(stim_amplitude=0.0)
 velocity = {}
 for direction in ("longitudinal", "transverse"):
     velocity[direction] = measure_conduction_velocity(
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         init_states=ep_module.init_state_values(),
         parameters=ep_parameters,
         v_index=iV,
@@ -299,16 +299,16 @@ def ep_solver(mode, geo, tags, t_a=None, solver_type="direct"):
     ode = beat.odesolver.DolfinODESolver(
         v_ode=v_ode,
         v_pde=pde.state,
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         init_states=np.tile(ep_module.init_state_values()[:, None], (1, num_points)),
         parameters=np.tile(ep_parameters[:, None], (1, num_points)),
         num_states=len(ep_module.state),
         v_index=iV,
     )
     if mode == "monodomain":
-        return beat.SplittingSolver(pde=pde, ode=ode, theta=1.0)
+        return beat.SplittingSolver(pde=pde, ode=ode, splitting="strang")
     foot = FootCurrentODESolver(ode, t_a, ExponentialFoot())
-    return beat.SplittingSolver(pde=pde if mode == "re+" else None, ode=foot, theta=1.0)
+    return beat.SplittingSolver(pde=pde if mode == "re+" else None, ode=foot, splitting="strang")
 
 
 # %% [markdown]
@@ -353,7 +353,7 @@ def run_ep(mode, dx, t_end, solver_type="direct"):
 # %% [markdown]
 # ### The fine reference and the stimulus delay
 #
-# The reference is the monodomain model at 0.2 mm, which takes about a minute, with an
+# The reference is the monodomain model at 0.2 mm, which takes a couple of minutes, with an
 # iterative solver (conjugate gradients with algebraic multigrid) for the PDE. It runs to
 # 45 ms, past the last activation. Its stimulated nodes reach 0 mV some time after the
 # stimulus starts, and the mean of those times, `STIM_DELAY`, is when the eikonal's
@@ -399,7 +399,7 @@ foot = ExponentialFoot()
 states = ep_module.init_state_values()
 t_cell, v_cell = [0.0], [states[iV]]
 for k in range(round(10.0 / DT_EP)):
-    states = ep_module.generalized_rush_larsen(states, k * DT_EP, DT_EP, ep_parameters)
+    states = getattr(ep_module, EP_SCHEME)(states, k * DT_EP, DT_EP, ep_parameters)
     states[iV] += DT_EP * foot.rate((k + 1) * DT_EP - T_A, states[iV])
     t_cell.append((k + 1) * DT_EP)
     v_cell.append(states[iV])
@@ -474,12 +474,16 @@ for (mode, dx), run in runs.items():
 run = runs["monodomain", 1.0]
 space = run["activation"].function_space
 activated = ~np.isnan(run["activation"].x.array)
-on_edge = np.all(np.isclose(space.tabulate_dof_coordinates()[:, 1:], 0.0), axis=1)
+coordinates = space.tabulate_dof_coordinates()
+on_edge = np.all(np.isclose(coordinates[:, 1:], 0.0), axis=1)
+# Within one element (1.0 mm) of the edge y = z = 0
+near_edge = np.all(coordinates[:, 1:] <= 1.0 + 1e-9, axis=1)
 corner_nodes = np.unique(space.dofmap.list[run["tags"].find(1)].ravel())
 print(
     f"monodomain, 1.0 mm: {np.count_nonzero(activated & on_edge)} of the "
     f"{np.count_nonzero(activated)} nodes that activate are on the edge y = z = 0, which has "
-    f"{np.count_nonzero(on_edge)}; {np.count_nonzero(activated[corner_nodes])} of the "
+    f"{np.count_nonzero(on_edge)}, and {np.count_nonzero(activated & near_edge)} are within "
+    f"one element of it; {np.count_nonzero(activated[corner_nodes])} of the "
     f"{corner_nodes.size} stimulated nodes activate",
 )
 
@@ -487,13 +491,15 @@ print(
 # This is the main finding of Neic et al. On a coarse mesh the monodomain model is late,
 # the more so the further the wave has to travel across the fibres: at 0.5 mm it reaches
 # P2 and P6 about 20 ms after the reference. At 1.0 mm the wave does not enter the slab.
-# Six of the eight stimulated nodes never reach 0 mV, and the nodes that do activate are
-# one row, the whole edge $y = z = 0$ from P1 to P3. A wave runs along that edge while
-# the tissue beside it stays at rest, which is an artefact of this coarse mesh, not
-# propagation through the tissue. The tables show "—" for it even at P1 and P3, which do
-# activate, because a point's value is interpolated from the nodes of its cell, and some
-# of those never activate. R-E is within a few milliseconds at 0.5 mm and within 10 ms at
-# 1.0 mm, since the eikonal's speed is its input and does not depend on the mesh.
+# 630 of the 672 nodes never reach 0 mV, and only four of the eight stimulated nodes do.
+# The 42 nodes that do activate form a strip within one element of the edge $y = z = 0$,
+# running along the slab from P1 to P3: the edge itself and the row beside it. A wave runs
+# along that strip while the tissue beyond it stays at rest, which is an artefact of this
+# coarse mesh, not propagation through the tissue. The tables show "—" for it even at P1
+# and P3, which do activate, because a point's value is interpolated from the nodes of its
+# cell, and some of those never activate. R-E is within a few milliseconds at 0.5 mm and
+# within 10 ms at 1.0 mm, since the eikonal's speed is its input and does not depend on
+# the mesh.
 #
 # These are the numbers this tutorial checks. The tolerances are twice the largest errors
 # measured when the tutorial was written.
@@ -509,10 +515,10 @@ error_P8 = {mode: runs[mode, 0.5]["at_points"][P8] - reference_at[P8] for mode i
 assert abs(error_P8["monodomain"]) > abs(error_P8["re-"]), error_P8
 
 # At 1.0 mm the monodomain wave does not enter the slab: most nodes never reach 0 mV, and
-# those that do are on the edge y = z = 0
+# those that do lie within one element of the edge y = z = 0
 activation_mono_1 = runs["monodomain", 1.0]["activation"].x.array
 assert np.count_nonzero(np.isnan(activation_mono_1)) > activation_mono_1.size / 2
-assert np.all(on_edge[activated]), np.count_nonzero(activated & ~on_edge)
+assert np.all(near_edge[activated]), coordinates[activated & ~near_edge]
 
 # %% [markdown]
 # ### The waves
@@ -655,8 +661,10 @@ print(f"Niederer et al., converged, at P8: {NIEDERER_P8[0]}–{NIEDERER_P8[1]} m
 
 # %% [markdown]
 # beat's table agrees with the monodomain runs here to within the difference of the two
-# conventions. The largest difference at 0.2 mm is at P9, the centre, which is not a node
-# of that mesh, so it is the convention in space. beat's 0.5 mm row also predates beat
+# conventions. The largest difference at 0.2 mm is 1.9 ms, at P7. P7 is a corner, a node of
+# that mesh, so it is more than the convention in space, and the demo's numerics may differ
+# from this tutorial's (Strang splitting and the second-order Rush-Larsen cell scheme, beat
+# 0.14's defaults). beat's 0.5 mm row also predates beat
 # 0.13.0, which activates six of the nine points one time step later (measured when this
 # tutorial was written). Its 0.1 mm row shows that the 0.2 mm reference is not
 # converged: across the fibres (P2, P5, P6) the wave arrives up to about 3 ms earlier at
@@ -696,7 +704,7 @@ print(f"{'reference, 0.2 mm':<36}{reference_at[P8]:8.2f}")
 # size, plus the difference between the reference and an ellipsoidal front with the
 # velocities measured along the axes: on these tetrahedra the 0.2 mm reference travels
 # faster along the diagonal than that front. (The coarse monodomain runs are the other
-# way: at 0.5 mm they reach P2, P4, P6 and P8 17 to 21 ms late, in the table above.)
+# way: at 0.5 mm they reach P2, P4, P6 and P8 17 to 22 ms late, in the table above.)
 # This is an observation on this set-up, not an established mechanism. $CV_T$ is not
 # converged at 0.2 mm, the reference's stimulated cube is 1.4 mm rather than 1.5, and
 # `STIM_DELAY` is one mean over its nodes, and each of these moves the comparison. The
