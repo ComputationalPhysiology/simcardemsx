@@ -64,7 +64,7 @@ from trame_vtk.tools.vtksz2html import write_html
 
 from simcardemsx.backends import GeneratedActivation
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
-from simcardemsx.ode_model import load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, load_ode_modules
 from simcardemsx.transfer_plan import resolve
 
 HERE = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
@@ -267,10 +267,10 @@ DT_EP = 0.05  # ms
 
 
 def numpy_model(model):
-    """The whole model as NumPy code, stepped by generalized Rush-Larsen."""
+    """The whole model as NumPy code, stepped by second-order Rush-Larsen."""
     code = gotranx.cli.gotran2py.get_code(
         model,
-        scheme=[gotranx.schemes.Scheme.generalized_rush_larsen],
+        scheme=[gotranx.schemes.Scheme.rush_larsen_2],
     )
     namespace: dict = {}
     exec(code, namespace)
@@ -284,7 +284,7 @@ def one_beat(cell, states, parameters, t_end=1000.0):
     trace = np.empty((round(t_end / DT_EP) + 1, 3))
     trace[0] = states[i_v], states[i_cai], cell["monitor_values"](0.0, states, parameters)[i_Ta]
     for k in range(trace.shape[0] - 1):
-        states = cell["generalized_rush_larsen"](states, k * DT_EP, DT_EP, parameters)
+        states = cell["rush_larsen_2"](states, k * DT_EP, DT_EP, parameters)
         Ta = cell["monitor_values"]((k + 1) * DT_EP, states, parameters)[i_Ta]
         trace[k + 1] = states[i_v], states[i_cai], Ta
     return trace
@@ -424,7 +424,7 @@ def ep_solver(ep_module, calibration):
     ode = beat.odesolver.DolfinODESolver(
         v_ode=v_ode,
         v_pde=dolfinx.fem.Function(v_ode.function_space),
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         init_states=np.tile(states[:, None], (1, num_points)),
         parameters=np.tile(parameters[:, None], (1, num_points)),
         num_states=len(ep_module.state),
@@ -432,7 +432,11 @@ def ep_solver(ep_module, calibration):
         missing_variables=np.zeros((num_missing, num_points)),
         num_missing_variables=num_missing,
     )
-    return beat.SplittingSolver(pde=None, ode=FootCurrentODESolver(ode, t_a, ExponentialFoot()))
+    return beat.SplittingSolver(
+        pde=None,
+        ode=FootCurrentODESolver(ode, t_a, ExponentialFoot()),
+        splitting="strang",
+    )
 
 
 def rollers(V):
@@ -707,7 +711,7 @@ for split in SPLITS:
 # Both splits follow their hand-made counterparts to within about 1 % of the peak mean
 # tension on this ~2 mm mechanics mesh. The differences in the tension are largest at the
 # end of the run (printed above), while the tension is still rising; in the single cell,
-# the difference in $T_a$ peaks at 177 ms.
+# the difference in $T_a$ peaks at 176 ms.
 #
 # $v$ is compared by its mean, not node by node. The composed cell's upstroke is a
 # fraction of a millisecond earlier (measured when this tutorial was written), so a node

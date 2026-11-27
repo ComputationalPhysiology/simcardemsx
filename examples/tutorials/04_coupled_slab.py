@@ -53,7 +53,7 @@ import pulse
 
 from simcardemsx.backends import GeneratedActivation
 from simcardemsx.controller import SimulationController
-from simcardemsx.ode_model import load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, load_ode_modules
 from simcardemsx.transfer_plan import resolve
 
 HERE = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
@@ -146,7 +146,7 @@ parameters = np.tile(
 ode = beat.odesolver.DolfinODESolver(
     v_ode=v_ode,
     v_pde=pde.state,
-    fun=ep_module.generalized_rush_larsen,
+    fun=getattr(ep_module, EP_SCHEME),
     init_states=states,
     parameters=parameters,
     num_states=len(states),
@@ -154,7 +154,7 @@ ode = beat.odesolver.DolfinODESolver(
     missing_variables=np.zeros((len(ep_module.missing), num_points)),
     num_missing_variables=len(ep_module.missing),
 )
-ep_solver = beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=1)
+ep_solver = beat.SplittingSolver(pde=pde, ode=ode, splitting="strang")
 
 # %% [markdown]
 # ## Mechanics
