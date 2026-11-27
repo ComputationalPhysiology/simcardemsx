@@ -14,7 +14,7 @@ output](mechanics.md).
 | --- | --- | --- |
 | Cell model | One gotranx `.ode` file with EP and contraction, one component marked `"mechanics"` | Your own, or `examples/odefiles/` |
 | Generated modules | The EP half as NumPy code and the contraction half as UFL, written by `load_ode_modules` | `simcardemsx.ode_model` |
-| EP solver | A `beat.MonodomainSplittingSolver`, whose ODE half steps the EP module at every node | fenicsx-beat |
+| EP solver | A `beat.SplittingSolver`, whose ODE half steps the EP module at every node | fenicsx-beat |
 | Activation backend | Owns the contraction states, and turns them into an active stress for pulse | `simcardemsx.backends` |
 | Mechanics problem | A `pulse.StaticProblem` or `pulse.DynamicProblem` whose active model is the backend | fenicsx-pulse |
 | Mechanics driver | How one mechanics step is taken: a plain solve, a circulation clock, or a cycle controller | `simcardemsx.mechanics` |
@@ -62,7 +62,7 @@ sequenceDiagram
     participant M as Mechanics (pulse)
     C->>C: snapshot of every component
     loop Δt_mech / Δt_ep times
-        C->>EP: step (ODE, then PDE)
+        C->>EP: Strang step (½ ODE, PDE, ½ ODE)
     end
     C->>T: forward(t_{n+1})
     T->>B: inputs

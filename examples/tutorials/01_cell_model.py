@@ -58,13 +58,13 @@ odefile = ODEFILES / "ToRORd_dynCl_endo_zetasplit.ode"
 # ## Running the whole cell
 #
 # gotranx turns an `.ode` file into Python code. Here we generate the *whole* model as
-# plain NumPy, with the generalized Rush-Larsen (GRL) scheme, which takes exponential
-# steps for the gating variables and so allows a much larger time step than forward
-# Euler.
+# plain NumPy, with the second-order Rush-Larsen scheme (`rush_larsen_2`, the one beat 0.14
+# defaults to), which takes exponential steps for the gating variables and so allows a much
+# larger time step than forward Euler.
 
 # %%
 ode = gotranx.load_ode(odefile)
-code = gotranx.cli.gotran2py.get_code(ode, scheme=[gotranx.schemes.Scheme.generalized_rush_larsen])
+code = gotranx.cli.gotran2py.get_code(ode, scheme=[gotranx.schemes.Scheme.rush_larsen_2])
 cell: dict = {}
 exec(code, cell)
 
@@ -90,7 +90,7 @@ v, cai, Ta = np.zeros_like(times), np.zeros_like(times), np.zeros_like(times)
 for n, t in enumerate(times):
     v[n], cai[n] = y[v_i], y[cai_i]
     Ta[n] = cell["monitor_values"](t, y, p)[Ta_i]
-    y = cell["generalized_rush_larsen"](y, t, dt, p)
+    y = cell["rush_larsen_2"](y, t, dt, p)
 
 # %%
 fig, axes = plt.subplots(1, 3, figsize=(12, 3.2), sharex=True)
@@ -135,6 +135,10 @@ print(f"peak Ta     {Ta.max():7.2f} kPa at {times[Ta.argmax()]:6.1f} ms")
 # modules. The EP half is NumPy code for beat. The mechanics half is **UFL**, the symbolic
 # form language of FEniCSx, so the mechanics solver can differentiate through it
 # ([the single-element tutorial](03_single_element.ipynb) shows why that matters).
+#
+# The EP module is generated with the second-order Rush-Larsen scheme, as above, and the
+# mechanics module keeps the generalized Rush-Larsen scheme, which linearizes the
+# states' right-hand sides the way the mechanics solver needs.
 #
 # Generating ToR-ORd takes about 15 seconds. The code is cached in the output folder and
 # reused until the `.ode` file or gotranx changes.

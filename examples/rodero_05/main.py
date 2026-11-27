@@ -18,7 +18,8 @@ The set-up, following the run script:
   the single-cell steady state of its ToR-ORd cell type, with its cell type and its
   ``i_Stim_Start`` set to the case's activation time, so ToR-ORd's own stimulus
   activates the tissue (no PDE stimulus); Niederer's conductivities and chi, C_m = 1
-  uF/cm^2; 0.05 ms steps.
+  uF/cm^2; 0.05 ms steps, under Strang splitting with the cells stepped by gotranx's
+  second-order ``rush_larsen_2`` (beat 0.14's defaults; not the run script's, below).
 - **Parameters**: every Land parameter goes to each half of the split that declares
   it, and ``PCa_b`` x 2 to the EP half (:func:`place_land`).
 - **Activation**: ``GeneratedActivation``, monolithic, its states on quadrature of
@@ -36,6 +37,11 @@ The set-up, following the run script:
 
 Known differences from physcardems, kept rather than removed:
 
+- EP's numerics are second order in time: Strang splitting, with the cells stepped by
+  ``rush_larsen_2``. The run script generates generalized Rush-Larsen code and steps it
+  with ``MonodomainSplittingSolver``, which is Godunov splitting (theta 1, beat's
+  default before 0.14). EP, and with it every coupled number, therefore differs from
+  em_tref7's at O(dt) in the 0.05 ms EP step.
 - Values crossing back to EP (``Zetas``, ``Zetaw``, lambda) are averaged onto P1, not
   point-interpolated from DG1.
 - The contraction states live on quadrature points of degree 4, not in DG1.
@@ -154,7 +160,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable, Literal, cast
 
 from mpi4py import MPI
 
@@ -170,7 +176,7 @@ from simcardemsx.backends import GeneratedActivation
 from simcardemsx.checkpoint import Checkpointer, write_json
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.mechanics import Cycle
-from simcardemsx.ode_model import ODEModules, load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, ODEModules, load_ode_modules
 from simcardemsx.provenance import provenance
 from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
@@ -315,6 +321,9 @@ NOT_PHYSICS = (
 #: (physcardems); ``re+`` and ``re-``, reaction-eikonal EP with the case's LAT as the
 #: activation time, with (``re+``) or without (``re-``) the monodomain PDE.
 EP_MODES = ("lat-stimulus", "re+", "re-")
+# beat's operator splitting between the PDE and the cells, read by make_ep_solver and recorded
+# in the physics.
+EP_SPLITTING: Literal["godunov", "strang"] = "strang"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -431,14 +440,15 @@ def model_settings(tref: float, ep_mode: str = "lat-stimulus") -> dict[str, Any]
     copies from physcardems (where the files are, the cell types, tags, valve-plug
     stiffness, reference scaling, pacing period, Land parameters and their calibration,
     and EP's scales); the Land parameters at ``tref``; EP (its ODE space and shared
-    parameters, theta, conductivities and C_m); the mechanics (spaces, quadrature
+    parameters, conductivities and C_m); the mechanics (spaces, quadrature
     degree, material in SI base units, boundary conditions, cavities, density and the
     generalized-alpha parameters); the activation backend; and each cavity's cycle as
     passed to ``pulse.cycle``, in SI.
 
-    beat's theta and conductivities, pulse's viscosity, density and generalized-alpha
-    parameters, and the backend's scheme and formulation are read off the libraries,
-    whose defaults the run uses, so a change to those defaults changes these too.
+    EP's numerics (cell scheme, splitting) are set here; beat's conductivities, pulse's
+    viscosity, density and generalized-alpha parameters, and the backend's scheme and
+    formulation are read off the libraries, whose defaults the run uses, so a change to
+    those defaults changes these too.
     """
     material = material_parameters()
     dynamic = pulse.DynamicProblem.default_parameters()
@@ -475,7 +485,8 @@ def model_settings(tref: float, ep_mode: str = "lat-stimulus") -> dict[str, Any]
                 "foot": dataclasses.asdict(FOOT),
                 "period_ms": PCL_MS,
             },
-            "theta": inspect.signature(beat.MonodomainSplittingSolver).parameters["theta"].default,
+            "cell_scheme": EP_SCHEME,
+            "splitting": EP_SPLITTING,
             "conductivities": {
                 "name": "Niederer",
                 "units": "SI base units (S/m, 1/m)",
@@ -701,7 +712,7 @@ def make_ep_solver(
     ode = beat.odesolver.DolfinODESolver(
         v_ode=dolfinx.fem.Function(W, name="v_ode"),
         v_pde=pde.state,
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         init_states=states,
         parameters=parameters,
         num_states=states.shape[0],
@@ -710,12 +721,16 @@ def make_ep_solver(
         num_missing_variables=missing.shape[0],
     )
     if ep == "lat-stimulus":
-        return beat.MonodomainSplittingSolver(pde=pde, ode=ode)
+        return beat.SplittingSolver(pde=pde, ode=ode, splitting=EP_SPLITTING)
     # The ODE space's dofs are the case's per-node order, as for i_Stim_Start above.
     t_a = dolfinx.fem.Function(W, name="t_a")
     t_a.x.array[:] = case.lat_ms
     foot_ode = FootCurrentODESolver(ode, t_a, foot=FOOT, period=PCL_MS)
-    return beat.SplittingSolver(pde=pde if ep == "re+" else None, ode=foot_ode)
+    return beat.SplittingSolver(
+        pde=pde if ep == "re+" else None,
+        ode=foot_ode,
+        splitting=EP_SPLITTING,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -919,12 +934,7 @@ def main(argv: list[str] | None = None) -> None:
         {"LV": case.lv, "RV": case.rv},
         preconditioner_lag=PRECONDITIONER_LAG,
     )
-    # The controller's annotation is MonodomainSplittingSolver; it also takes the plain
-    # SplittingSolver that reaction-eikonal EP returns.
-    ep_solver = cast(
-        beat.MonodomainSplittingSolver,
-        make_ep_solver(case, modules.ep, placed["ep"], args.ep_mode),
-    )
+    ep_solver = make_ep_solver(case, modules.ep, placed["ep"], args.ep_mode)
     # Cycle(cycle) itself, not wrapped: the controller then checkpoints the cycle too.
     controller = SimulationController(Cycle(cycle), ep_solver, backend, modules, DT_MECH, DT_EP)
 

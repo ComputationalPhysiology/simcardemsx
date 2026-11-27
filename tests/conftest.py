@@ -24,7 +24,7 @@ from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.checkpoint import Checkpointable
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.mechanics import MechanicsDriver
-from simcardemsx.ode_model import ODEModules, load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, ODEModules, load_ode_modules
 
 ODEFILES_DIR = Path(__file__).parent.parent / "examples" / "odefiles"
 
@@ -216,13 +216,13 @@ def _ep_solver(
     ep_module: ModuleType,
     mesh: dolfinx.mesh.Mesh,
     ode_element: tuple[str, int] = ("P", 1),
-) -> beat.MonodomainSplittingSolver:
+) -> beat.SplittingSolver:
     """beat's monodomain splitting solver for a generated EP module, on ``mesh``.
 
-    The module's default parameters are used, so ToR-ORd's own cellular stimulus
-    fires at t = 0 at every point. Parameters and states are per point, shape
-    ``(n, num_points)``, so that ``lmbda`` can differ between points; the missing
-    variables start at zero (``None`` when the EP side needs nothing).
+    Strang splitting. The module's default parameters are used, so ToR-ORd's own
+    cellular stimulus fires at t = 0 at every point. Parameters and states are per
+    point, shape ``(n, num_points)``, so that ``lmbda`` can differ between points; the
+    missing variables start at zero (``None`` when the EP side needs nothing).
     """
     V = dolfinx.fem.functionspace(mesh, ode_element)
     time = dolfinx.fem.Constant(mesh, dolfinx.default_scalar_type(0.0))
@@ -237,13 +237,13 @@ def _ep_solver(
         v_pde=pde.state,
         init_states=states,
         parameters=parameters,
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         num_states=states.shape[0],
         v_index=ep_module.state_index("v"),
         missing_variables=np.zeros((len(missing), num_points)) if missing else None,
         num_missing_variables=len(missing),
     )
-    return beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=1)
+    return beat.SplittingSolver(pde=pde, ode=ode, splitting="strang")
 
 
 def _re_ep_solver(
@@ -272,7 +272,7 @@ def _re_ep_solver(
         v_pde=pde.state,
         init_states=states,
         parameters=parameters,
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         num_states=states.shape[0],
         v_index=ep_module.state_index("v"),
         missing_variables=np.zeros((len(missing), num_points)) if missing else None,
@@ -290,7 +290,11 @@ def _re_ep_solver(
             [Source(lambda x: np.isclose(x[0], 0.0), 0.0)],
         )
     wrapped = FootCurrentODESolver(inner, t_a)
-    return beat.SplittingSolver(pde=pde if mode == "re+" else None, ode=wrapped, theta=1)
+    return beat.SplittingSolver(
+        pde=pde if mode == "re+" else None,
+        ode=wrapped,
+        splitting="strang",
+    )
 
 
 @pytest.fixture
@@ -800,7 +804,7 @@ def _ellipsoid_ep_mechanics(
     mech_parameters: Mapping[str, float] | None = None,
     quadrature_degree: int = ELLIPSOID_QUADRATURE_DEGREE,
     circulation_scheme: str = "backward_euler",
-) -> tuple[beat.MonodomainSplittingSolver, pulse.DynamicProblem, GeneratedActivation]:
+) -> tuple[beat.SplittingSolver, pulse.DynamicProblem, GeneratedActivation]:
     """EP and a ``pulse.DynamicProblem`` on the same LV ellipsoid (:func:`lv_ellipsoid`).
 
     EP is :func:`_ep_solver` on the ellipsoid's mesh, so ToR-ORd's own cellular

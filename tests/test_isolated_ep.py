@@ -3,7 +3,7 @@
 
 import numpy as np
 
-from simcardemsx.ode_model import load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, load_ode_modules
 
 
 def test_mechano_electric_feedback(tmp_path):
@@ -48,7 +48,7 @@ def test_mechano_electric_feedback(tmp_path):
     baseline_lambda = np.ones((1, num_dofs)) * 1.0
 
     # Capture the returned updated states!
-    state_baseline = ep_module.generalized_rush_larsen(
+    state_baseline = getattr(ep_module, EP_SCHEME)(
         states=state_baseline,
         t=0.0,
         parameters=params,
@@ -60,7 +60,7 @@ def test_mechano_electric_feedback(tmp_path):
     stretched_lambda = np.ones((1, num_dofs)) * 1.2
 
     # Capture the returned updated states!
-    state_stretched = ep_module.generalized_rush_larsen(
+    state_stretched = getattr(ep_module, EP_SCHEME)(
         states=state_stretched,
         t=0.0,
         parameters=params,

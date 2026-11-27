@@ -478,6 +478,7 @@ snes
 splittingsolver
 Stim
 Stockmeyer
+Strang
 streamlit
 subk
 subv

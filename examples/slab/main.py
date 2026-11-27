@@ -45,7 +45,7 @@ import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 from mpi4py import MPI
 
@@ -62,7 +62,7 @@ import cardiac_geometries.geometry
 from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.checkpoint import Checkpointer
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
-from simcardemsx.ode_model import load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, load_ode_modules
 from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
 HERE = Path(__file__).resolve().parent
@@ -107,22 +107,26 @@ STIM_BOX_MM = (1.5, 1.5, 1.5)
 STIM_MARKER = 1
 #: Reaction-eikonal EP's inputs: conduction velocities (mm/ms) along the fibre, sheet and
 #: normal directions, and the delay (ms) of the eikonal source at the stimulus box.
-#: Measured on 2026-11-24 from this slab's monodomain EP with ToR-ORd (the zeta split),
-#: DT_EP 0.05 ms, to 20 ms, as the first time v > 0 per node:
+#: Measured on 2026-11-27 with Strang splitting and the ``rush_larsen_2`` cell scheme
+#: (ToR-ORd, the zeta split; DT_EP 0.05 ms), on EP alone, so with the zero
+#: ``missing_variables`` (the zeta split's ``Zetas`` and ``Zetaw``) of the slab's
+#: uncoupled EP:
 #:
-#: - STIM_DELAY_MS is the mean activation time of the nodes inside the 1.5 mm stimulus box
-#:   at the default dx 0.5 mm (24 nodes).
-#: - CV_F and CV_S are linear fits of activation time against x (on y = z = 0) and y (on
-#:   x = z = 0) beyond the stimulus. At dx 0.5 the box leaves one node on those lines
-#:   (the stimulus covers all of y), so they were taken on a dx 0.1 mm slab of the same
-#:   conductivities with a 0.5 mm stimulus box: 15 nodes along x (0.6 to 2.0 mm), 5 along y
-#:   (0.6 to 1.0 mm). At dx 0.5 the single pair of nodes past the box gives 2.0 mm/ms
-#:   along x, a coarse-mesh artifact.
+#: - STIM_DELAY_MS is the mean activation time, the first time v > 0 per node, of the
+#:   nodes inside the 1.5 mm stimulus box of this slab's monodomain EP at the default
+#:   dx 0.5 mm, to 20 ms (24 nodes).
+#: - CV_F and CV_S are beat's own measurement,
+#:   ``beat.conduction_velocity.measure_conduction_velocity``, along and across the
+#:   fibres, at dx 0.1 mm and dt 0.05 ms, with this slab's conductivities, chi 140/mm and
+#:   C_m 0.01 uF/mm^2, threshold 0 mV.
+#: - Before (generalized Rush-Larsen and Godunov splitting, theta 1): 0.598, 0.233 and
+#:   1.6125, with CV_F and CV_S fitted by hand on a dx 0.1 mm slab with a 0.5 mm stimulus
+#:   box.
 #: - CV_N = CV_S: the slab's transverse directions share their conductivities.
-CV_F = 0.598
-CV_S = 0.233
+CV_F = 0.5728
+CV_S = 0.2104
 CV_N = CV_S
-STIM_DELAY_MS = 1.6125
+STIM_DELAY_MS = 1.5146
 #: The compressibility model, a class of ``pulse.compressibility``.
 COMPRESSIBILITY = "Incompressible"
 #: The boundary conditions, as dirichlet_bc in main() codes them.
@@ -168,7 +172,8 @@ def model_settings() -> dict[str, Any]:
         "ep": {
             "ode_element": list(EP_ODE_ELEMENT),
             "ode_parameters": {"i_Stim_Amplitude": 0.0},
-            "theta": 1,
+            "cell_scheme": EP_SCHEME,
+            "splitting": "strang",
             "chi_per_mm": 140.0,
             "C_m_uF_per_mm2": 0.01,
             "conductivities_S_per_m": {
@@ -539,7 +544,7 @@ def make_ep_solver(
     ode = beat.odesolver.DolfinODESolver(
         v_ode=v_ode,
         v_pde=pde.state,
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         init_states=y_ep,
         parameters=p_ep,
         num_states=len(y_ep),
@@ -549,7 +554,7 @@ def make_ep_solver(
     )
 
     if ep == "monodomain":
-        return beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=ep_settings["theta"])
+        return beat.SplittingSolver(pde=pde, ode=ode, splitting=ep_settings["splitting"])
 
     eikonal = ep_settings["eikonal"]
     cvs = eikonal["cv_mm_per_ms"]
@@ -570,7 +575,7 @@ def make_ep_solver(
     return beat.SplittingSolver(
         pde=pde if ep == "re+" else None,
         ode=foot_ode,
-        theta=ep_settings["theta"],
+        splitting=ep_settings["splitting"],
     )
 
 
@@ -646,12 +651,7 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     # 3. Setup EP Solver (fenicsx-beat)
     # ---------------------------------------------------------
-    # The controller and checkpoint annotate beat's monodomain splitting solver; both
-    # also take the plain SplittingSolver that reaction-eikonal EP returns.
-    ep_solver = cast(
-        beat.MonodomainSplittingSolver,
-        make_ep_solver(ep_module, ep_geo, run_settings, args.ep_mode, stim_tags),
-    )
+    ep_solver = make_ep_solver(ep_module, ep_geo, run_settings, args.ep_mode, stim_tags)
     ode = dolfin_ode_solver(ep_solver)
 
     # ---------------------------------------------------------

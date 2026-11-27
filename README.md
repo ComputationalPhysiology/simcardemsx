@@ -93,7 +93,7 @@ from simcardemsx.controller import SimulationController
 
 controller = SimulationController(
     mechanics=problem,  # a pulse.StaticProblem or DynamicProblem using `model`
-    ep_solver=ep_solver,  # a beat.MonodomainSplittingSolver
+    ep_solver=ep_solver,  # a beat.SplittingSolver
     backend=backend,
     ode_modules=modules,
     dt_mech=1.0,  # ms

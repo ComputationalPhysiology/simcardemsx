@@ -12,16 +12,18 @@ brackets):
 
 - isometric, prescribed calcium: max |dTa| 0.900 / 0.444 / 0.219 kPa (1.02, 1.02), 0.88 %
   of peak at dt 0.25; max |dJ_TRPN| 3.08e-4 / 1.56e-4 / 7.89e-5 mM/ms (0.98, 0.99);
-- through the controller: mean tension 5.93e-2 / 2.20e-2 / 8.46e-3 kPa (1.43, 1.38); EP's
-  mean cai 1.06e-5 / 5.18e-6 / 2.63e-6 mM (1.04, 0.98); EP's mean J_TRPN 2.51e-5 / 1.18e-5 /
-  5.90e-6 mM/ms (1.09, 0.99).
+- through the controller, with EP under Strang splitting and ``rush_larsen_2`` (the
+  fixtures' numerics): mean tension 8.97e-2 / 3.39e-2 / 1.46e-2 kPa (1.40, 1.21); EP's mean
+  cai 1.08e-5 / 5.23e-6 / 2.64e-6 mM (1.04, 0.99); EP's mean J_TRPN 2.72e-5 / 1.26e-5 /
+  6.25e-6 mM/ms (1.11, 1.01).
 
 Gate X2, gate 5 for every model in ``crossbridge.MODEL_REGISTRY``. Measured max |J_TRPN|
-in EP after the first step / the last (mM/ms): RDQ18 5.45e-4 / 3.37e-6, Lewalle2024
-4.11e-9 / 2.05e-5, Land2017 1.01e-4 / 7.75e-5, RDQ20MF 1.85e-3 / 1.80e-5. RDQ20MF needs
-crossbridge 0.3.3: before it, ``advance_step`` took one explicit Euler RU step of the dt it
-was handed, correct only at its own ``dt_RU`` of 0.025 ms, and at dt_mech 1 ms EP's cai
-was negative at 2.1 ms and NaN from 3 ms.
+in EP after the first step / the last (mM/ms), with EP under Strang splitting and
+``rush_larsen_2``: RDQ18 5.45e-4 / 6.88e-6, Lewalle2024 4.11e-9 / 2.31e-5, Land2017
+1.01e-4 / 8.22e-5, RDQ20MF 1.85e-3 / 1.41e-5. RDQ20MF needs crossbridge 0.3.3: before it,
+``advance_step`` took one explicit Euler RU step of the dt it was handed, correct only at
+its own ``dt_RU`` of 0.025 ms, and at dt_mech 1 ms EP's cai was negative at 2.1 ms and NaN
+from 3 ms.
 
 Gate X5, gate 1 and S1 for crossbridge's Land2017. Measured: the naive scheme's onsets
 35.0 / 17.5 / 13.4 ms at dt 1 / 0.25 / 0.05 (Newton failed at 35.0 / 22.0 / 17.15 ms);

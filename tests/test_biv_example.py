@@ -251,3 +251,10 @@ def test_summarise_reports_activation_time():
     synchronous = post.summarise(columns, None)
     assert synchronous["ep"] == "synchronous"
     assert "total_activation_ms" not in synchronous
+
+
+def test_physics_records_the_ep_numerics():
+    ep = _physics()["ep"]
+    assert ep["cell_scheme"] == "rush_larsen_2"
+    assert ep["splitting"] == "strang"
+    assert "theta" not in ep

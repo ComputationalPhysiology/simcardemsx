@@ -124,7 +124,7 @@ class EPState:
     which a restored PDE would reassemble it at one that may differ in its last bit.
     """
 
-    ep_solver: beat.MonodomainSplittingSolver
+    ep_solver: beat.SplittingSolver
     state_names: Sequence[str]
 
     namespace = "ep"
