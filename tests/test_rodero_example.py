@@ -464,11 +464,15 @@ def test_re_takes_the_lat_as_activation_time(split_modules):
     row = ode.parameters[ep_module.parameter_index("i_Stim_Amplitude")]
     assert np.all(row == 0.0)
     # re+ keeps the PDE; lat-stimulus is the plain monodomain solver, with its stimulus
-    assert rodero.make_ep_solver(case, ep_module, {}, "re+").pde is not None
+    with_pde = rodero.make_ep_solver(case, ep_module, {}, "re+")
+    assert with_pde.pde is not None
     plain = rodero.make_ep_solver(case, ep_module, {})
     assert not isinstance(plain.ode, FootCurrentODESolver)
     amplitude = plain.ode.parameters[ep_module.parameter_index("i_Stim_Amplitude")]
     assert np.all(amplitude != 0.0)
+    # Every mode is built under Strang splitting, which the physics records
+    for built in (solver, with_pde, plain):
+        assert built.splitting == "strang"
 
 
 @pytest.mark.slow
