@@ -397,7 +397,8 @@ def model_settings() -> dict[str, Any]:
                 "foot": dataclasses.asdict(ExponentialFoot()),
                 "period_ms": PERIOD,
             },
-            "theta": 1,
+            "cell_scheme": EP_SCHEME,
+            "splitting": "strang",
             "chi_per_mm": 140.0,
             "C_m_uF_per_mm2": 0.01,
             "conductivities_S_per_m": {
@@ -832,7 +833,7 @@ def make_ep_solver(
         num_missing_variables=len(missing),
     )
     if ep_mode == "synchronous":
-        return beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=ep["theta"])
+        return beat.SplittingSolver(pde=pde, ode=ode, splitting=ep["splitting"])
     if t_a is None:
         raise ValueError(f"--ep {ep_mode} needs the activation times t_a")
     foot_ode = FootCurrentODESolver(
@@ -844,7 +845,7 @@ def make_ep_solver(
     return beat.SplittingSolver(
         pde=pde if ep_mode == "re+" else None,
         ode=foot_ode,
-        theta=ep["theta"],
+        splitting=ep["splitting"],
     )
 
 
@@ -1108,10 +1109,9 @@ def main(argv: list[str] | None = None):
         if args.ep_mode == "synchronous"
         else eikonal_activation(geometry, f0, s0, run_settings)
     )
-    # The controller and checkpoint annotate beat's monodomain splitting solver; both
-    # also take the plain SplittingSolver that reaction-eikonal EP returns.
+    # Every EP mode returns beat's SplittingSolver (the controller and checkpoint annotate it).
     ep_solver = cast(
-        beat.MonodomainSplittingSolver,
+        beat.SplittingSolver,
         make_ep_solver(modules.ep, ep_ode_space, f0, geometry.dx, run_settings, args.ep_mode, t_a),
     )
     ode = dolfin_ode_solver(ep_solver)  # the wrapped ODE solver under reaction-eikonal EP

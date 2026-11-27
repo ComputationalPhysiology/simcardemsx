@@ -168,7 +168,8 @@ def model_settings() -> dict[str, Any]:
         "ep": {
             "ode_element": list(EP_ODE_ELEMENT),
             "ode_parameters": {"i_Stim_Amplitude": 0.0},
-            "theta": 1,
+            "cell_scheme": EP_SCHEME,
+            "splitting": "strang",
             "chi_per_mm": 140.0,
             "C_m_uF_per_mm2": 0.01,
             "conductivities_S_per_m": {
@@ -549,7 +550,7 @@ def make_ep_solver(
     )
 
     if ep == "monodomain":
-        return beat.MonodomainSplittingSolver(pde=pde, ode=ode, theta=ep_settings["theta"])
+        return beat.SplittingSolver(pde=pde, ode=ode, splitting=ep_settings["splitting"])
 
     eikonal = ep_settings["eikonal"]
     cvs = eikonal["cv_mm_per_ms"]
@@ -570,7 +571,7 @@ def make_ep_solver(
     return beat.SplittingSolver(
         pde=pde if ep == "re+" else None,
         ode=foot_ode,
-        theta=ep_settings["theta"],
+        splitting=ep_settings["splitting"],
     )
 
 
@@ -646,10 +647,9 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     # 3. Setup EP Solver (fenicsx-beat)
     # ---------------------------------------------------------
-    # The controller and checkpoint annotate beat's monodomain splitting solver; both
-    # also take the plain SplittingSolver that reaction-eikonal EP returns.
+    # Every EP mode returns beat's SplittingSolver (the controller and checkpoint annotate it).
     ep_solver = cast(
-        beat.MonodomainSplittingSolver,
+        beat.SplittingSolver,
         make_ep_solver(ep_module, ep_geo, run_settings, args.ep_mode, stim_tags),
     )
     ode = dolfin_ode_solver(ep_solver)

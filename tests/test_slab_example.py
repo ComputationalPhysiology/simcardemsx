@@ -514,3 +514,11 @@ def test_slab_runs_reaction_eikonal(tmp_path, mode):
     assert run["ep"] == mode
     timings = json.loads((tmp_path / "o" / "timings.json").read_text())
     assert (timings["ep_pde_s"] == 0.0) == (mode == "re-")
+
+
+def test_physics_records_the_ep_numerics():
+    slab = _import("main")
+    ep = slab.physics(slab.parse_args(["--odefile", str(_odefile())]))["ep"]
+    assert ep["cell_scheme"] == "rush_larsen_2"
+    assert ep["splitting"] == "strang"
+    assert "theta" not in ep

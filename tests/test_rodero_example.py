@@ -491,3 +491,27 @@ def test_re_fires_again_after_one_period(split_modules):
     assert len(rises) == 2, rises
     assert abs(rises[0] - 10.0) < 5.0
     assert abs(rises[1] - rises[0] - case_module.PCL_MS) < 2.0
+
+
+def test_physics_records_the_ep_numerics(fake_case):
+    ep = _physics(fake_case)["ep"]
+    assert ep["cell_scheme"] == "rush_larsen_2"
+    assert ep["splitting"] == "strang"
+    assert "theta" not in ep
+
+
+def test_the_ep_physics_holds_no_none(fake_case):
+    """A ``None`` setting (the old ``theta`` default) is no setting: the hash would not
+    move with it. Only the ``ep`` block is walked, other blocks may hold a legitimate None."""
+
+    def walk(value, path):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                yield from walk(item, f"{path}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for i, item in enumerate(value):
+                yield from walk(item, f"{path}[{i}]")
+        elif value is None:
+            yield path
+
+    assert list(walk(_physics(fake_case)["ep"], "ep")) == []
