@@ -107,22 +107,21 @@ STIM_BOX_MM = (1.5, 1.5, 1.5)
 STIM_MARKER = 1
 #: Reaction-eikonal EP's inputs: conduction velocities (mm/ms) along the fibre, sheet and
 #: normal directions, and the delay (ms) of the eikonal source at the stimulus box.
-#: Measured on 2026-11-24 from this slab's monodomain EP with ToR-ORd (the zeta split),
-#: DT_EP 0.05 ms, to 20 ms, as the first time v > 0 per node:
+#: Measured on 2026-11-27 with Strang splitting and the ``rush_larsen_2`` cell scheme
+#: (ToR-ORd, the zeta split; DT_EP 0.05 ms), as the first time v > 0 per node:
 #:
 #: - STIM_DELAY_MS is the mean activation time of the nodes inside the 1.5 mm stimulus box
-#:   at the default dx 0.5 mm (24 nodes).
-#: - CV_F and CV_S are linear fits of activation time against x (on y = z = 0) and y (on
-#:   x = z = 0) beyond the stimulus. At dx 0.5 the box leaves one node on those lines
-#:   (the stimulus covers all of y), so they were taken on a dx 0.1 mm slab of the same
-#:   conductivities with a 0.5 mm stimulus box: 15 nodes along x (0.6 to 2.0 mm), 5 along y
-#:   (0.6 to 1.0 mm). At dx 0.5 the single pair of nodes past the box gives 2.0 mm/ms
-#:   along x, a coarse-mesh artifact.
+#:   of this slab's monodomain EP at the default dx 0.5 mm, to 20 ms (24 nodes).
+#: - CV_F and CV_S are ``beat.conduction_velocity.measure_conduction_velocity`` along and
+#:   across the fibres, at dx 0.1 mm and dt 0.05 ms, with this slab's conductivities,
+#:   chi 140/mm and C_m 0.01 uF/mm^2, threshold 0 mV.
+#: - Before (generalized Rush-Larsen, theta splitting): 0.598, 0.233 and 1.6125, with CV_F
+#:   and CV_S fitted by hand on a dx 0.1 mm slab with a 0.5 mm stimulus box.
 #: - CV_N = CV_S: the slab's transverse directions share their conductivities.
-CV_F = 0.598
-CV_S = 0.233
+CV_F = 0.5728
+CV_S = 0.2104
 CV_N = CV_S
-STIM_DELAY_MS = 1.6125
+STIM_DELAY_MS = 1.5146
 #: The compressibility model, a class of ``pulse.compressibility``.
 COMPRESSIBILITY = "Incompressible"
 #: The boundary conditions, as dirichlet_bc in main() codes them.
