@@ -170,7 +170,7 @@ from simcardemsx.backends import GeneratedActivation
 from simcardemsx.checkpoint import Checkpointer, write_json
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.mechanics import Cycle
-from simcardemsx.ode_model import ODEModules, load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, ODEModules, load_ode_modules
 from simcardemsx.provenance import provenance
 from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
@@ -701,7 +701,7 @@ def make_ep_solver(
     ode = beat.odesolver.DolfinODESolver(
         v_ode=dolfinx.fem.Function(W, name="v_ode"),
         v_pde=pde.state,
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         init_states=states,
         parameters=parameters,
         num_states=states.shape[0],

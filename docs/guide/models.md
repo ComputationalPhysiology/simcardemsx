@@ -36,11 +36,11 @@ velocity dependence is what makes the coupling scheme matter ([Coupling](couplin
 Every `.ode` file marks one component `"mechanics"`. Its states are stepped by the
 activation backend at the quadrature points of the mechanics mesh, and everything else
 is stepped by EP. `simcardemsx.ode_model.load_ode_modules(odefile, output_dir)` cuts the
-file there and generates two modules, both with gotranx's generalized Rush-Larsen
-scheme:
+file there and generates two modules:
 
-- `ep_model.py`, NumPy code, for `beat.odesolver.DolfinODESolver`;
-- `mechanics_model.py`, the same scheme printed as **UFL** expressions, so the step can
+- `ep_model.py`, NumPy code with gotranx's second-order `rush_larsen_2` scheme, for
+  `beat.odesolver.DolfinODESolver`;
+- `mechanics_model.py`, gotranx's generalized Rush-Larsen scheme printed as **UFL** expressions, so the step can
   be evaluated symbolically on the mechanics mesh and differentiated by Newton.
 
 The generated code is cached in `output_dir`, with a stamp of the `.ode` file's hash,

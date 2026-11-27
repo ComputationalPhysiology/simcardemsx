@@ -124,7 +124,7 @@ class EPState:
     which a restored PDE would reassemble it at one that may differ in its last bit.
     """
 
-    ep_solver: beat.MonodomainSplittingSolver
+    ep_solver: beat.SplittingSolver
     state_names: Sequence[str]
 
     namespace = "ep"
@@ -350,7 +350,7 @@ def write_json(path: Path, data: Mapping[str, Any], comm: MPI.Comm = MPI.COMM_WO
         raise OSError(f"Rank 0 could not write {path}: {message}")
 
 
-def stored_times(path: Path, name: str, comm: MPI.Comm = MPI.COMM_WORLD) -> np.ndarray:
+def stored_times(path: Path, name: str, comm: MPI.Intracomm = MPI.COMM_WORLD) -> np.ndarray:
     """Every time the io4dolfinx file ``path`` holds ``name`` at, as written.
 
     None if the file does not hold ``name``, for which io4dolfinx raises ``KeyError``.

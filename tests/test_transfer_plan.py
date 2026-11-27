@@ -26,6 +26,7 @@ import pytest
 import ufl
 
 from simcardemsx.backends import GeneratedActivation
+from simcardemsx.ode_model import EP_SCHEME
 from simcardemsx.transfer_plan import Crossings, TransferPlan, resolve
 
 
@@ -71,7 +72,7 @@ def _ode_with(ep, mesh, parameters, missing_variables) -> beat.odesolver.DolfinO
         v_pde=dolfinx.fem.Function(V),
         init_states=ep.init_state_values(),
         parameters=parameters,
-        fun=ep.generalized_rush_larsen,
+        fun=getattr(ep, EP_SCHEME),
         num_states=len(ep.init_state_values()),
         missing_variables=missing_variables,
         num_missing_variables=len(getattr(ep, "missing", {})),

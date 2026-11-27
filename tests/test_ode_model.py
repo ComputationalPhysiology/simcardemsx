@@ -12,7 +12,7 @@ import pytest
 import ufl
 
 from simcardemsx import ode_model
-from simcardemsx.ode_model import generate_ode_code
+from simcardemsx.ode_model import generate_ode_code, load_ode_modules
 from simcardemsx.utils import load_module_from_path
 
 
@@ -50,7 +50,8 @@ def test_code_generator_smoke_test(tmp_path):
     assert mech_file.exists()
 
     ep_code = ep_file.read_text()
-    assert "def generalized_rush_larsen" in ep_code
+    assert f"def {ode_model.EP_SCHEME}" in ep_code
+    assert "def generalized_rush_larsen" not in ep_code
 
     mech_code = mech_file.read_text()
     assert "def generalized_rush_larsen" in mech_code
@@ -214,3 +215,23 @@ def test_generated_state_order_does_not_depend_on_the_hash_seed(tmp_path):
             pytest.fail(f"PYTHONHASHSEED={seed}: {result.stderr[-3000:]}")
         orders.append(json.loads(result.stdout.strip().splitlines()[-1]))
     assert orders[0] == orders[1]
+
+
+def test_ep_scheme_is_rush_larsen_2():
+    assert ode_model.EP_SCHEME == "rush_larsen_2"
+
+
+def test_a_cache_from_the_old_generator_is_regenerated(tmp_path):
+    """An output dir written by an earlier ode_model (GRL only, another generator hash)
+    is regenerated, so the EP module has the current scheme."""
+    ode_file = tmp_path / "tiny.ode"
+    ode_file.write_text(_TINY_ODE)
+    out_dir = tmp_path / "generated"
+    generate_ode_code(ode_file, out_dir)
+    stamp_file = out_dir / ode_model.STAMP_FILE
+    stamp = json.loads(stamp_file.read_text())
+    stamp["generator_sha256"] = "0" * 64
+    stamp_file.write_text(json.dumps(stamp))
+    (out_dir / "ep_model.py").write_text("def generalized_rush_larsen(*args):\n    pass\n")
+    modules = load_ode_modules(ode_file, out_dir)
+    assert hasattr(modules.ep, ode_model.EP_SCHEME)

@@ -53,6 +53,7 @@ from conftest import (
 from test_round_trip import DT_EP, DT_MECH, NUM_STEPS
 
 from simcardemsx.controller import SimulationController
+from simcardemsx.ode_model import EP_SCHEME
 
 #: Pa per kPa: Land's tension is in kPa, pulse's stresses in Pa
 PA_PER_KPA = 1000.0
@@ -235,7 +236,7 @@ def test_coupled_loop_equals_its_zero_mech_twin(
         t_n = t
         for i in range(round(DT_MECH / DT_EP)):  # the controller's own time arithmetic
             t_start, t = t, t_n + (i + 1) * DT_EP
-            y = ep.generalized_rush_larsen(y, t_start, t - t_start, p, to_ep)
+            y = getattr(ep, EP_SCHEME)(y, t_start, t - t_start, p, to_ep)
         forward = _by_name(ep.missing_values(t, y, p, to_ep), ep.provides, mech.missing)
         lmbda = zero_d.step(t_n, DT_MECH, forward)
         to_ep = _by_name(zero_d.provided, modules.mechanics.provides, ep.missing)

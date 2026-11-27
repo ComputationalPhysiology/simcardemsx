@@ -122,7 +122,7 @@ class SimulationController:
     def __init__(
         self,
         mechanics: MechanicsDriver | pulse.StaticProblem,
-        ep_solver: beat.MonodomainSplittingSolver,
+        ep_solver: beat.SplittingSolver,
         backend: CoupledBackend,
         ode_modules: ODEModules,
         dt_mech: float,

@@ -62,7 +62,7 @@ import cardiac_geometries.geometry
 from simcardemsx.backends import CrossbridgeSegregated, GeneratedActivation
 from simcardemsx.checkpoint import Checkpointer
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
-from simcardemsx.ode_model import load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, load_ode_modules
 from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
 HERE = Path(__file__).resolve().parent
@@ -539,7 +539,7 @@ def make_ep_solver(
     ode = beat.odesolver.DolfinODESolver(
         v_ode=v_ode,
         v_pde=pde.state,
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         init_states=y_ep,
         parameters=p_ep,
         num_states=len(y_ep),

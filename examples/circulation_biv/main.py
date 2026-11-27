@@ -128,7 +128,7 @@ from simcardemsx.backends import GeneratedActivation
 from simcardemsx.checkpoint import IO_BACKEND, Checkpointer
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.mechanics import CirculationClock
-from simcardemsx.ode_model import load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, load_ode_modules
 from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
 logger = logging.getLogger(__name__)
@@ -823,7 +823,7 @@ def make_ep_solver(
     ode = beat.odesolver.DolfinODESolver(
         v_ode=v_ode,
         v_pde=pde.state,
-        fun=ep_module.generalized_rush_larsen,
+        fun=getattr(ep_module, EP_SCHEME),
         init_states=states,
         parameters=parameters,
         num_states=states.shape[0],

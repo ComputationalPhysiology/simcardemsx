@@ -32,7 +32,8 @@ dependencies = [
     "fenicsx-pulse>=0.11.1",
     # 0.11.0 is the first release with beat.reaction_eikonal.
     # 0.13.0 adds FootCurrentODESolver(period=...), which the BiV and rodero_05 R-E options use.
-    "fenicsx-beat>=0.13.0",
+    # 0.14.0 makes Strang splitting the default; simcardemsx passes splitting="strang" explicitly.
+    "fenicsx-beat>=0.14.0",
     # crossbridge backs the Ca_i-split activation backend and is imported at
     # package import time via simcardemsx.backends. 0.3.3 is the first release whose
     # RDQ20MF can take a step longer than its 25 us RU step (gate X2), and 0.3.4 the
@@ -45,8 +46,9 @@ dependencies = [
     "scipy",
     # gotranx 2.2.0 orders the generated states independently of PYTHONHASHSEED, and its
     # GRL step linearizes every state, also through intermediates (1.8 advanced v, cai
-    # and the concentrations by forward Euler).
-    "gotranx>=2.2.0",
+    # and the concentrations by forward Euler). 2.10.0 is the first release with
+    # rush_larsen_2, 2.11.0 the first with compose.
+    "gotranx>=2.11.0",
     "toml",
     "pydantic",
     "pydantic_pint",
