@@ -4,6 +4,8 @@ That values actually cross through the controller is gate 5, in
 ``tests/test_round_trip.py``.
 """
 
+import warnings
+
 from mpi4py import MPI
 
 import dolfinx
@@ -105,3 +107,30 @@ def test_dynamic_problem_dt_matching_dt_mech_is_accepted(
     problem, backend = make_dynamic_mechanics(modules.mechanics, dt_ms=1.0)
     controller = SimulationController(problem, ep_solver, backend, modules, 1.0, 0.1)
     assert controller.mechanics.problem is problem
+
+
+@pytest.mark.parametrize("mode", ["monodomain", "re+", "re-"])
+def test_fixture_ep_solvers_use_strang_without_deprecated_api(
+    split_modules,
+    make_ep_solver,
+    make_re_ep_solver,
+    mode,
+):
+    """The EP fixtures build ``beat.SplittingSolver`` with ``splitting="strang"``.
+
+    beat's ``theta=`` and its ``MonodomainSplittingSolver`` alias warn with a
+    ``stacklevel`` that attributes the warning to the caller, so the filter matches the
+    message, not the module; dolfinx's own DeprecationWarnings are left alone.
+    """
+    modules = split_modules["caisplit"]
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "error",
+            category=DeprecationWarning,
+            message=r".*(theta|MonodomainSplittingSolver).*",
+        )
+        if mode == "monodomain":
+            solver = make_ep_solver(modules.ep, _unit_cube(1))
+        else:
+            solver = make_re_ep_solver(modules.ep, _unit_cube(1), mode)
+    assert solver.splitting == "strang"

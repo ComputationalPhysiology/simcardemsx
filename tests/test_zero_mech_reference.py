@@ -24,10 +24,11 @@ test: for the Ca_i split at dt 1 to 0.002 ms it converges at first order (observ
 - Gate 5's harness (beat EP on the 3x3x3 cube, ToR-ORd firing everywhere, one element of
   mechanics, through ``SimulationController``): everything is uniform, so the coupled
   problem is 0D too, and the 0D twin repeats the controller's documented order (EP
-  micro-steps with the crossings frozen, forward at the new time, monolithic mechanics,
-  backward). λ, ``v``, ``cai`` and ``Ta`` agree to ``RTOL`` of their largest value.
-  Measured: at most 1.2e-12 (the Ca_i split's ``Ta``). Gate 5 itself only asserts that the
-  values are nonzero.
+  micro-steps with the crossings frozen, each taken as beat's Strang step takes it, forward
+  at the new time, monolithic mechanics, backward). λ, ``v``, ``cai`` and ``Ta`` agree to
+  ``RTOL`` of their largest value. Measured: at most 4.4e-13 (the Ca_i split's ``Ta``); a
+  twin taking one whole cell step per micro-step instead misses ``v`` by 6 %. Gate 5 itself
+  only asserts that the values are nonzero.
 """
 
 from collections.abc import Callable, Mapping
@@ -230,13 +231,18 @@ def test_coupled_loop_equals_its_zero_mech_twin(
     p = ep.init_parameter_values()
     to_ep = np.zeros(len(ep.missing))  # beat's missing variables start at zero
     i_lmbda = ep.parameter.get("lmbda")
+    step = getattr(ep, EP_SCHEME)
     reference: dict[str, list[float]] = {key: [] for key in fem}
     t = 0.0
     for _ in range(NUM_STEPS):
         t_n = t
         for i in range(round(DT_MECH / DT_EP)):  # the controller's own time arithmetic
             t_start, t = t, t_n + (i + 1) * DT_EP
-            y = getattr(ep, EP_SCHEME)(y, t_start, t - t_start, p, to_ep)
+            # beat's Strang step: half an ODE step, the PDE step (the identity on this
+            # uniform field) and the closing half ODE step, at beat's own arguments.
+            dt = t - t_start
+            y = step(y, t_start, 0.5 * dt, p, to_ep)
+            y = step(y, t_start + 0.5 * dt, 0.5 * dt, p, to_ep)
         forward = _by_name(ep.missing_values(t, y, p, to_ep), ep.provides, mech.missing)
         lmbda = zero_d.step(t_n, DT_MECH, forward)
         to_ep = _by_name(zero_d.provided, modules.mechanics.provides, ep.missing)
