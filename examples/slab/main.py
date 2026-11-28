@@ -69,14 +69,24 @@ HERE = Path(__file__).resolve().parent
 # scheme_comparison and demo_io sit next to this example, not in the installed package.
 sys.path.insert(0, str(HERE.parent))
 import demo_io  # noqa: E402
+from odefiles.composed import (  # noqa: E402
+    INITIAL_STATES,
+    LAND_CALIBRATION,
+    ODEFILES,
+    ODEZOO_VERSIONS,
+    SPLITS,
+    initial_states,
+    place,
+    torord_land,
+)
 from scheme_comparison.record import Recorder  # noqa: E402
 
 logger = logging.getLogger(__name__)
-DEFAULT_ODEFILE = Path("../odefiles/ToRORd_dynCl_endo_zetasplit.ode")
+DEFAULT_SPLIT = "zeta"
 EP_MODES = ("monodomain", "re+", "re-")
 SCHEMES = ("monolithic", "segregated", "stabilized")
 CROSSBRIDGE_MODELS = ("Land2017", "RDQ18", "RDQ20MF", "Lewalle2024")
-T_END = 40.0  # ms
+T_END = 400.0  # ms
 
 # The model: every value below is read by the run, and recorded by model_settings().
 DT_EP = 0.05  # ms
@@ -157,7 +167,24 @@ def material_parameters() -> dict[str, Any]:
     return parameters
 
 
-def model_settings() -> dict[str, Any]:
+def cell_model_settings(split: str | None) -> dict[str, Any]:
+    """The cell model: ToR-ORd + Land composed from odezoo as ``split`` (the versions,
+    the glue file's sha256, Land's calibration and the initial states, all of which the
+    run applies), or, for ``None``, a hand-made ``--odefile``, which the ``.ode`` hash in
+    :func:`settings` identifies."""
+    if split is None:
+        return {"source": "file"}
+    return {
+        "source": "composed",
+        "split": split,
+        "odezoo": dict(ODEZOO_VERSIONS),
+        "glue_sha256": hashlib.sha256((ODEFILES / "torord_land.glue.ode").read_bytes()).hexdigest(),
+        "land_calibration": dict(LAND_CALIBRATION),
+        "initial_states": dict(INITIAL_STATES),
+    }
+
+
+def model_settings(split: str | None = None) -> dict[str, Any]:
     """The model as the run reads it, as plain values: the time step of EP, the slab,
     EP's ODE space, conductivities, chi, C_m and stimulus, and the mechanics' spaces,
     compressibility, material (in base units: Pa) and boundary conditions.
@@ -167,6 +194,7 @@ def model_settings() -> dict[str, Any]:
     """
     stimulus_defaults = inspect.signature(beat.stimulation.define_stimulus).parameters
     return {
+        "cell_model": cell_model_settings(split),
         "dt_ep": DT_EP,
         "geometry": {**SLAB, "mesh_unit": MESH_UNIT},
         "ep": {
@@ -263,12 +291,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, with ``output_dir`` and ``save_every`` resolved from their
     defaults."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    model = parser.add_mutually_exclusive_group()
+    model.add_argument(
+        "--split",
+        choices=tuple(SPLITS),
+        default=None,
+        help="Compose ToR-ORd + Land from odezoo and split it this way (default: "
+        f"{DEFAULT_SPLIT}, if --odefile is not given). Output goes to "
+        "output/torord_land_<split>/ unless --output-dir is given.",
+    )
+    model.add_argument(
         "--odefile",
         type=Path,
-        default=DEFAULT_ODEFILE,
-        help="gotranx .ode file with a 'mechanics' component (default: %(default)s). "
-        "Output goes to output/<odefile stem>/ unless --output-dir is given.",
+        default=None,
+        help="A hand-made gotranx .ode file with a 'mechanics' component, in place of the "
+        "composed model. Output goes to output/<odefile stem>/ unless --output-dir is given.",
     )
     parser.add_argument(
         "--scheme",
@@ -290,7 +327,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=CROSSBRIDGE_MODELS,
         default=None,
         help="Run this crossbridge contraction model (Ca_i split) instead of the "
-        "generated mechanics component. Needs the Ca_i split as --odefile, e.g. "
+        "generated mechanics component. Needs the Ca_i split: --split cai, or --odefile "
         "../odefiles/ToRORd_dynCl_endo_caisplit.ode. --scheme segregated is the naive "
         "scheme, stabilized the stabilized one; monolithic is not available "
         "(default: off).",
@@ -305,7 +342,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dt-mech",
         type=float,
-        default=DT_EP,
+        default=1.0,
         help=f"Mechanics time step in ms, a whole multiple of the {DT_EP} ms EP step "
         "(default: %(default)s).",
     )
@@ -366,11 +403,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "are deleted.",
     )
     args = parser.parse_args(argv)
+    if args.odefile is None:
+        args.split = args.split or DEFAULT_SPLIT
     if args.output_dir is None:
-        args.output_dir = Path("output") / args.odefile.stem
+        stem = f"torord_land_{args.split}" if args.odefile is None else args.odefile.stem
+        args.output_dir = Path("output") / stem
     if args.save_every is None:
         args.save_every = args.dt_mech
     return args
+
+
+def model_odefile(args: argparse.Namespace) -> Path:
+    """The ``.ode`` file the run reads: ``--odefile``, or the composed split, which is
+    composed (once, from odezoo) into ``examples/odefiles/composed/``."""
+    return Path(args.odefile) if args.odefile is not None else torord_land(args.split)
 
 
 def settings(args: argparse.Namespace) -> dict[str, Any]:
@@ -383,13 +429,13 @@ def settings(args: argparse.Namespace) -> dict[str, Any]:
     arguments = {
         key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
     }
-    odefile = Path(args.odefile)
+    odefile = model_odefile(args)
     arguments["odefile"] = {
         "path": str(odefile),
         "name": odefile.name,
         "sha256": hashlib.sha256(odefile.read_bytes()).hexdigest(),
     }
-    return {**arguments, **model_settings()}
+    return {**arguments, **model_settings(args.split)}
 
 
 def physics(args: argparse.Namespace) -> dict[str, Any]:
@@ -483,6 +529,18 @@ def make_ep_solver(
         raise ValueError(f"ep must be one of {EP_MODES}, got {ep!r}")
     ep_mesh = ep_geo.mesh
     ep_settings = run_settings["ep"]
+    # Land's calibration, on the EP side where the EP module declares a parameter of it
+    # (the mechanics side is the backend's, in main), and the initial states.
+    composed = run_settings["cell_model"]["source"] == "composed"
+    ep_calibration = (
+        {
+            name: value
+            for name, value in run_settings["cell_model"]["land_calibration"].items()
+            if name in ep_module.parameter
+        }
+        if composed
+        else {}
+    )
     # P1: values going back to EP are averaged onto the EP ODE space, which the
     # transfer plan supports for P1 and DG0 only.
     ep_ode_space = dolfinx.fem.functionspace(ep_mesh, tuple(ep_settings["ode_element"]))
@@ -534,9 +592,10 @@ def make_ep_solver(
     # One column per point, for states, parameters and missing variables alike: the
     # transfer plan writes lambda and the values EP needs back into these arrays in
     # place, and they differ between points.
-    y_ep = np.tile(ep_module.init_state_values()[:, None], (1, num_points_ep))
+    states = initial_states(ep_module) if composed else {}
+    y_ep = np.tile(ep_module.init_state_values(**states)[:, None], (1, num_points_ep))
     p_ep = np.tile(
-        ep_module.init_parameter_values(**ep_settings["ode_parameters"])[:, None],
+        ep_module.init_parameter_values(**ep_settings["ode_parameters"], **ep_calibration)[:, None],
         (1, num_points_ep),
     )
     ep_missing = getattr(ep_module, "missing", {})
@@ -589,7 +648,6 @@ def main(argv: list[str] | None = None):
             "segregated.",
         )
     outdir: Path = args.output_dir
-    odefile: Path = args.odefile
     dt_mech = args.dt_mech
 
     # Everything that can refuse the run does so here: before any file is touched, and
@@ -624,6 +682,7 @@ def main(argv: list[str] | None = None):
     # ---------------------------------------------------------
     # 1. Pre-processing: Generate ODE Code
     # ---------------------------------------------------------
+    odefile = model_odefile(args)
     out_dir = Path("generated_odes") / odefile.stem
 
     logger.info(f"Generating ODE modules from {odefile}")
@@ -662,6 +721,12 @@ def main(argv: list[str] | None = None):
 
     # The contraction model, stepped inside Newton. Its states live on a quadrature
     # space of the same degree as the mechanics form (the controller checks this).
+    composed = run_settings["cell_model"]["source"] == "composed"
+    mechanics_calibration = (
+        place(run_settings["cell_model"]["land_calibration"], modules)["mechanics"]
+        if composed
+        else {}
+    )
     backend: GeneratedActivation | CrossbridgeSegregated
     if args.crossbridge is not None:
         backend = CrossbridgeSegregated(
@@ -679,7 +744,15 @@ def main(argv: list[str] | None = None):
             mech_geo.f0,
             quadrature_degree=quadrature_degree,
             scheme=args.scheme,
+            parameters=mechanics_calibration,
+            tension="Ta",
+            tension_unit="kPa",
         )
+        if composed and "B" in modules.mechanics.state:
+            num_states = len(modules.mechanics.state)
+            states_prev = backend.states_prev.x.array.reshape(-1, num_states)
+            for name, value in initial_states(modules.mechanics).items():
+                states_prev[:, modules.mechanics.state[name]] = value
 
     model = pulse.CardiacModel(
         material=material,

@@ -522,3 +522,48 @@ def test_physics_records_the_ep_numerics():
     assert ep["cell_scheme"] == "rush_larsen_2"
     assert ep["splitting"] == "strang"
     assert "theta" not in ep
+
+
+def test_split_and_odefile_are_exclusive():
+    slab = _import("main")
+    with pytest.raises(SystemExit):
+        slab.parse_args(["--split", "cai", "--odefile", str(_odefile())])
+
+
+def test_the_default_is_the_composed_zeta_split():
+    slab = _import("main")
+    args = slab.parse_args([])
+    assert (args.split, args.odefile, args.dt_mech, args.t_end) == ("zeta", None, 1.0, 400.0)
+    assert args.output_dir == Path("output/torord_land_zeta")
+    assert slab.parse_args(["--odefile", str(_odefile())]).split is None
+
+
+def test_composed_physics_holds_the_calibration_and_differs_from_the_hand_made_file():
+    pytest.importorskip("odezoo")
+    from odefiles.composed import LAND_CALIBRATION
+
+    sys.path.insert(0, str(EXAMPLES))
+    try:
+        slab = _import("main")
+        composed = slab.physics(slab.parse_args(["--split", "zeta"]))
+        hand_made = slab.physics(slab.parse_args(["--odefile", str(_odefile())]))
+    finally:
+        sys.path.remove(str(EXAMPLES))
+    model = composed["cell_model"]
+    assert model["source"] == "composed" and model["split"] == "zeta"
+    assert model["land_calibration"] == LAND_CALIBRATION
+    assert model["initial_states"] == {"B": 1.0}
+    assert hand_made["cell_model"] == {"source": "file"}
+    assert physics_hash(composed) != physics_hash(hand_made)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("split", ["zeta", "cai", "catrpn"])
+def test_slab_runs_each_composed_split(split, tmp_path):
+    pytest.importorskip("odezoo")
+    result = _run_example("--split", split, "--t-end", "2", output_dir=tmp_path / "o")
+    assert result.returncode == 0, result.stderr[-3000:]
+    run = json.loads((tmp_path / "o" / "run.json").read_text())
+    assert run["reached_t_end"] is True
+    rows = list(csv.DictReader((tmp_path / "o" / "log.csv").open()))
+    assert np.isfinite(float(rows[-1]["Ta_mean_kPa"]))
