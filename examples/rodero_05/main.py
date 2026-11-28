@@ -21,7 +21,7 @@ The set-up, following the run script:
   uF/cm^2; 0.05 ms steps, under Strang splitting with the cells stepped by gotranx's
   second-order ``rush_larsen_2`` (beat 0.14's defaults; not the run script's, below).
 - **Parameters**: every Land parameter goes to each half of the split that declares
-  it, and ``PCa_b`` x 2 to the EP half (:func:`place_land`).
+  it, and ``PCa_b`` x 2 to the EP half (:func:`odefiles.composed.place`).
 - **Activation**: ``GeneratedActivation``, monolithic, its states on quadrature of
   degree 4, ``Ta`` masked to 0 in the valve plugs (``tension_scale``).
 - **Mechanics**: ``pulse.DynamicProblem`` (rho 1e3 kg/m^3, alpha_m 0.2, alpha_f 0.4,
@@ -176,7 +176,7 @@ from simcardemsx.backends import GeneratedActivation
 from simcardemsx.checkpoint import Checkpointer, write_json
 from simcardemsx.controller import SimulationController, dolfin_ode_solver
 from simcardemsx.mechanics import Cycle
-from simcardemsx.ode_model import EP_SCHEME, ODEModules, load_ode_modules
+from simcardemsx.ode_model import EP_SCHEME, load_ode_modules
 from simcardemsx.provenance import provenance
 from simcardemsx.results import ARTIFACTS, CsvLog, ResultsWriter, write_resolved_settings
 
@@ -186,6 +186,7 @@ HERE = Path(__file__).resolve().parent
 # has the name mypy gives it too.
 sys.path.insert(0, str(HERE.parent))
 import demo_io  # noqa: E402
+from odefiles import composed  # noqa: E402
 
 from rodero_05 import case as case_data  # noqa: E402
 from rodero_05.case import (  # noqa: E402
@@ -593,30 +594,6 @@ def physics(args: argparse.Namespace) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def place_land(land: dict[str, float], modules: ODEModules) -> dict[str, dict[str, float]]:
-    """Each Land parameter, for every half of the split that declares it.
-
-    physcardems writes the whole Land set into the EP parameter array wherever the EP
-    half has the name (``parameters.py``, ``apply_to_ode_parameters``), and hands the
-    mechanics-side subset to its contraction model. Here the same rule goes both ways:
-    ``"ep"`` holds the names the EP module declares, ``"mechanics"`` those the
-    ``mechanics`` module declares, and a name may be in both.
-
-    Raises
-    ------
-    KeyError
-        If a name is declared by neither half: it would change nothing.
-    """
-    placed = {
-        "ep": {k: v for k, v in land.items() if k in modules.ep.parameter},
-        "mechanics": {k: v for k, v in land.items() if k in modules.mechanics.parameter},
-    }
-    unused = sorted(set(land) - set(placed["ep"]) - set(placed["mechanics"]))
-    if unused:
-        raise KeyError(f"Land parameters {unused} are declared by neither half of the split")
-    return placed
-
-
 def check_mechanics_initial_states(
     initial_states: dict[int, dict[str, float]],
     module,
@@ -894,7 +871,7 @@ def main(argv: list[str] | None = None) -> None:
     # ---------------------------------------------------------
     modules = load_ode_modules(ODEFILE, HERE / "generated_odes" / ODEFILE.stem)
     case = load_case(args.case_dir, tref_scale=args.tref, comm=comm)
-    placed = place_land(case.land, modules)
+    placed = composed.place(case.land, modules)
     land_placement = {half: sorted(values) for half, values in placed.items()}
     # Every run's, a restart's too: the latest run's settings win, as in the CLIs.
     if comm.rank == 0:

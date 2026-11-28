@@ -182,6 +182,8 @@ pyrightconfig.json
 # Artifacts produced by running the examples: generated ODE modules,
 # generated meshes, simulation output and figures.
 examples/**/generated_odes/
+# Composed from odezoo at run time: ToR-ORd's CellML is GPL-3.0-only
+examples/odefiles/composed/
 examples/**/meshes/
 examples/**/output/
 examples/tutorials/*.png

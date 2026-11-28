@@ -71,6 +71,8 @@ test = [
     # StretchActiveStress and Holzapfel-Ogden's b = 0 limit (pulse's transversely
     # isotropic parameters)
     "zero-mech>=0.3.0",
+    # The composed ToR-ORd + Land of examples/odefiles/composed.py
+    "odezoo",
 ]
 dev = [
     "pdbpp",
@@ -88,7 +90,10 @@ demo = [
     "fenicsx-ldrb",
     "ukb-atlas",
     "circulation>=0.4.0",
-    "gotranx",
+    "gotranx>=2.11.0",
+    "odezoo",
+    "pyvista",
+    "imageio",
     "io4dolfinx[h5py]",
 ]
 docs = [
