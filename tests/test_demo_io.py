@@ -169,3 +169,160 @@ def test_write_p1_fields_averages_a_dg_source(tmp_path, shape):
     interpolated.interpolate(source)
     assert not np.allclose(shown[0.0], interpolated.x.array)
     assert (tmp_path / "fields.bp").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# media: off-screen GIFs and their provenance
+# ---------------------------------------------------------------------------
+
+
+def _cube():
+    return dolfinx.mesh.create_unit_cube(MPI.COMM_SELF, 2, 2, 2)
+
+
+def test_animate_writes_a_small_gif(tmp_path):
+    pytest.importorskip("pyvista")
+    imageio = pytest.importorskip("imageio")
+    mesh = _cube()
+    space = dolfinx.fem.functionspace(mesh, ("P", 1))
+    n = space.dofmap.index_map.size_local
+    captions: list[int] = []
+    out = demo_io.animate(
+        tmp_path / "m.gif",
+        [mesh],
+        lambda i: [(None, np.full(n, float(i)))],
+        3,
+        titles=["t"],
+        scalar="x",
+        clim=(0.0, 2.0),
+        caption=lambda i: captions.append(i) or f"t = {i}",
+    )
+    assert captions == [0, 1, 2]
+    assert out is not None and out.stat().st_size < 2_000_000
+    shape = imageio.v3.improps(out).shape
+    assert shape[0] == 3 and shape[2] <= 640
+
+
+def test_animate_refuses_wide_gifs(tmp_path):
+    mesh = _cube()
+    with pytest.raises(ValueError, match="640"):
+        demo_io.animate(
+            tmp_path / "m.gif",
+            [mesh],
+            lambda i: [],
+            1,
+            titles=["t"],
+            scalar="x",
+            clim=(0.0, 1.0),
+            size=(800, 360),
+        )
+
+
+def test_media_skip_without_pyvista(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pyvista", None)
+    with pytest.warns(UserWarning, match="pyvista"):
+        out = demo_io.animate(
+            tmp_path / "m.gif",
+            [_cube()],
+            lambda i: [],
+            1,
+            titles=["t"],
+            scalar="x",
+            clim=(0.0, 1.0),
+        )
+    assert out is None and not (tmp_path / "m.gif").exists()
+
+
+def test_write_media_provenance(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "config.resolved.toml").write_text('scheme = "stabilized"\n[mechanics]\ndt = 1.0\n')
+    folder = tmp_path / "media"
+    # The git state is the repository's, not the working directory's: record where
+    # provenance() is asked to look, since git itself may refuse to read the checkout
+    # (CI's container runs as another user than the one owning it).
+    asked = []
+    real = demo_io.provenance
+
+    def recording(cwd, *args, **kwargs):
+        asked.append(Path(cwd))
+        return real(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(demo_io, "provenance", recording)
+    monkeypatch.chdir(tmp_path)  # outside the repository
+    path = demo_io.write_media_provenance(folder, {"a": run}, ["python", "post.py", "--media"])
+    data = json.loads(path.read_text())
+    assert path == folder / "provenance.json"
+    assert data["command"] == ["python", "post.py", "--media"]
+    assert data["runs"]["a"]["scheme"] == "stabilized"
+    assert data["runs"]["a"]["mechanics"]["dt"] == 1.0
+    assert asked and all(c.is_relative_to(demo_io.REPOSITORY) for c in asked), asked
+    assert data["provenance"]["git_commit"] == real(demo_io.REPOSITORY)["git_commit"]
+    assert "versions" in data["provenance"]
+    assert data["date"].startswith("20")
+
+
+def test_write_media_provenance_falls_back_to_run_json(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "run.json").write_text('{"scheme": "stabilized", "dt_mech_ms": 1.0}')
+    monkeypatch.chdir(tmp_path)
+    path = demo_io.write_media_provenance(tmp_path / "media", {"a": run}, ["x"])
+    data = json.loads(path.read_text())
+    assert data["runs"]["a"] == {"scheme": "stabilized", "dt_mech_ms": 1.0}
+
+
+def test_write_media_provenance_records_each_runs_own_provenance(tmp_path, monkeypatch):
+    """Beside a run's settings, the ``provenance`` and ``history`` of its ``run.json``: the
+    commit that ran it, which may differ from the one that drew the media."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "config.resolved.toml").write_text('scheme = "stabilized"\n')
+    ran = {"git_commit": "abc123", "git_dirty": False}
+    (run / "run.json").write_text(
+        json.dumps({"scheme": "stabilized", "provenance": ran, "history": [ran, ran]}),
+    )
+    monkeypatch.chdir(tmp_path)
+    data = json.loads(demo_io.write_media_provenance(tmp_path / "m", {"a": run}, ["x"]).read_text())
+    assert data["runs"]["a"]["scheme"] == "stabilized"
+    assert data["runs"]["a"]["provenance"] == ran
+    assert data["runs"]["a"]["history"] == [ran, ran]
+
+
+def test_write_media_provenance_records_paths_relative_to_the_repository(tmp_path):
+    """Paths inside the repository are recorded relative to its root, so the committed
+    file does not name the machine it was made on; paths outside it are kept."""
+    repo = Path(demo_io.__file__).resolve().parent.parent
+    run = tmp_path / "run"
+    run.mkdir()
+    inside = repo / "examples" / "slab" / "output" / "splits" / "zeta"
+    odefile = repo / "examples" / "odefiles" / "composed" / "torord_land_zeta.ode"
+    (run / "config.resolved.toml").write_text(
+        f'output_dir = "{inside}"\nelsewhere = "{tmp_path}"\n[odefile]\npath = "{odefile}"\n',
+    )
+    data = json.loads(
+        demo_io.write_media_provenance(
+            tmp_path / "m",
+            {"a": run},
+            ["compare_splits.py", "--root", str(inside.parent)],
+        ).read_text(),
+    )
+    record = data["runs"]["a"]
+    assert record["output_dir"] == "examples/slab/output/splits/zeta"
+    assert record["odefile"]["path"] == "examples/odefiles/composed/torord_land_zeta.ode"
+    assert record["elsewhere"] == str(tmp_path)
+    assert data["command"] == ["compare_splits.py", "--root", "examples/slab/output/splits"]
+
+
+def test_write_media_provenance_records_the_drawing_provenance_it_is_given(tmp_path):
+    """A caller takes :func:`demo_io.drawing_provenance` before it writes any medium (which
+    would itself make the tree dirty) and passes it in; it is recorded as given."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "config.resolved.toml").write_text('scheme = "stabilized"\n')
+    drawn = {"git_commit": "abc123", "git_dirty": False}
+    data = json.loads(
+        demo_io.write_media_provenance(tmp_path / "m", {"a": run}, ["x"], drawn=drawn).read_text(),
+    )
+    assert data["provenance"] == drawn
+    assert {"git_commit", "git_dirty", "versions"} <= set(demo_io.drawing_provenance())

@@ -39,6 +39,19 @@ def report(modules):
     return modules[0]
 
 
+@pytest.fixture(scope="module")
+def demo_io():
+    """``examples/demo_io``, which ``report.copy_media`` imports lazily, imported while
+    ``examples/`` is on the path, as it is when ``report.py`` runs as a script. Without
+    it the media tests pass only after another test has imported ``demo_io``."""
+    saved = list(sys.path)
+    sys.path.insert(0, str(EXAMPLES))
+    try:
+        return importlib.import_module("demo_io")
+    finally:
+        sys.path[:] = saved
+
+
 # --------------------------------------------------------------------------------------
 # Fabricated runs
 # --------------------------------------------------------------------------------------
@@ -555,3 +568,54 @@ def test_report_lists_a_truncated_run_json(report, modules, tmp_path):
     assert "No load problems" not in text
     (line,) = [line for line in text.splitlines() if str(bad) in line]
     assert "unreadable JSON" in line
+
+
+def test_media_copies_each_groups_figures_and_writes_provenance(
+    report,
+    modules,
+    demo_io,
+    tmp_path,
+    monkeypatch,
+):
+    """``--media`` copies ``<stem>_error_vs_dt.png`` and ``<stem>_timeseries.png`` of every
+    group, and writes a ``provenance.json`` that records the runs' ``run.json``."""
+    _small_root(modules[1], tmp_path / "runs", biv=False)
+    out = tmp_path / "out"
+    report.build_report(tmp_path / "runs", out)
+    media = tmp_path / "media"
+    monkeypatch.chdir(tmp_path)
+    report.copy_media(tmp_path / "runs", out, media, ["report.py", "--media", "media"])
+    names = {p.name for p in media.glob("*.png")}
+    stems = {f"{g}_{grp}" for g, grp in report.discover(tmp_path / "runs")}
+    assert stems
+    assert names == {f"{s}_{kind}.png" for s in stems for kind in ("error_vs_dt", "timeseries")}
+    data = json.loads((media / "provenance.json").read_text())
+    assert data["command"] == ["report.py", "--media", "media"]
+    assert data["runs"]
+    assert all("scheme" in v for v in data["runs"].values())
+
+
+def test_media_provenance_is_taken_before_the_figures_are_copied(
+    report,
+    modules,
+    demo_io,
+    tmp_path,
+    monkeypatch,
+):
+    """The copied figures would make the tree dirty themselves, so the provenance of the
+    code that draws them is taken before any is copied."""
+    _small_root(modules[1], tmp_path / "runs", biv=False)
+    out = tmp_path / "out"
+    report.build_report(tmp_path / "runs", out)
+    media = tmp_path / "media"
+    seen: list[list[str]] = []
+
+    def drawing_provenance():
+        seen.append(sorted(p.name for p in media.glob("*")) if media.exists() else [])
+        return {"git_commit": "abc123", "git_dirty": False}
+
+    monkeypatch.setattr(demo_io, "drawing_provenance", drawing_provenance)
+    report.copy_media(tmp_path / "runs", out, media, ["report.py", "--media", "media"])
+    assert seen == [[]]
+    data = json.loads((media / "provenance.json").read_text())
+    assert data["provenance"] == {"git_commit": "abc123", "git_dirty": False}

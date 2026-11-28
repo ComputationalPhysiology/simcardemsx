@@ -1,0 +1,1717 @@
+{
+  "provenance": {
+    "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+    "git_dirty": false,
+    "versions": {
+      "simcardemsx": "0.1.0",
+      "fenics-dolfinx": "0.11.0.post0",
+      "fenicsx-pulse": "0.11.1",
+      "fenicsx-beat": "0.14.0",
+      "gotranx": "2.11.0",
+      "crossbridge": "0.3.4",
+      "io4dolfinx": "1.3.0",
+      "numpy": "2.5.3",
+      "petsc4py": "3.25.1"
+    },
+    "n_ranks": 1,
+    "utc": "2026-11-28T09:20:20.167324+00:00"
+  },
+  "runs": {
+    "element/dynamic-zetasplit/monolithic/dt0.05": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.05,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.35561544381399546,
+        7.550537831697928e-06,
+        2.135640632261041e-13
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 5761,
+        "mean": 1.9203333333333332,
+        "max": 2,
+        "steps": 3000
+      },
+      "timings": {
+        "setup_s": 0.09279841708485037,
+        "mech_s": 3.158067697659135,
+        "loop_s": 3.5184498770395294,
+        "total_s": 3.611248877015896
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:29.640056+00:00"
+    },
+    "element/dynamic-zetasplit/monolithic/dt0.25": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.09648726893034298,
+        0.00021750944092898048,
+        1.0701255396478908e-09,
+        2.321696141705985e-14
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 1170,
+        "mean": 1.95,
+        "max": 3,
+        "steps": 600
+      },
+      "timings": {
+        "setup_s": 0.0881697089644149,
+        "mech_s": 0.6425726155284792,
+        "loop_s": 0.7141933339880779,
+        "total_s": 0.8023636259604245
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:22.491559+00:00"
+    },
+    "element/dynamic-zetasplit/monolithic/dt0.5": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.08233614819435954,
+        0.00019143498645163195,
+        9.245422018748342e-10
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 636,
+        "mean": 2.12,
+        "max": 3,
+        "steps": 300
+      },
+      "timings": {
+        "setup_s": 0.087229665950872,
+        "mech_s": 0.34660066885408014,
+        "loop_s": 0.3837856659665704,
+        "total_s": 0.4710157079389319
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:21.682662+00:00"
+    },
+    "element/dynamic-zetasplit/monolithic/dt1": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.10640847586428608,
+        0.00032211152549199457,
+        1.5895565242524405e-08,
+        1.875717084248031e-14
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 330,
+        "mean": 2.2,
+        "max": 3,
+        "steps": 150
+      },
+      "timings": {
+        "setup_s": 0.09035333397332579,
+        "mech_s": 0.17604475328698754,
+        "loop_s": 0.194340126006864,
+        "total_s": 0.2846940419403836
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:21.207776+00:00"
+    },
+    "element/dynamic-zetasplit/monolithic/dt2": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 2.0,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.178813010711526,
+        0.0017139185687045277,
+        7.659944164107262e-07,
+        1.143043389474274e-13
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 170,
+        "mean": 2.2666666666666666,
+        "max": 4,
+        "steps": 75
+      },
+      "timings": {
+        "setup_s": 0.10105083300732076,
+        "mech_s": 0.09387533436529338,
+        "loop_s": 0.10280520806554705,
+        "total_s": 0.20385654096025974
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:20.915939+00:00"
+    },
+    "element/dynamic-zetasplit/segregated/dt0.25": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.08377720279611625,
+        4.125026376666207e-06,
+        8.156317602593235e-14
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 1163,
+        "mean": 1.9383333333333332,
+        "max": 3,
+        "steps": 600
+      },
+      "timings": {
+        "setup_s": 0.09068133297841996,
+        "mech_s": 0.6805738997645676,
+        "loop_s": 0.7494555419543758,
+        "total_s": 0.8401372500229627
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:24.276427+00:00"
+    },
+    "element/dynamic-zetasplit/segregated/dt0.5": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.05208720399700685,
+        5.1739930795885924e-05,
+        1.1234225487119043e-11
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 585,
+        "mean": 1.95,
+        "max": 3,
+        "steps": 300
+      },
+      "timings": {
+        "setup_s": 0.09317720797844231,
+        "mech_s": 0.3391620807815343,
+        "loop_s": 0.3745209170738235,
+        "total_s": 0.46769841702189296
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:23.429515+00:00"
+    },
+    "element/dynamic-zetasplit/segregated/dt1": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.29711872964055336,
+        0.011445004100045071,
+        1.2049197059598088e-05,
+        1.8428331767342478e-11
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 334,
+        "mean": 2.2266666666666666,
+        "max": 4,
+        "steps": 150
+      },
+      "timings": {
+        "setup_s": 0.09042216697707772,
+        "mech_s": 0.19214450137224048,
+        "loop_s": 0.21058895892929286,
+        "total_s": 0.3010115419747308
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:22.957975+00:00"
+    },
+    "element/dynamic-zetasplit/segregated/dt2": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 2.0,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        11.297736403281048,
+        1.1122672014152442,
+        0.2638718284934094,
+        0.021163136062108685,
+        0.00013852682247624397,
+        5.995082910770258e-09,
+        2.0165951302144516e-14
+      ],
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 34.0,
+      "newton": {
+        "total": 107,
+        "mean": 6.6875,
+        "max": 22,
+        "steps": 16
+      },
+      "timings": {
+        "setup_s": 0.09449670801404864,
+        "mech_s": 0.06188966298941523,
+        "loop_s": 0.06479254201985896,
+        "total_s": 0.1592896250076592
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:22.653624+00:00"
+    },
+    "element/dynamic-zetasplit/stabilized/dt0.25": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.09635987786473253,
+        4.318051113550407e-06,
+        7.911010976663223e-14
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 1162,
+        "mean": 1.9366666666666668,
+        "max": 3,
+        "steps": 600
+      },
+      "timings": {
+        "setup_s": 0.08905049995519221,
+        "mech_s": 0.6420388385886326,
+        "loop_s": 0.7108159170020372,
+        "total_s": 0.7998669169610366
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:26.012716+00:00"
+    },
+    "element/dynamic-zetasplit/stabilized/dt0.5": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.082447498502292,
+        5.091780367852784e-05,
+        1.1617643884806475e-11
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 586,
+        "mean": 1.9533333333333334,
+        "max": 3,
+        "steps": 300
+      },
+      "timings": {
+        "setup_s": 0.09193137497641146,
+        "mech_s": 0.32656562072224915,
+        "loop_s": 0.3618638749467209,
+        "total_s": 0.4537956250132993
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:25.207221+00:00"
+    },
+    "element/dynamic-zetasplit/stabilized/dt1": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.1074627123635462,
+        0.00026084711921864416,
+        3.181938348780867e-10
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 299,
+        "mean": 1.9933333333333334,
+        "max": 3,
+        "steps": 150
+      },
+      "timings": {
+        "setup_s": 0.0933394170133397,
+        "mech_s": 0.16582162457052618,
+        "loop_s": 0.18395400105509907,
+        "total_s": 0.2772937919944525
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:24.749673+00:00"
+    },
+    "element/dynamic-zetasplit/stabilized/dt2": {
+      "study": "dynamic-zetasplit",
+      "geometry": "dynamic-1cm-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 2.0,
+      "t_end_ms": 150.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 100.0,
+        "rho_kg_m3": 1000.0,
+        "h_m": 0.01
+      },
+      "newton_residuals": [
+        0.1825861248606426,
+        0.0010470875479888845,
+        7.738795544433272e-09,
+        2.0698175731104195e-14
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 162,
+        "mean": 2.16,
+        "max": 3,
+        "steps": 75
+      },
+      "timings": {
+        "setup_s": 0.09005120804067701,
+        "mech_s": 0.0886025836225599,
+        "loop_s": 0.09786616696510464,
+        "total_s": 0.1879176249494776
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:24.467651+00:00"
+    },
+    "element/static-caisplit/monolithic/dt0.01": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.01,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        1.0357083102351057,
+        3.495580104871933e-05,
+        3.1441618850109058e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 7147,
+        "mean": 1.78675,
+        "max": 2,
+        "steps": 4000
+      },
+      "timings": {
+        "setup_s": 0.28310558397788554,
+        "mech_s": 5.411429023370147,
+        "loop_s": 5.83971550303977,
+        "total_s": 6.122821627999656
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:51.963089+00:00"
+    },
+    "element/static-caisplit/monolithic/dt0.05": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.05,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        5.087471755645686,
+        0.000851553112933467,
+        2.321346415741503e-11
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 1495,
+        "mean": 1.86875,
+        "max": 2,
+        "steps": 800
+      },
+      "timings": {
+        "setup_s": 0.10004204197321087,
+        "mech_s": 1.1493592481128871,
+        "loop_s": 1.2380355009809136,
+        "total_s": 1.338077791966498
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:33.539991+00:00"
+    },
+    "element/static-caisplit/monolithic/dt0.1": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.1,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        9.950335350611883,
+        0.0032968577751610662,
+        3.503632967446498e-10
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 915,
+        "mean": 2.2875,
+        "max": 3,
+        "steps": 400
+      },
+      "timings": {
+        "setup_s": 0.28715520806144923,
+        "mech_s": 0.6763974467758089,
+        "loop_s": 0.721552083035931,
+        "total_s": 1.0087076670024544
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:32.195068+00:00"
+    },
+    "element/static-caisplit/monolithic/dt0.25": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        23.241593165293075,
+        0.01865067648639353,
+        1.16726677865252e-08,
+        2.0262822052320876e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 400,
+        "mean": 2.5,
+        "max": 3,
+        "steps": 160
+      },
+      "timings": {
+        "setup_s": 0.1019610419170931,
+        "mech_s": 0.2907829196192324,
+        "loop_s": 0.30898870795499533,
+        "total_s": 0.4109500419581309
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:31.181741+00:00"
+    },
+    "element/static-caisplit/monolithic/dt0.5": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        41.36056523589993,
+        0.06278678467937866,
+        1.4091199941135555e-07,
+        3.0115586923997218e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 205,
+        "mean": 2.5625,
+        "max": 3,
+        "steps": 80
+      },
+      "timings": {
+        "setup_s": 0.29361854202579707,
+        "mech_s": 0.15004158043302596,
+        "loop_s": 0.15916283405385911,
+        "total_s": 0.4527817500056699
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:30.767270+00:00"
+    },
+    "element/static-caisplit/monolithic/dt1": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        64.5296391567404,
+        0.17317164807220287,
+        1.2182177837641837e-06,
+        2.5921098998216e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 103,
+        "mean": 2.575,
+        "max": 3,
+        "steps": 40
+      },
+      "timings": {
+        "setup_s": 0.5854172499384731,
+        "mech_s": 0.0772166692186147,
+        "loop_s": 0.08188170893117785,
+        "total_s": 0.6672993339598179
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:30.311722+00:00"
+    },
+    "element/static-caisplit/segregated/dt0.05": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.05,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        12013.954024097571,
+        9634.416074918174,
+        16237.796459285586,
+        12750.572276139867,
+        8254.589225178348,
+        3503.9457127711717,
+        1543.205770828554,
+        354.03594510017246,
+        42.79541888558579,
+        1.0622912040536803,
+        0.0012017855058627772,
+        3.5989472553090162e-09
+      ],
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 20.85,
+      "newton": {
+        "total": 1774,
+        "mean": 4.264423076923077,
+        "max": 14,
+        "steps": 416
+      },
+      "timings": {
+        "setup_s": 0.24659345799591392,
+        "mech_s": 1.24187400075607,
+        "loop_s": 1.2946822930825874,
+        "total_s": 1.541276208939962
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:42.290433+00:00"
+    },
+    "element/static-caisplit/segregated/dt0.1": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.1,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 19.8,
+      "newton": {
+        "total": 696,
+        "mean": 3.532994923857868,
+        "max": 10,
+        "steps": 197
+      },
+      "timings": {
+        "setup_s": 0.24465712497476488,
+        "mech_s": 0.5143035848159343,
+        "loop_s": 0.5411894170101732,
+        "total_s": 0.7858468329068273
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:40.744329+00:00"
+    },
+    "element/static-caisplit/segregated/dt0.25": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        10444.210917262126,
+        3998.7267789227053,
+        2924.518645450617,
+        2187.573092343446,
+        1655.0430745003048,
+        1037.5740079164818,
+        530.2394099345946,
+        122.4810522396618,
+        6.331310131246332,
+        0.03019685699776572,
+        1.262633959732363e-06,
+        1.450608796792278e-11
+      ],
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 22.5,
+      "newton": {
+        "total": 348,
+        "mean": 3.9101123595505616,
+        "max": 16,
+        "steps": 89
+      },
+      "timings": {
+        "setup_s": 0.2452355830464512,
+        "mech_s": 0.2529419540660456,
+        "loop_s": 0.26495270908344537,
+        "total_s": 0.5101886249613017
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:39.954535+00:00"
+    },
+    "element/static-caisplit/segregated/dt0.5": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        10117.688774708773,
+        3338.700715640676,
+        1656.097211230515,
+        801.7747441561052,
+        498.3691351079662,
+        79.5583309085386,
+        1.2261813353262043,
+        0.000729157923573851,
+        2.7890369863677696e-10
+      ],
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 29.5,
+      "newton": {
+        "total": 232,
+        "mean": 4.0,
+        "max": 15,
+        "steps": 58
+      },
+      "timings": {
+        "setup_s": 5.302372419042513,
+        "mech_s": 0.1726167486049235,
+        "loop_s": 0.18072845903225243,
+        "total_s": 5.48310129402671
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:39.441308+00:00"
+    },
+    "element/static-caisplit/segregated/dt1": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        1811.1694516415926,
+        1220.0059971798685,
+        770.7109344480947,
+        144.76719963833287,
+        1.687811774827252,
+        0.0012534491101415452,
+        6.79339482273829e-10
+      ],
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 31.0,
+      "newton": {
+        "total": 125,
+        "mean": 4.166666666666667,
+        "max": 16,
+        "steps": 30
+      },
+      "timings": {
+        "setup_s": 0.29595312604214996,
+        "mech_s": 0.10982929251622409,
+        "loop_s": 0.11522525001782924,
+        "total_s": 0.41117904195562005
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:33.954861+00:00"
+    },
+    "element/static-caisplit/stabilized/dt0.05": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.05,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        5.012046135884392,
+        1.4648655596794472e-05,
+        2.50892135010004e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 1496,
+        "mean": 1.87,
+        "max": 2,
+        "steps": 800
+      },
+      "timings": {
+        "setup_s": 0.24637083406560123,
+        "mech_s": 1.1197086297906935,
+        "loop_s": 1.2186121670529246,
+        "total_s": 1.4649833759758621
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:45.820716+00:00"
+    },
+    "element/static-caisplit/stabilized/dt0.1": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.1,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        9.662502488222568,
+        5.482728850630196e-05,
+        4.012900112424255e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 760,
+        "mean": 1.9,
+        "max": 2,
+        "steps": 400
+      },
+      "timings": {
+        "setup_s": 0.24580883304588497,
+        "mech_s": 0.5630891812033951,
+        "loop_s": 0.6118093760451302,
+        "total_s": 0.8576187500730157
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:44.349235+00:00"
+    },
+    "element/static-caisplit/stabilized/dt0.25": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        21.67788834387688,
+        0.0002833185818456215,
+        1.2671818494854762e-11
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 306,
+        "mean": 1.9125,
+        "max": 2,
+        "steps": 160
+      },
+      "timings": {
+        "setup_s": 0.24280825001187623,
+        "mech_s": 0.22940670372918248,
+        "loop_s": 0.2493298330809921,
+        "total_s": 0.4921384169720113
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:43.487135+00:00"
+    },
+    "element/static-caisplit/stabilized/dt0.5": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        36.39615472299469,
+        0.000847134563220227,
+        9.5613703932889e-11
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 153,
+        "mean": 1.9125,
+        "max": 2,
+        "steps": 80
+      },
+      "timings": {
+        "setup_s": 0.2474930000025779,
+        "mech_s": 0.11376137705519795,
+        "loop_s": 0.12397791701368988,
+        "total_s": 0.37147116695996374
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:42.991602+00:00"
+    },
+    "element/static-caisplit/stabilized/dt1": {
+      "study": "static-caisplit",
+      "geometry": "static-unit-element",
+      "split": "caisplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 40.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        51.99120082997106,
+        0.0020335226399829554,
+        5.195513352229866e-10
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 86,
+        "mean": 2.15,
+        "max": 3,
+        "steps": 40
+      },
+      "timings": {
+        "setup_s": 0.25362937501631677,
+        "mech_s": 0.06504104298073798,
+        "loop_s": 0.07029820908792317,
+        "total_s": 0.3239277920220047
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:42.617337+00:00"
+    },
+    "element/static-zetasplit/monolithic/dt0.01": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.01,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        0.7422725363032631,
+        1.511379046182653e-05,
+        2.7375343944924143e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 14952,
+        "mean": 1.869,
+        "max": 3,
+        "steps": 8000
+      },
+      "timings": {
+        "setup_s": 0.10484866704791784,
+        "mech_s": 11.246338763041422,
+        "loop_s": 12.214231171063147,
+        "total_s": 12.319080171990208
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:20:17.056178+00:00"
+    },
+    "element/static-zetasplit/monolithic/dt0.05": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.05,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        3.707598451392367,
+        0.0003772156194179633,
+        2.658679467479966e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 3020,
+        "mean": 1.8875,
+        "max": 4,
+        "steps": 1600
+      },
+      "timings": {
+        "setup_s": 0.10715287504717708,
+        "mech_s": 2.242589072789997,
+        "loop_s": 2.4356025839224458,
+        "total_s": 2.5427560430252925
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:57.221349+00:00"
+    },
+    "element/static-zetasplit/monolithic/dt0.1": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.1,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        7.4060464320237775,
+        0.0015058658069617777,
+        2.958202071100571e-11
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 1534,
+        "mean": 1.9175,
+        "max": 4,
+        "steps": 800
+      },
+      "timings": {
+        "setup_s": 0.10519983305130154,
+        "mech_s": 1.133775210706517,
+        "loop_s": 1.22879829199519,
+        "total_s": 1.3339985010679811
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:54.669352+00:00"
+    },
+    "element/static-zetasplit/monolithic/dt0.25": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        18.45072206713791,
+        0.009361485361652483,
+        1.1343394232544639e-09
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 700,
+        "mean": 2.1875,
+        "max": 4,
+        "steps": 320
+      },
+      "timings": {
+        "setup_s": 0.10789474996272475,
+        "mech_s": 0.512506335391663,
+        "loop_s": 0.5514805839629844,
+        "total_s": 0.659375709015876
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:53.327863+00:00"
+    },
+    "element/static-zetasplit/monolithic/dt0.5": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        36.71355912119355,
+        0.037186032670114236,
+        1.7750758928317128e-08,
+        2.1012111440999476e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 403,
+        "mean": 2.51875,
+        "max": 4,
+        "steps": 160
+      },
+      "timings": {
+        "setup_s": 0.10310083394870162,
+        "mech_s": 0.29403428942896426,
+        "loop_s": 0.3136955000227317,
+        "total_s": 0.4167967509711161
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:52.664645+00:00"
+    },
+    "element/static-zetasplit/monolithic/dt1": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "monolithic",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        72.8555836477931,
+        0.14763059784506136,
+        2.7588473793232597e-07,
+        2.534434733545878e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 214,
+        "mean": 2.675,
+        "max": 4,
+        "steps": 80
+      },
+      "timings": {
+        "setup_s": 0.1085375000257045,
+        "mech_s": 0.15777825214900076,
+        "loop_s": 0.168098249938339,
+        "total_s": 0.27663604205008596
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:52.244571+00:00"
+    },
+    "element/static-zetasplit/segregated/dt0.05": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.05,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 11.350000000000001,
+      "newton": {
+        "total": 830,
+        "mean": 3.672566371681416,
+        "max": 12,
+        "steps": 226
+      },
+      "timings": {
+        "setup_s": 0.11014200001955032,
+        "mech_s": 0.5906075442908332,
+        "loop_s": 0.6189057499868795,
+        "total_s": 0.7290481670061126
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:59.245319+00:00"
+    },
+    "element/static-zetasplit/segregated/dt0.1": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.1,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 15.5,
+      "newton": {
+        "total": 565,
+        "mean": 3.668831168831169,
+        "max": 10,
+        "steps": 154
+      },
+      "timings": {
+        "setup_s": 0.10961958393454552,
+        "mech_s": 0.39496616821270436,
+        "loop_s": 0.41431195801123977,
+        "total_s": 0.5239318339154124
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:58.512798+00:00"
+    },
+    "element/static-zetasplit/segregated/dt0.25": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 15.75,
+      "newton": {
+        "total": 229,
+        "mean": 3.693548387096774,
+        "max": 9,
+        "steps": 62
+      },
+      "timings": {
+        "setup_s": 0.17844966694246978,
+        "mech_s": 0.17561100400052965,
+        "loop_s": 0.18425179203040898,
+        "total_s": 0.3627017920371145
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:57.985677+00:00"
+    },
+    "element/static-zetasplit/segregated/dt0.5": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 16.5,
+      "newton": {
+        "total": 127,
+        "mean": 3.96875,
+        "max": 9,
+        "steps": 32
+      },
+      "timings": {
+        "setup_s": 0.1095500000519678,
+        "mech_s": 0.09258112090174109,
+        "loop_s": 0.09698808297980577,
+        "total_s": 0.206538415979594
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:57.620065+00:00"
+    },
+    "element/static-zetasplit/segregated/dt1": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "segregated",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        8594.845640427016,
+        7183.96652658286,
+        11517733.458229654,
+        1857243.499556181,
+        11725.560995681435,
+        231511927.87247998
+      ],
+      "reached_t_end": false,
+      "failure": "Newton did not converge",
+      "t_fail_ms": 20.0,
+      "newton": {
+        "total": 100,
+        "mean": 5.2631578947368425,
+        "max": 19,
+        "steps": 19
+      },
+      "timings": {
+        "setup_s": 0.1131188339786604,
+        "mech_s": 0.07098150008823723,
+        "loop_s": 0.07355062500573695,
+        "total_s": 0.1866697509540245
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:57.411175+00:00"
+    },
+    "element/static-zetasplit/stabilized/dt0.05": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.05,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        3.711899549750474,
+        0.0003903905338695424,
+        8.765443210399204e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 3037,
+        "mean": 1.898125,
+        "max": 4,
+        "steps": 1600
+      },
+      "timings": {
+        "setup_s": 0.11207795806694776,
+        "mech_s": 2.270525765721686,
+        "loop_s": 2.4737724179867655,
+        "total_s": 2.5858508350793272
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:20:04.701810+00:00"
+    },
+    "element/static-zetasplit/stabilized/dt0.1": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.1,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        7.42301734975798,
+        0.0015628589167013724,
+        9.704658987272959e-11
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 1550,
+        "mean": 1.9375,
+        "max": 4,
+        "steps": 800
+      },
+      "timings": {
+        "setup_s": 0.11199416604358703,
+        "mech_s": 1.1502591611351818,
+        "loop_s": 1.2526497090002522,
+        "total_s": 1.3646444169571623
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:20:02.106323+00:00"
+    },
+    "element/static-zetasplit/stabilized/dt0.25": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.25,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        18.552615998857434,
+        0.009790004928836164,
+        3.84039217404201e-09,
+        2.752256682205193e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 779,
+        "mean": 2.434375,
+        "max": 4,
+        "steps": 320
+      },
+      "timings": {
+        "setup_s": 0.1269600000232458,
+        "mech_s": 0.5886031338013709,
+        "loop_s": 0.6343682919396088,
+        "total_s": 0.7613286250270903
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:20:00.732337+00:00"
+    },
+    "element/static-zetasplit/stabilized/dt0.5": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 0.5,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        37.095586704969726,
+        0.039281014746854935,
+        6.209184414232177e-08,
+        3.0525421437770026e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 423,
+        "mean": 2.64375,
+        "max": 4,
+        "steps": 160
+      },
+      "timings": {
+        "setup_s": 0.11004683398641646,
+        "mech_s": 0.3024868784705177,
+        "loop_s": 0.3225726670352742,
+        "total_s": 0.4326198339695111
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:59.966819+00:00"
+    },
+    "element/static-zetasplit/stabilized/dt1": {
+      "study": "static-zetasplit",
+      "geometry": "static-unit-element",
+      "split": "zetasplit",
+      "scheme": "stabilized",
+      "dt_mech_ms": 1.0,
+      "t_end_ms": 80.0,
+      "regime": {
+        "Kp_kPa": 6.84,
+        "eta_Pa_s": 0.0,
+        "rho_kg_m3": 0.0,
+        "h_m": 1.0
+      },
+      "newton_residuals": [
+        74.20324563434717,
+        0.15774781734598908,
+        1.0070207315461145e-06,
+        2.016204184315477e-12
+      ],
+      "reached_t_end": true,
+      "failure": null,
+      "t_fail_ms": null,
+      "newton": {
+        "total": 219,
+        "mean": 2.7375,
+        "max": 4,
+        "steps": 80
+      },
+      "timings": {
+        "setup_s": 0.11242795805446804,
+        "mech_s": 0.1564266624627635,
+        "loop_s": 0.1668269590009004,
+        "total_s": 0.27925520902499557
+      },
+      "git_commit": "8e2c4fc40eae901b56ffe30765bf38e99fc9a55d",
+      "git_dirty": false,
+      "utc": "2026-11-28T09:19:59.529137+00:00"
+    }
+  },
+  "command": [
+    "report.py",
+    "--root",
+    "output",
+    "--media",
+    "media"
+  ],
+  "date": "2026-11-28T09:20:20+00:00"
+}

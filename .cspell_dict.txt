@@ -626,3 +626,8 @@ libgl
 libosmesa
 imageio
 trame
+clim
+improps
+gifs
+autouse
+capsys

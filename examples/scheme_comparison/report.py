@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import shutil
 import sys
 import traceback
 from collections.abc import Callable, Sequence
@@ -1604,13 +1605,40 @@ def build_report(root: Path, out: Path) -> str:
     return text
 
 
+def copy_media(root: Path, out: Path, media: Path, command: Sequence[str]) -> Path:
+    """Copy each group's ``<stem>_error_vs_dt.png`` and ``<stem>_timeseries.png`` from
+    ``out`` into ``media`` and write ``media/provenance.json``, which records the
+    ``run.json`` of every run under ``root`` (one-element runs have no TOML) and the
+    provenance of this code, taken before any figure is copied. Returns the provenance
+    path."""
+    import demo_io  # needs dolfinx, so only when asked for
+
+    # Before any figure is copied: the copies would make the tree dirty themselves.
+    drawn = demo_io.drawing_provenance()
+    media.mkdir(parents=True, exist_ok=True)
+    for geometry, group in discover(root):
+        for kind in ("error_vs_dt", "timeseries"):
+            src = out / f"{geometry}_{group}_{kind}.png"
+            if src.exists():
+                shutil.copy2(src, media / src.name)
+            else:
+                print(f"no figure {src.name} to copy", file=sys.stderr)
+    runs = {
+        str(p.parent.relative_to(root)): p.parent for p in sorted(root.glob("*/*/*/dt*/run.json"))
+    }
+    return demo_io.write_media_provenance(media, runs, command, drawn=drawn)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", type=Path, required=True, help="directory of runs")
     ap.add_argument("--out", type=Path, default=None, help="default <root>/report")
+    ap.add_argument("--media", type=Path, default=None, help="copy the figures and provenance here")
     args = ap.parse_args()
     out = args.out or args.root / "report"
     build_report(args.root, out)
+    if args.media is not None:
+        copy_media(args.root, out, args.media, [Path(sys.argv[0]).name, *sys.argv[1:]])
     print(f"wrote {out / 'report.md'}")
 
 

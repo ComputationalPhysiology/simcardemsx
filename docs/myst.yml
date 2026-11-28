@@ -46,9 +46,9 @@ project:
       children:
         - file: applications/examples.md
         - file: applications/slab.md
-        - file: applications/circulation-biv.md
         - file: applications/rodero.md
         - file: applications/scheme-comparison.md
+        - file: applications/circulation-biv.md
     - title: API reference
       children:
         - file: api/simcardemsx.md

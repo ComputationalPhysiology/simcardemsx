@@ -29,10 +29,15 @@ The post side, for each demo's ``post.py``:
   at each time.
 - :class:`Panel` and :func:`figure`: quantities over time, stacked over a shared time
   axis; :func:`plots_available` warns and says so when matplotlib is missing.
+- :func:`animate` and :func:`write_media_provenance`: off-screen GIFs of P1 fields on
+  warped meshes, and the provenance file beside them; :func:`media_available` warns and
+  says so when pyvista or imageio is missing.
 - :func:`cell_containing`: the cell holding a point, for point traces.
 """
 
+import datetime
 import functools
+import json
 import logging
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -49,7 +54,13 @@ from simcardemsx.averaging import make_averager
 from simcardemsx.checkpoint import Checkpointer
 from simcardemsx.controller import SimulationController
 from simcardemsx.provenance import provenance
-from simcardemsx.results import CsvLog, ResultsWriter, prepare_output, stride
+from simcardemsx.results import (
+    CsvLog,
+    ResultsWriter,
+    prepare_output,
+    read_resolved_settings,
+    stride,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +466,199 @@ def figure(path: Path, panels: Sequence[Panel]) -> None:
         ax.tick_params(colors=INK_SECONDARY, labelcolor=INK_SECONDARY, labelsize=8)
     axes[-1].set_xlabel("t (ms)", color=INK_SECONDARY)
     fig.savefig(path, dpi=150)
+
+
+def media_available() -> bool:
+    """Whether pyvista and imageio can be imported; if not, a warning says the media are
+    skipped."""
+    for name in ("pyvista", "imageio"):
+        try:
+            __import__(name)
+        except ImportError:
+            warnings.warn(f"{name} is not available: the media are skipped", stacklevel=3)
+            return False
+    return True
+
+
+#: The widest GIF :func:`animate` writes, and the size it warns above (bytes).
+MAX_GIF_WIDTH = 640
+MAX_GIF_BYTES = 2_000_000
+
+
+def animate(
+    path: Path,
+    meshes: Sequence[dolfinx.mesh.Mesh],
+    frame: Callable[[int], Sequence[tuple[np.ndarray | None, np.ndarray]]],
+    n_frames: int,
+    *,
+    titles: Sequence[str],
+    scalar: str,
+    clim: tuple[float, float],
+    fps: int = 8,
+    size: tuple[int, int] = (640, 360),
+    caption: Callable[[int], str] | None = None,
+    zoom_out: float = 1.0,
+) -> Path | None:
+    """Write a GIF at ``path``: one subplot per mesh, off screen, ``n_frames`` frames.
+
+    ``frame(i)`` gives, for each mesh, a P1 point displacement of shape
+    ``(num_vertices, 3)`` (or ``None``) and a P1 scalar of shape ``(num_vertices,)``, in
+    the order of ``dolfinx.plot.vtk_mesh`` on a P1 space (the order of the P1 dofs). The
+    surface of each mesh is drawn warped by its displacement and coloured by its scalar,
+    named ``scalar`` on the one colour bar shared by all, over ``clim``.
+
+    Returns ``None``, after :func:`media_available` has warned, when pyvista or imageio
+    is missing. ``size`` is the window in pixels, whose width is at most 640; the
+    function warns if the file exceeds 2 MB. ``caption(i)``, if given, is drawn top right
+    on frame ``i`` (in the last subplot). ``zoom_out`` scales the camera's distance, for
+    narrow subplots.
+    """
+    if size[0] > MAX_GIF_WIDTH:
+        raise ValueError(f"a GIF is at most {MAX_GIF_WIDTH} px wide, not {size[0]}")
+    if not media_available():
+        return None
+    import pyvista
+
+    theme = pyvista.themes.DocumentTheme()  # white, with black text
+    shading: dict[str, Any] = {"ambient": 0.3, "diffuse": 0.7, "specular": 0.0}
+    plotter = pyvista.Plotter(
+        off_screen=True,
+        shape=(1, len(meshes)),
+        window_size=list(size),
+        border=False,
+        theme=theme,
+    )
+    surfaces = []
+    actor = None
+    for i, (mesh, title) in enumerate(zip(meshes, titles)):
+        plotter.subplot(0, i)
+        space = dolfinx.fem.functionspace(mesh, ("P", 1))
+        grid = pyvista.UnstructuredGrid(*dolfinx.plot.vtk_mesh(cast(Any, space)))
+        boundary = grid.extract_surface(
+            pass_pointid=True,
+            pass_cellid=False,
+            algorithm="dataset_surface",
+        )
+        dofs = np.asarray(boundary["vtkOriginalPointIds"])
+        boundary[scalar] = np.zeros(len(dofs))
+        actor = plotter.add_mesh(
+            boundary,
+            scalars=scalar,
+            clim=clim,
+            cmap="viridis",
+            show_scalar_bar=False,
+            **shading,
+        )
+        plotter.add_text(title, font_size=9)
+        lo, hi = np.array(grid.bounds[::2]), np.array(grid.bounds[1::2])
+        centre, diagonal = (lo + hi) / 2, float(np.linalg.norm(hi - lo))
+        plotter.camera_position = [
+            tuple(centre + zoom_out * diagonal * np.array([-0.6, -1.0, 0.8])),
+            tuple(centre),
+            (0.0, 0.0, 1.0),
+        ]
+        surfaces.append((boundary, dofs, np.array(grid.points)))
+    plotter.link_views()
+    assert actor is not None
+    plotter.scalar_bars.add_scalar_bar(
+        title=scalar,
+        mapper=actor.mapper,
+        vertical=False,
+        n_labels=5 if len(meshes) == 1 else 3,
+        fmt="%.3g",
+        position_x=0.3,
+        position_y=0.02,
+        width=0.4,
+        height=0.06,
+        title_font_size=12,
+        label_font_size=10,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plotter.open_gif(str(path), fps=fps)
+    try:
+        for i in range(n_frames):
+            for (boundary, dofs, rest), (u, values) in zip(surfaces, frame(i)):
+                boundary.points = (rest if u is None else rest + u)[dofs]
+                boundary[scalar] = np.asarray(values)[dofs]
+            if caption is not None:
+                plotter.subplot(0, len(meshes) - 1)
+                plotter.add_text(caption(i), position="upper_right", font_size=9, name="caption")
+            plotter.write_frame()
+    finally:
+        plotter.close()
+        del plotter  # now, rather than at exit, where pyvista prints errors freeing it
+    if path.stat().st_size > MAX_GIF_BYTES:
+        warnings.warn(f"{path} is {path.stat().st_size} bytes, over 2 MB", stacklevel=2)
+    return path
+
+
+#: The repository root: ``provenance.json`` records the paths under it relative to it.
+REPOSITORY = Path(__file__).resolve().parent.parent
+
+
+def _relative_to_repository(value: Any) -> Any:
+    """``value`` with every absolute path under :data:`REPOSITORY`, at any depth of dicts
+    and lists, made relative to it; other values as they are."""
+    if isinstance(value, dict):
+        return {key: _relative_to_repository(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_relative_to_repository(item) for item in value]
+    if isinstance(value, str) and value.startswith("/"):
+        try:
+            return Path(value).relative_to(REPOSITORY).as_posix()
+        except ValueError:
+            return value
+    return value
+
+
+def _run_record(folder: Path) -> dict[str, Any]:
+    """A run's settings, from its ``config.resolved.toml``, or from its ``run.json`` for a
+    run that has none, and the ``provenance`` and ``history`` of its ``run.json``."""
+    toml, run_json = folder / "config.resolved.toml", folder / "run.json"
+    run = json.loads(run_json.read_text()) if run_json.exists() else None
+    if toml.exists():
+        record = read_resolved_settings(toml)
+    elif run is not None:
+        record = dict(run)
+    else:
+        raise FileNotFoundError(f"{folder} holds neither config.resolved.toml nor run.json")
+    for key in ("provenance", "history"):
+        if run is not None and key in run:
+            record[key] = run[key]
+    return record
+
+
+def drawing_provenance() -> dict[str, Any]:
+    """:func:`~simcardemsx.provenance.provenance` of the repository, for the code that draws
+    media. Take it before writing any medium: a medium rewritten in a tracked folder makes
+    the tree dirty by itself."""
+    return provenance(REPOSITORY / "examples")
+
+
+def write_media_provenance(
+    folder: Path,
+    output_dirs: Mapping[str, Path],
+    command: Sequence[str],
+    drawn: Mapping[str, Any] | None = None,
+) -> Path:
+    """Write ``folder/provenance.json`` for the media in ``folder``: ``drawn``, the
+    :func:`drawing_provenance` the caller took before it wrote any medium, or, if it is
+    ``None``, this process's taken now (``provenance``: the commit that drew the media),
+    each named run (``runs``: its settings, from its ``config.resolved.toml``, or
+    from its ``run.json`` for a run that has none, such as a one-element study, and its
+    ``run.json``'s ``provenance`` and ``history``: the commits that ran it), the
+    ``command`` line and the UTC ``date``. Paths under the repository are recorded
+    relative to its root. Returns the path."""
+    folder.mkdir(parents=True, exist_ok=True)
+    record = {
+        "provenance": dict(drawn) if drawn is not None else drawing_provenance(),
+        "runs": {name: _run_record(Path(d)) for name, d in output_dirs.items()},
+        "command": list(command),
+        "date": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    }
+    path = folder / "provenance.json"
+    path.write_text(json.dumps(_relative_to_repository(record), indent=2, default=str) + "\n")
+    return path
 
 
 def cell_containing(mesh: dolfinx.mesh.Mesh, point: np.ndarray) -> int:
