@@ -629,3 +629,5 @@ trame
 clim
 improps
 gifs
+autouse
+capsys

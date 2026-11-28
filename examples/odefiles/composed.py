@@ -2,8 +2,9 @@
 
 ToR-ORd's CellML is licensed GPL-3.0-only and this repository is MIT, so the composed
 ``.ode`` files are never committed: :func:`torord_land` fetches both models from odezoo
-(pinned by version), composes them with ``torord_land.glue.ode`` and splits the result,
-writing the file into ``COMPOSED_DIR`` (gitignored) or a folder of the caller's.
+(pinned by version), composes them with ``torord_land.glue.ode`` and splits the result
+(:func:`compose`, once per split per process), writing the file into ``COMPOSED_DIR``
+(gitignored) or a folder of the caller's.
 
 :func:`place` puts Land's calibration on each side of a split, and :func:`initial_states`
 gives the initial states the composed model needs set.
@@ -11,6 +12,9 @@ gives the initial states the composed model needs set.
 
 from __future__ import annotations
 
+import functools
+import os
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -70,19 +74,20 @@ def _fetch(name: str) -> Path:
         ) from e
 
 
-def torord_land(split: str, folder: Path | None = None) -> Path:
-    """Compose ToR-ORd and Land, split them, and return the saved ``.ode`` file.
+@functools.cache
+def compose(split: str) -> str:
+    """The text of the ``.ode`` file of ``split``: ToR-ORd and Land fetched from odezoo,
+    composed with ``torord_land.glue.ode`` and split as :data:`SPLITS` says.
 
-    The file is ``<folder or COMPOSED_DIR>/torord_land_<split>.ode``. Composing is
-    deterministic, and the file is only written when its text differs from the file's, so
-    a correct file keeps its mtime and sha256 (which key the cache of generated code).
+    Composing takes seconds, so the text is kept for the rest of the process
+    (``compose.cache_clear()`` forgets it).
 
     Raises
     ------
     ValueError
         For a split not in :data:`SPLITS`.
     RuntimeError
-        If odezoo cannot fetch a model.
+        If odezoo is missing or cannot fetch a model.
     """
     if split not in SPLITS:
         raise ValueError(f"Unknown split {split!r}: choose one of {sorted(SPLITS)} (SPLITS)")
@@ -98,14 +103,37 @@ def torord_land(split: str, folder: Path | None = None) -> Path:
         ],
     }
     ode = gotranx.compose(recipe, base_dir=ODEFILES)
+    with tempfile.TemporaryDirectory() as scratch:
+        saved = Path(scratch) / f"torord_land_{split}.ode"
+        ode.split("mechanics", **SPLITS[split]).save(saved)
+        return saved.read_text()
+
+
+def torord_land(split: str, folder: Path | None = None) -> Path:
+    """Compose ToR-ORd and Land, split them, and return the saved ``.ode`` file.
+
+    The file is ``<folder or COMPOSED_DIR>/torord_land_<split>.ode``. Composing is
+    deterministic and done once per split per process (:func:`compose`), and the file is
+    only written when its text differs from the file's, so a correct file keeps its mtime
+    and sha256 (which key the cache of generated code). It is written through a temporary
+    file of this process's own, then renamed, so concurrent runs do not collide.
+
+    Raises
+    ------
+    ValueError
+        For a split not in :data:`SPLITS`.
+    RuntimeError
+        If odezoo is missing or cannot fetch a model.
+    """
+    text = compose(split)
     path = Path(folder if folder is not None else COMPOSED_DIR) / f"torord_land_{split}.ode"
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    ode.split("mechanics", **SPLITS[split]).save(tmp)
+    if path.exists() and path.read_text() == text:
+        return path
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        new = tmp.read_text()
-        if not path.exists() or path.read_text() != new:
-            tmp.replace(path)
+        tmp.write_text(text)
+        tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
     return path
