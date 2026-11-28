@@ -1,0 +1,377 @@
+{
+  "provenance": {
+    "git_commit": "3d4b61c5046be5d031ca6b1e8b0ec07e0068edcd",
+    "git_dirty": true,
+    "versions": {
+      "simcardemsx": "0.1.0",
+      "fenics-dolfinx": "0.11.0.post0",
+      "fenicsx-pulse": "0.11.1",
+      "fenicsx-beat": "0.14.0",
+      "gotranx": "2.11.0",
+      "crossbridge": "0.3.4",
+      "io4dolfinx": "1.3.0",
+      "numpy": "2.5.3",
+      "petsc4py": "3.25.1"
+    },
+    "n_ranks": 1,
+    "utc": "2026-11-28T09:14:57.928570+00:00"
+  },
+  "runs": {
+    "zeta": {
+      "split": "zeta",
+      "scheme": "monolithic",
+      "ep_mode": "monodomain",
+      "dt_mech": 1.0,
+      "t_end": 400.0,
+      "output_dir": "/home/shared/examples/slab/output/splits/zeta",
+      "save_every": 1.0,
+      "save_every_ep": 1.0,
+      "checkpoint_every": 50.0,
+      "restart": false,
+      "overwrite": true,
+      "dt_ep": 0.05,
+      "odefile": {
+        "path": "/home/shared/examples/odefiles/composed/torord_land_zeta.ode",
+        "name": "torord_land_zeta.ode",
+        "sha256": "bd5181ab2d5ee61f9b568770cd5ae1468ee262bee83a9347f1eefd7b1f4e4de6"
+      },
+      "cell_model": {
+        "source": "composed",
+        "split": "zeta",
+        "glue_sha256": "f90070fa14fc669126962ea9699ca9254827e2508369f02b96d46e0e53689df5",
+        "odezoo": {
+          "torord_dyn_cl": "github-11e463d",
+          "land_2017": "github-6e5a5aa"
+        },
+        "land_calibration": {
+          "ca50_ref": 0.805,
+          "Tref": 120000.0,
+          "ku": 40.0,
+          "kuw": 182.0,
+          "kws": 12.0,
+          "nTm": 2.4
+        },
+        "initial_states": {
+          "B": 1.0
+        }
+      },
+      "geometry": {
+        "lx": 2.0,
+        "ly": 1.0,
+        "lz": 0.5,
+        "dx": 0.5,
+        "fiber_angle_endo": 0,
+        "fiber_angle_epi": 0,
+        "fiber_space": "DG_1",
+        "mesh_unit": "mm"
+      },
+      "ep": {
+        "ode_element": [
+          "P",
+          1
+        ],
+        "cell_scheme": "rush_larsen_2",
+        "splitting": "strang",
+        "chi_per_mm": 140.0,
+        "C_m_uF_per_mm2": 0.01,
+        "ode_parameters": {
+          "i_Stim_Amplitude": 0.0
+        },
+        "conductivities_S_per_m": {
+          "sigma_el": 0.62,
+          "sigma_et": 0.24,
+          "sigma_il": 0.17,
+          "sigma_it": 0.019
+        },
+        "stimulus": {
+          "amplitude_uA_per_cm3": 50000.0,
+          "start_ms": 0.0,
+          "duration_ms": 2.0,
+          "box_mm": [
+            1.5,
+            1.5,
+            1.5
+          ],
+          "marker": 1
+        },
+        "eikonal": {
+          "source": "stimulus box",
+          "delay_ms": 1.5146,
+          "cv_mm_per_ms": {
+            "fibre": 0.5728,
+            "sheet": 0.2104,
+            "normal": 0.2104
+          },
+          "foot": {
+            "A": 0.91,
+            "tau_F": 0.25,
+            "V_th": -30.0,
+            "duration": 5.0
+          }
+        }
+      },
+      "mechanics": {
+        "quadrature_degree": 4,
+        "u_space": "P_2",
+        "compressibility": "Incompressible",
+        "material": {
+          "model": "HolzapfelOgden",
+          "units": "SI base units (Pa)",
+          "a": 2280.0,
+          "b": 9.726,
+          "a_f": 1685.0,
+          "b_f": 15.779,
+          "a_s": 0.0,
+          "b_s": 0.0,
+          "a_fs": 0.0,
+          "b_fs": 0.0
+        },
+        "bcs": {
+          "X0": "u_x = 0",
+          "Y0": "u_y = 0",
+          "Z0": "u_z = 0",
+          "base": "free"
+        }
+      }
+    },
+    "cai": {
+      "split": "cai",
+      "scheme": "monolithic",
+      "ep_mode": "monodomain",
+      "dt_mech": 1.0,
+      "t_end": 400.0,
+      "output_dir": "/home/shared/examples/slab/output/splits/cai",
+      "save_every": 1.0,
+      "save_every_ep": 1.0,
+      "checkpoint_every": 50.0,
+      "restart": false,
+      "overwrite": true,
+      "dt_ep": 0.05,
+      "odefile": {
+        "path": "/home/shared/examples/odefiles/composed/torord_land_cai.ode",
+        "name": "torord_land_cai.ode",
+        "sha256": "fc77eae087138c3791ef94f82b65e298b938cb72a4692c7c00f4e8feb87fc641"
+      },
+      "cell_model": {
+        "source": "composed",
+        "split": "cai",
+        "glue_sha256": "f90070fa14fc669126962ea9699ca9254827e2508369f02b96d46e0e53689df5",
+        "odezoo": {
+          "torord_dyn_cl": "github-11e463d",
+          "land_2017": "github-6e5a5aa"
+        },
+        "land_calibration": {
+          "ca50_ref": 0.805,
+          "Tref": 120000.0,
+          "ku": 40.0,
+          "kuw": 182.0,
+          "kws": 12.0,
+          "nTm": 2.4
+        },
+        "initial_states": {
+          "B": 1.0
+        }
+      },
+      "geometry": {
+        "lx": 2.0,
+        "ly": 1.0,
+        "lz": 0.5,
+        "dx": 0.5,
+        "fiber_angle_endo": 0,
+        "fiber_angle_epi": 0,
+        "fiber_space": "DG_1",
+        "mesh_unit": "mm"
+      },
+      "ep": {
+        "ode_element": [
+          "P",
+          1
+        ],
+        "cell_scheme": "rush_larsen_2",
+        "splitting": "strang",
+        "chi_per_mm": 140.0,
+        "C_m_uF_per_mm2": 0.01,
+        "ode_parameters": {
+          "i_Stim_Amplitude": 0.0
+        },
+        "conductivities_S_per_m": {
+          "sigma_el": 0.62,
+          "sigma_et": 0.24,
+          "sigma_il": 0.17,
+          "sigma_it": 0.019
+        },
+        "stimulus": {
+          "amplitude_uA_per_cm3": 50000.0,
+          "start_ms": 0.0,
+          "duration_ms": 2.0,
+          "box_mm": [
+            1.5,
+            1.5,
+            1.5
+          ],
+          "marker": 1
+        },
+        "eikonal": {
+          "source": "stimulus box",
+          "delay_ms": 1.5146,
+          "cv_mm_per_ms": {
+            "fibre": 0.5728,
+            "sheet": 0.2104,
+            "normal": 0.2104
+          },
+          "foot": {
+            "A": 0.91,
+            "tau_F": 0.25,
+            "V_th": -30.0,
+            "duration": 5.0
+          }
+        }
+      },
+      "mechanics": {
+        "quadrature_degree": 4,
+        "u_space": "P_2",
+        "compressibility": "Incompressible",
+        "material": {
+          "model": "HolzapfelOgden",
+          "units": "SI base units (Pa)",
+          "a": 2280.0,
+          "b": 9.726,
+          "a_f": 1685.0,
+          "b_f": 15.779,
+          "a_s": 0.0,
+          "b_s": 0.0,
+          "a_fs": 0.0,
+          "b_fs": 0.0
+        },
+        "bcs": {
+          "X0": "u_x = 0",
+          "Y0": "u_y = 0",
+          "Z0": "u_z = 0",
+          "base": "free"
+        }
+      }
+    },
+    "catrpn": {
+      "split": "catrpn",
+      "scheme": "monolithic",
+      "ep_mode": "monodomain",
+      "dt_mech": 1.0,
+      "t_end": 400.0,
+      "output_dir": "/home/shared/examples/slab/output/splits/catrpn",
+      "save_every": 1.0,
+      "save_every_ep": 1.0,
+      "checkpoint_every": 50.0,
+      "restart": false,
+      "overwrite": true,
+      "dt_ep": 0.05,
+      "odefile": {
+        "path": "/home/shared/examples/odefiles/composed/torord_land_catrpn.ode",
+        "name": "torord_land_catrpn.ode",
+        "sha256": "dd5fa8eb4d2daedd25c92f261f9bd3c7e2c1d782bfb134e45eba2b95a7a8f6fe"
+      },
+      "cell_model": {
+        "source": "composed",
+        "split": "catrpn",
+        "glue_sha256": "f90070fa14fc669126962ea9699ca9254827e2508369f02b96d46e0e53689df5",
+        "odezoo": {
+          "torord_dyn_cl": "github-11e463d",
+          "land_2017": "github-6e5a5aa"
+        },
+        "land_calibration": {
+          "ca50_ref": 0.805,
+          "Tref": 120000.0,
+          "ku": 40.0,
+          "kuw": 182.0,
+          "kws": 12.0,
+          "nTm": 2.4
+        },
+        "initial_states": {
+          "B": 1.0
+        }
+      },
+      "geometry": {
+        "lx": 2.0,
+        "ly": 1.0,
+        "lz": 0.5,
+        "dx": 0.5,
+        "fiber_angle_endo": 0,
+        "fiber_angle_epi": 0,
+        "fiber_space": "DG_1",
+        "mesh_unit": "mm"
+      },
+      "ep": {
+        "ode_element": [
+          "P",
+          1
+        ],
+        "cell_scheme": "rush_larsen_2",
+        "splitting": "strang",
+        "chi_per_mm": 140.0,
+        "C_m_uF_per_mm2": 0.01,
+        "ode_parameters": {
+          "i_Stim_Amplitude": 0.0
+        },
+        "conductivities_S_per_m": {
+          "sigma_el": 0.62,
+          "sigma_et": 0.24,
+          "sigma_il": 0.17,
+          "sigma_it": 0.019
+        },
+        "stimulus": {
+          "amplitude_uA_per_cm3": 50000.0,
+          "start_ms": 0.0,
+          "duration_ms": 2.0,
+          "box_mm": [
+            1.5,
+            1.5,
+            1.5
+          ],
+          "marker": 1
+        },
+        "eikonal": {
+          "source": "stimulus box",
+          "delay_ms": 1.5146,
+          "cv_mm_per_ms": {
+            "fibre": 0.5728,
+            "sheet": 0.2104,
+            "normal": 0.2104
+          },
+          "foot": {
+            "A": 0.91,
+            "tau_F": 0.25,
+            "V_th": -30.0,
+            "duration": 5.0
+          }
+        }
+      },
+      "mechanics": {
+        "quadrature_degree": 4,
+        "u_space": "P_2",
+        "compressibility": "Incompressible",
+        "material": {
+          "model": "HolzapfelOgden",
+          "units": "SI base units (Pa)",
+          "a": 2280.0,
+          "b": 9.726,
+          "a_f": 1685.0,
+          "b_f": 15.779,
+          "a_s": 0.0,
+          "b_s": 0.0,
+          "a_fs": 0.0,
+          "b_fs": 0.0
+        },
+        "bcs": {
+          "X0": "u_x = 0",
+          "Y0": "u_y = 0",
+          "Z0": "u_z = 0",
+          "base": "free"
+        }
+      }
+    }
+  },
+  "command": [
+    "compare_splits.py",
+    "--media"
+  ],
+  "date": "2026-11-28T09:14:57+00:00"
+}

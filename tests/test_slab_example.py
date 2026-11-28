@@ -586,3 +586,81 @@ def test_slab_runs_each_composed_split(split, tmp_path):
     assert run["reached_t_end"] is True
     rows = list(csv.DictReader((tmp_path / "o" / "log.csv").open()))
     assert np.isfinite(float(rows[-1]["Ta_mean_kPa"]))
+
+
+def _compare_splits() -> ModuleType:
+    return _import("compare_splits")
+
+
+def _fabricated_traces(scale: dict[str, float]) -> dict[str, dict[str, np.ndarray]]:
+    """Traces of three splits on four times: zeta is a ramp per quantity, the others are
+    zeta plus a constant offset of ``scale[quantity]`` times zeta's peak at the last time."""
+    t = np.array([0.0, 1.0, 2.0, 3.0])
+    base = {
+        "v_mean_mV": np.array([-80.0, -40.0, 20.0, -80.0]),
+        "cai_mean": np.array([1.0, 2.0, 4.0, 1.0]),
+        "Ta_mean_kPa": np.array([0.0, 5.0, 10.0, 2.0]),
+        "lmbda_mean": np.array([1.0, 0.99, 0.9, 1.0]),
+    }
+    traces = {"zeta": {"t_ms": t, **base}}
+    for split, offset in (("cai", 1.0), ("catrpn", 2.0)):
+        traces[split] = {"t_ms": t}
+        for name, values in base.items():
+            shifted = values.copy()
+            shifted[2] += offset * scale[name] * np.max(np.abs(values))
+            traces[split][name] = shifted
+    return traces
+
+
+def test_relative_differences_are_relative_to_the_peak_of_the_zeta_split():
+    cs = _compare_splits()
+    traces = _fabricated_traces(
+        {"v_mean_mV": 0.01, "cai_mean": 0.02, "Ta_mean_kPa": 0.03, "lmbda_mean": 0.04},
+    )
+    diff = cs.relative_differences(traces)
+    assert set(diff) == {"cai", "catrpn"}
+    # The offset is added at one time to the zeta split's values: relative to zeta's peak.
+    assert diff["cai"]["Ta_mean_kPa"] == pytest.approx(0.03)
+    assert diff["cai"]["lmbda_mean"] == pytest.approx(0.04)
+    assert diff["cai"]["v_mean_mV"] == pytest.approx(0.01)
+    assert diff["catrpn"]["cai_mean"] == pytest.approx(0.04)
+    assert diff["catrpn"]["Ta_mean_kPa"] == pytest.approx(0.06)
+
+
+def test_relative_difference_series_skips_unsaved_times():
+    cs = _compare_splits()
+    traces = _fabricated_traces(
+        {"v_mean_mV": 0.0, "cai_mean": 0.0, "Ta_mean_kPa": 0.1, "lmbda_mean": 0.0},
+    )
+    traces["cai"]["Ta_mean_kPa"][0] = np.nan
+    series = cs.difference_series(traces)["cai"]["Ta_mean_kPa"]
+    assert np.isnan(series[0])
+    assert series[2] == pytest.approx(0.1)
+    assert cs.relative_differences(traces)["cai"]["Ta_mean_kPa"] == pytest.approx(0.1)
+
+
+def test_compare_splits_figure_has_five_rows(tmp_path):
+    pytest.importorskip("matplotlib")
+    cs = _compare_splits()
+    traces = _fabricated_traces(
+        {"v_mean_mV": 0.01, "cai_mean": 0.0, "Ta_mean_kPa": 0.0, "lmbda_mean": 0.0},
+    )
+    path = tmp_path / "splits.png"
+    cs.write_figure(path, traces)
+    assert path.stat().st_size > 1000
+
+
+def test_compare_splits_skips_the_done_runs_and_redoes_the_rest(tmp_path):
+    cs = _compare_splits()
+    done = tmp_path / "zeta"
+    done.mkdir()
+    (done / "run.json").write_text(json.dumps({"failure": None}))
+    interrupted = tmp_path / "cai"
+    interrupted.mkdir()
+    (interrupted / "run.json").write_text(json.dumps({"failure": "KeyboardInterrupt()"}))
+    assert cs.pending_splits(tmp_path, ("zeta", "cai", "catrpn")) == ["cai", "catrpn"]
+    assert cs.pending_splits(tmp_path, ("zeta", "cai", "catrpn"), overwrite=True) == [
+        "zeta",
+        "cai",
+        "catrpn",
+    ]

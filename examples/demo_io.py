@@ -497,6 +497,7 @@ def animate(
     fps: int = 8,
     size: tuple[int, int] = (640, 360),
     caption: Callable[[int], str] | None = None,
+    zoom_out: float = 1.0,
 ) -> Path | None:
     """Write a GIF at ``path``: one subplot per mesh, off screen, ``n_frames`` frames.
 
@@ -509,7 +510,8 @@ def animate(
     Returns ``None``, after :func:`media_available` has warned, when pyvista or imageio
     is missing. ``size`` is the window in pixels, whose width is at most 640; the
     function warns if the file exceeds 2 MB. ``caption(i)``, if given, is drawn top right
-    on frame ``i``.
+    on frame ``i`` (in the last subplot). ``zoom_out`` scales the camera's distance, for
+    narrow subplots.
     """
     if size[0] > MAX_GIF_WIDTH:
         raise ValueError(f"a GIF is at most {MAX_GIF_WIDTH} px wide, not {size[0]}")
@@ -551,7 +553,7 @@ def animate(
         lo, hi = np.array(grid.bounds[::2]), np.array(grid.bounds[1::2])
         centre, diagonal = (lo + hi) / 2, float(np.linalg.norm(hi - lo))
         plotter.camera_position = [
-            tuple(centre + diagonal * np.array([-0.6, -1.0, 0.8])),
+            tuple(centre + zoom_out * diagonal * np.array([-0.6, -1.0, 0.8])),
             tuple(centre),
             (0.0, 0.0, 1.0),
         ]
@@ -562,7 +564,7 @@ def animate(
         title=scalar,
         mapper=actor.mapper,
         vertical=False,
-        n_labels=5,
+        n_labels=5 if len(meshes) == 1 else 3,
         fmt="%.3g",
         position_x=0.3,
         position_y=0.02,
@@ -579,7 +581,7 @@ def animate(
                 boundary.points = (rest if u is None else rest + u)[dofs]
                 boundary[scalar] = np.asarray(values)[dofs]
             if caption is not None:
-                plotter.subplot(0, 0)
+                plotter.subplot(0, len(meshes) - 1)
                 plotter.add_text(caption(i), position="upper_right", font_size=9, name="caption")
             plotter.write_frame()
     finally:
