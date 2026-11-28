@@ -496,6 +496,7 @@ def animate(
     clim: tuple[float, float],
     fps: int = 8,
     size: tuple[int, int] = (640, 360),
+    caption: Callable[[int], str] | None = None,
 ) -> Path | None:
     """Write a GIF at ``path``: one subplot per mesh, off screen, ``n_frames`` frames.
 
@@ -507,7 +508,8 @@ def animate(
 
     Returns ``None``, after :func:`media_available` has warned, when pyvista or imageio
     is missing. ``size`` is the window in pixels, whose width is at most 640; the
-    function warns if the file exceeds 2 MB.
+    function warns if the file exceeds 2 MB. ``caption(i)``, if given, is drawn top right
+    on frame ``i``.
     """
     if size[0] > MAX_GIF_WIDTH:
         raise ValueError(f"a GIF is at most {MAX_GIF_WIDTH} px wide, not {size[0]}")
@@ -576,6 +578,9 @@ def animate(
             for (boundary, dofs, rest), (u, values) in zip(surfaces, frame(i)):
                 boundary.points = (rest if u is None else rest + u)[dofs]
                 boundary[scalar] = np.asarray(values)[dofs]
+            if caption is not None:
+                plotter.subplot(0, 0)
+                plotter.add_text(caption(i), position="upper_right", font_size=9, name="caption")
             plotter.write_frame()
     finally:
         plotter.close()
@@ -596,7 +601,7 @@ def write_media_provenance(
     UTC ``date``. Returns the path."""
     folder.mkdir(parents=True, exist_ok=True)
     record = {
-        "provenance": provenance(Path.cwd()),
+        "provenance": provenance(Path(__file__).resolve().parent),
         "runs": {
             name: read_resolved_settings(Path(d) / "config.resolved.toml")
             for name, d in output_dirs.items()

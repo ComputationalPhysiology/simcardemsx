@@ -95,7 +95,7 @@ def write_fields_and_traces(
     functions: Mapping[str, dolfinx.fem.Function],
     saved: Mapping[str, Mapping[float, np.ndarray]],
     quadrature_degree: int,
-    frames: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    frames: list[tuple[float, np.ndarray, np.ndarray]] | None = None,
 ) -> dict[str, np.ndarray]:
     """Write ``fields.bp`` and ``traces.csv`` into ``post_dir``; return the traces as
     columns, by :data:`TRACE_FIELDS`.
@@ -103,7 +103,7 @@ def write_fields_and_traces(
     ``functions`` are :func:`result_functions`'s, and ``saved`` their values by name
     and time, as :func:`~simcardemsx.results.read_results` returns them. The volume
     means are taken at ``quadrature_degree``, the mechanics form's. If ``frames`` is
-    given, ``(u, Ta)`` on P1 (``(n, 3)`` and ``(n,)``) is appended for every time ``Ta`` was
+    given, ``(t, u, Ta)`` on P1 (``(n, 3)`` and ``(n,)``) is appended for every time ``Ta`` was
     saved.
     """
     v, lmbda, tension, cai = (functions[name] for name in ("v", "lmbda", "tension_kPa", "cai"))
@@ -140,7 +140,7 @@ def write_fields_and_traces(
         if t in saved["tension_kPa"]:
             row["Ta_point_kPa"], row["Ta_mean_kPa"] = at_point(p1["Ta"]), mean("Ta")
             if frames is not None:
-                frames.append((p1["u"].x.array.reshape(-1, 3).copy(), p1["Ta"].x.array.copy()))
+                frames.append((t, p1["u"].x.array.reshape(-1, 3).copy(), p1["Ta"].x.array.copy()))
         rows.append(row)
 
     write_p1_fields(
@@ -219,7 +219,7 @@ def write_plots(
 def write_media(
     media_dir: Path,
     mesh: dolfinx.mesh.Mesh,
-    frames: Sequence[tuple[np.ndarray, np.ndarray]],
+    frames: Sequence[tuple[float, np.ndarray, np.ndarray]],
     output_dir: Path,
     command: Sequence[str],
 ) -> None:
@@ -231,15 +231,16 @@ def write_media(
         raise SystemExit("--media needs Ta saved at some time: the run saved none")
     step = -(-len(frames) // MAX_FRAMES)
     shown = list(frames[::step])
-    top = max(float(max(Ta.max() for _, Ta in shown)), 1e-3)
+    top = max(float(max(Ta.max() for _, _, Ta in shown)), 1e-3)
     animate(
         media_dir / "slab.gif",
         [mesh],
-        lambda i: [shown[i]],
+        lambda i: [shown[i][1:]],
         len(shown),
         titles=["slab, warped by u, coloured by Ta"],
         scalar="Ta [kPa]",
         clim=(0.0, top),
+        caption=lambda i: f"t = {shown[i][0]:.0f} ms",
     )
     write_media_provenance(media_dir, {"slab": output_dir}, command)
 
@@ -276,7 +277,7 @@ def main(argv: list[str] | None = None) -> None:
     post_dir = folder / "post"
     shutil.rmtree(post_dir, ignore_errors=True)
     post_dir.mkdir()
-    frames: list[tuple[np.ndarray, np.ndarray]] = []
+    frames: list[tuple[float, np.ndarray, np.ndarray]] = []
     traces = write_fields_and_traces(
         post_dir,
         functions,
