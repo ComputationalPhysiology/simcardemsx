@@ -33,6 +33,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -54,7 +55,7 @@ QUANTITIES = {
     "lmbda_mean": "stretch",
 }
 #: The line style of each quantity in the difference row, where colour is the split's.
-DIFFERENCE_STYLES = {
+DIFFERENCE_STYLES: dict[str, Literal["-", "--", "-.", ":"]] = {
     "v_mean_mV": "-",
     "cai_mean": "--",
     "Ta_mean_kPa": "-.",

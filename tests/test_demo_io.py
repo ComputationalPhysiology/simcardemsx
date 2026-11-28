@@ -238,6 +238,17 @@ def test_write_media_provenance(tmp_path, monkeypatch):
     run.mkdir()
     (run / "config.resolved.toml").write_text('scheme = "stabilized"\n[mechanics]\ndt = 1.0\n')
     folder = tmp_path / "media"
+    # The git state is the repository's, not the working directory's: record where
+    # provenance() is asked to look, since git itself may refuse to read the checkout
+    # (CI's container runs as another user than the one owning it).
+    asked = []
+    real = demo_io.provenance
+
+    def recording(cwd, *args, **kwargs):
+        asked.append(Path(cwd))
+        return real(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(demo_io, "provenance", recording)
     monkeypatch.chdir(tmp_path)  # outside the repository
     path = demo_io.write_media_provenance(folder, {"a": run}, ["python", "post.py", "--media"])
     data = json.loads(path.read_text())
@@ -245,7 +256,8 @@ def test_write_media_provenance(tmp_path, monkeypatch):
     assert data["command"] == ["python", "post.py", "--media"]
     assert data["runs"]["a"]["scheme"] == "stabilized"
     assert data["runs"]["a"]["mechanics"]["dt"] == 1.0
-    assert data["provenance"]["git_commit"]
+    assert asked and all(c.is_relative_to(demo_io.REPOSITORY) for c in asked), asked
+    assert data["provenance"]["git_commit"] == real(demo_io.REPOSITORY)["git_commit"]
     assert "versions" in data["provenance"]
     assert data["date"].startswith("20")
 
