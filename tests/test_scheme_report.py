@@ -555,3 +555,27 @@ def test_report_lists_a_truncated_run_json(report, modules, tmp_path):
     assert "No load problems" not in text
     (line,) = [line for line in text.splitlines() if str(bad) in line]
     assert "unreadable JSON" in line
+
+
+def test_media_copies_each_groups_figures_and_writes_provenance(
+    report,
+    modules,
+    tmp_path,
+    monkeypatch,
+):
+    """``--media`` copies ``<stem>_error_vs_dt.png`` and ``<stem>_timeseries.png`` of every
+    group, and writes a ``provenance.json`` that records the runs' ``run.json``."""
+    _small_root(modules[1], tmp_path / "runs", biv=False)
+    out = tmp_path / "out"
+    report.build_report(tmp_path / "runs", out)
+    media = tmp_path / "media"
+    monkeypatch.chdir(tmp_path)
+    report.copy_media(tmp_path / "runs", out, media, ["report.py", "--media", "media"])
+    names = {p.name for p in media.glob("*.png")}
+    stems = {f"{g}_{grp}" for g, grp in report.discover(tmp_path / "runs")}
+    assert stems
+    assert names == {f"{s}_{kind}.png" for s in stems for kind in ("error_vs_dt", "timeseries")}
+    data = json.loads((media / "provenance.json").read_text())
+    assert data["command"] == ["report.py", "--media", "media"]
+    assert data["runs"]
+    assert all("scheme" in v for v in data["runs"].values())

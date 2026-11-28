@@ -592,6 +592,13 @@ def animate(
     return path
 
 
+def _run_settings(folder: Path) -> dict[str, Any]:
+    toml = folder / "config.resolved.toml"
+    if toml.exists():
+        return read_resolved_settings(toml)
+    return json.loads((folder / "run.json").read_text())
+
+
 def write_media_provenance(
     folder: Path,
     output_dirs: Mapping[str, Path],
@@ -599,15 +606,13 @@ def write_media_provenance(
 ) -> Path:
     """Write ``folder/provenance.json`` for the media in ``folder``: this process's
     :func:`~simcardemsx.provenance.provenance` (``provenance``), the settings of each
-    named run (``runs``, from its ``config.resolved.toml``), the ``command`` line and the
-    UTC ``date``. Returns the path."""
+    named run (``runs``, from its ``config.resolved.toml``, or from its ``run.json`` for a
+    run that has none, such as a one-element study), the ``command`` line and the UTC
+    ``date``. Returns the path."""
     folder.mkdir(parents=True, exist_ok=True)
     record = {
         "provenance": provenance(Path(__file__).resolve().parent),
-        "runs": {
-            name: read_resolved_settings(Path(d) / "config.resolved.toml")
-            for name, d in output_dirs.items()
-        },
+        "runs": {name: _run_settings(Path(d)) for name, d in output_dirs.items()},
         "command": list(command),
         "date": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }

@@ -248,3 +248,13 @@ def test_write_media_provenance(tmp_path, monkeypatch):
     assert data["provenance"]["git_commit"]
     assert "versions" in data["provenance"]
     assert data["date"].startswith("20")
+
+
+def test_write_media_provenance_falls_back_to_run_json(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "run.json").write_text('{"scheme": "stabilized", "dt_mech_ms": 1.0}')
+    monkeypatch.chdir(tmp_path)
+    path = demo_io.write_media_provenance(tmp_path / "media", {"a": run}, ["x"])
+    data = json.loads(path.read_text())
+    assert data["runs"]["a"] == {"scheme": "stabilized", "dt_mech_ms": 1.0}
