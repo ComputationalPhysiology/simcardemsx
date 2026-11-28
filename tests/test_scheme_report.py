@@ -39,6 +39,19 @@ def report(modules):
     return modules[0]
 
 
+@pytest.fixture(scope="module")
+def demo_io():
+    """``examples/demo_io``, which ``report.copy_media`` imports lazily, imported while
+    ``examples/`` is on the path, as it is when ``report.py`` runs as a script. Without
+    it the media tests pass only after another test has imported ``demo_io``."""
+    saved = list(sys.path)
+    sys.path.insert(0, str(EXAMPLES))
+    try:
+        return importlib.import_module("demo_io")
+    finally:
+        sys.path[:] = saved
+
+
 # --------------------------------------------------------------------------------------
 # Fabricated runs
 # --------------------------------------------------------------------------------------
@@ -560,6 +573,7 @@ def test_report_lists_a_truncated_run_json(report, modules, tmp_path):
 def test_media_copies_each_groups_figures_and_writes_provenance(
     report,
     modules,
+    demo_io,
     tmp_path,
     monkeypatch,
 ):
@@ -584,6 +598,7 @@ def test_media_copies_each_groups_figures_and_writes_provenance(
 def test_media_provenance_is_taken_before_the_figures_are_copied(
     report,
     modules,
+    demo_io,
     tmp_path,
     monkeypatch,
 ):
@@ -593,8 +608,6 @@ def test_media_provenance_is_taken_before_the_figures_are_copied(
     out = tmp_path / "out"
     report.build_report(tmp_path / "runs", out)
     media = tmp_path / "media"
-    import demo_io
-
     seen: list[list[str]] = []
 
     def drawing_provenance():
