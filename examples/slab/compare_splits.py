@@ -312,11 +312,13 @@ def write_media(root: Path, splits: Sequence[str], command: Sequence[str]) -> No
     """Copy ``splits.png`` and write ``splits.gif`` and ``provenance.json`` into
     :data:`MEDIA`: the splits' slabs side by side, warped by ``u`` and coloured by ``Ta``
     on one range, one frame per saved mechanics time (at most :data:`MAX_FRAMES`)."""
-    from demo_io import animate, media_available, write_media_provenance
+    from demo_io import animate, drawing_provenance, media_available, write_media_provenance
 
     from simcardemsx.results import read_resolved_settings, read_results
     from slab import post
 
+    # Before any medium is written: the media would make the tree dirty themselves.
+    drawn = drawing_provenance()
     MEDIA.mkdir(parents=True, exist_ok=True)
     shutil.copy(root / "splits.png", MEDIA / "splits.png")
     if media_available():
@@ -360,7 +362,7 @@ def write_media(root: Path, splits: Sequence[str], command: Sequence[str]) -> No
             size=(640, 270),
             zoom_out=1.8,
         )
-    write_media_provenance(MEDIA, {s: root / s for s in splits}, command)
+    write_media_provenance(MEDIA, {s: root / s for s in splits}, command, drawn=drawn)
 
 
 def main(argv: list[str] | None = None) -> None:

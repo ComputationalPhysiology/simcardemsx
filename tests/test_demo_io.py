@@ -300,3 +300,17 @@ def test_write_media_provenance_records_paths_relative_to_the_repository(tmp_pat
     assert record["odefile"]["path"] == "examples/odefiles/composed/torord_land_zeta.ode"
     assert record["elsewhere"] == str(tmp_path)
     assert data["command"] == ["compare_splits.py", "--root", "examples/slab/output/splits"]
+
+
+def test_write_media_provenance_records_the_drawing_provenance_it_is_given(tmp_path):
+    """A caller takes :func:`demo_io.drawing_provenance` before it writes any medium (which
+    would itself make the tree dirty) and passes it in; it is recorded as given."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "config.resolved.toml").write_text('scheme = "stabilized"\n')
+    drawn = {"git_commit": "abc123", "git_dirty": False}
+    data = json.loads(
+        demo_io.write_media_provenance(tmp_path / "m", {"a": run}, ["x"], drawn=drawn).read_text(),
+    )
+    assert data["provenance"] == drawn
+    assert {"git_commit", "git_dirty", "versions"} <= set(demo_io.drawing_provenance())

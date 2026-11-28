@@ -49,6 +49,7 @@ from demo_io import (  # noqa: E402
     Panel,
     animate,
     cell_containing,
+    drawing_provenance,
     figure,
     media_available,
     plots_available,
@@ -230,6 +231,7 @@ def write_media(
         return
     if not frames:
         raise SystemExit("--media needs Ta saved at some time: the run saved none")
+    drawn = drawing_provenance()  # before the GIF, which would make the tree dirty itself
     step = -(-len(frames) // MAX_FRAMES)
     shown = list(frames[::step])
     top = max(float(max(Ta.max() for _, _, Ta in shown)), 1e-3)
@@ -243,7 +245,7 @@ def write_media(
         clim=(0.0, top),
         caption=lambda i: f"t = {shown[i][0]:.0f} ms",
     )
-    write_media_provenance(media_dir, {"slab": output_dir}, command)
+    write_media_provenance(media_dir, {"slab": output_dir}, command, drawn=drawn)
 
 
 def main(argv: list[str] | None = None) -> None:

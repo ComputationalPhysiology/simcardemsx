@@ -579,3 +579,30 @@ def test_media_copies_each_groups_figures_and_writes_provenance(
     assert data["command"] == ["report.py", "--media", "media"]
     assert data["runs"]
     assert all("scheme" in v for v in data["runs"].values())
+
+
+def test_media_provenance_is_taken_before_the_figures_are_copied(
+    report,
+    modules,
+    tmp_path,
+    monkeypatch,
+):
+    """The copied figures would make the tree dirty themselves, so the provenance of the
+    code that draws them is taken before any is copied."""
+    _small_root(modules[1], tmp_path / "runs", biv=False)
+    out = tmp_path / "out"
+    report.build_report(tmp_path / "runs", out)
+    media = tmp_path / "media"
+    import demo_io
+
+    seen: list[list[str]] = []
+
+    def drawing_provenance():
+        seen.append(sorted(p.name for p in media.glob("*")) if media.exists() else [])
+        return {"git_commit": "abc123", "git_dirty": False}
+
+    monkeypatch.setattr(demo_io, "drawing_provenance", drawing_provenance)
+    report.copy_media(tmp_path / "runs", out, media, ["report.py", "--media", "media"])
+    assert seen == [[]]
+    data = json.loads((media / "provenance.json").read_text())
+    assert data["provenance"] == {"git_commit": "abc123", "git_dirty": False}

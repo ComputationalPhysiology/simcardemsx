@@ -773,3 +773,66 @@ def test_compare_splits_refuses_a_done_run_of_another_length_or_step(tmp_path, t
         dt_mech=1.0,
         overwrite=True,
     ) == ["zeta", "cai"]
+
+
+def _demo_io() -> ModuleType:
+    sys.path.insert(0, str(EXAMPLES))
+    try:
+        return importlib.import_module("demo_io")
+    finally:
+        sys.path.remove(str(EXAMPLES))
+
+
+def _drawing_recorder(media: Path, monkeypatch, module) -> list[list[str]]:
+    """Replace ``module.drawing_provenance`` by one that records which files ``media``
+    held when it was called, and returns a clean provenance."""
+    seen: list[list[str]] = []
+
+    def drawing_provenance():
+        seen.append(sorted(p.name for p in media.glob("*")) if media.exists() else [])
+        return {"git_commit": "abc123", "git_dirty": False}
+
+    monkeypatch.setattr(module, "drawing_provenance", drawing_provenance)
+    return seen
+
+
+def test_compare_splits_takes_the_drawing_provenance_before_writing_media(tmp_path, monkeypatch):
+    """The media would make the tree dirty themselves, so the provenance of the code that
+    draws them is taken before ``splits.png`` is copied (here without pyvista, so only the
+    figure and ``provenance.json`` are written)."""
+    cs, demo_io = _compare_splits(), _demo_io()
+    root, media = tmp_path / "runs", tmp_path / "media"
+    root.mkdir()
+    (root / "splits.png").write_bytes(b"png")
+    for split in ("zeta", "cai"):
+        (root / split).mkdir()
+        (root / split / "config.resolved.toml").write_text(f'split = "{split}"\n')
+    monkeypatch.setattr(cs, "MEDIA", media)
+    monkeypatch.setattr(demo_io, "media_available", lambda: False)
+    seen = _drawing_recorder(media, monkeypatch, demo_io)
+    cs.write_media(root, ("zeta", "cai"), ["compare_splits.py", "--media"])
+    assert seen == [[]]
+    data = json.loads((media / "provenance.json").read_text())
+    assert data["provenance"] == {"git_commit": "abc123", "git_dirty": False}
+    assert set(data["runs"]) == {"zeta", "cai"}
+    assert (media / "splits.png").read_bytes() == b"png"
+
+
+def test_post_takes_the_drawing_provenance_before_writing_the_gif(tmp_path, monkeypatch):
+    post = _post()
+    run, media = tmp_path / "run", tmp_path / "media"
+    run.mkdir()
+    (run / "config.resolved.toml").write_text('split = "zeta"\n')
+    monkeypatch.setattr(post, "media_available", lambda: True)
+
+    def animate(path, *args, **kwargs):  # as demo_io.animate, which makes its folder
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"gif")
+
+    monkeypatch.setattr(post, "animate", animate)
+    seen = _drawing_recorder(media, monkeypatch, post)
+    frames = [(0.0, np.zeros((1, 3)), np.zeros(1))]
+    post.write_media(media, None, frames, run, ["post.py", "--media"])
+    assert seen == [[]]
+    data = json.loads((media / "provenance.json").read_text())
+    assert data["provenance"] == {"git_commit": "abc123", "git_dirty": False}

@@ -628,21 +628,30 @@ def _run_record(folder: Path) -> dict[str, Any]:
     return record
 
 
+def drawing_provenance() -> dict[str, Any]:
+    """:func:`~simcardemsx.provenance.provenance` of the repository, for the code that draws
+    media. Take it before writing any medium: a medium rewritten in a tracked folder makes
+    the tree dirty by itself."""
+    return provenance(REPOSITORY / "examples")
+
+
 def write_media_provenance(
     folder: Path,
     output_dirs: Mapping[str, Path],
     command: Sequence[str],
+    drawn: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Write ``folder/provenance.json`` for the media in ``folder``: this process's
-    :func:`~simcardemsx.provenance.provenance` (``provenance``: the commit that drew the
-    media), each named run (``runs``: its settings, from its ``config.resolved.toml``, or
+    """Write ``folder/provenance.json`` for the media in ``folder``: ``drawn``, the
+    :func:`drawing_provenance` the caller took before it wrote any medium, or, if it is
+    ``None``, this process's taken now (``provenance``: the commit that drew the media),
+    each named run (``runs``: its settings, from its ``config.resolved.toml``, or
     from its ``run.json`` for a run that has none, such as a one-element study, and its
     ``run.json``'s ``provenance`` and ``history``: the commits that ran it), the
     ``command`` line and the UTC ``date``. Paths under the repository are recorded
     relative to its root. Returns the path."""
     folder.mkdir(parents=True, exist_ok=True)
     record = {
-        "provenance": provenance(REPOSITORY / "examples"),
+        "provenance": dict(drawn) if drawn is not None else drawing_provenance(),
         "runs": {name: _run_record(Path(d)) for name, d in output_dirs.items()},
         "command": list(command),
         "date": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
