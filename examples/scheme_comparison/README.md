@@ -45,9 +45,9 @@ python3 report.py --root output --media media
 `report.py --media` copies each group's error-against-dt and time-series figures into
 `media/` and writes `media/provenance.json`: the git commit and whether the tree was
 dirty, the library versions, the command, the date, and the `run.json` of every run (the
-one-element runs have no `config.resolved.toml`). The naive `segregated` scheme (open
-squares: the run failed and was truncated) does not converge, while `stabilized` converges
-at first order and `monolithic` is the most accurate. See the
+one-element runs have no `config.resolved.toml`). The figures were computed locally, not by CI. The
+naive `segregated` scheme does not converge: its open squares are runs that failed and were
+truncated. `stabilized` converges at first order and `monolithic` is the most accurate. See the
 [single-element tutorial](https://computationalphysiology.github.io/simcardemsx/single-element/)
 for the one-element problem.
 

@@ -17,9 +17,9 @@ by the displacement and colored by the active tension `Ta`, on one color range:
 
 ![v, cai, Ta and the stretch of the three splits, and their differences](media/splits.png)
 
-Made by `python3 compare_splits.py --media` (400 ms, `--dt-mech 1`), at commit `3d4b61c`
-with the script and this README uncommitted at the time (`provenance.json` records
-`git_dirty`, the versions and each run's settings). **Computed locally, not by CI.**
+Made by `python3 compare_splits.py --media` (400 ms, `--dt-mech 1`), at commit `ae0c6f1`
+on a clean tree (`provenance.json` records `git_dirty: false`, the versions and each run's
+settings). **Computed locally, not by CI.**
 
 The splits are not the same model solved three times, but three ways of cutting one model, with
 different things crossing between EP and mechanics, so they differ numerically. Measured, as the
@@ -30,8 +30,8 @@ largest `|x − x_zeta| / max|x_zeta|` over time of each volume mean:
 | `cai` | 8.0e-3 | 3.4e-2 | 3.5e-2 | 3.6e-3 |
 | `catrpn` | 1.0e-3 | 4.2e-3 | 1.3e-2 | 2.6e-3 |
 
-The splits agree to within a few percent of the peak in `Ta` and `cai` (the Ca_i split's `Ta`
-peaks visibly higher), within 0.4% in the stretch and within 1% in `v`. Which split to use
+The splits agree to within a few percent of the peak in `Ta` and `cai` (the largest `Ta`
+difference is the Ca_i split's, 3.5e-2 of zeta's peak), within 0.4% in the stretch and within 1% in `v`. Which split to use
 is a numerical choice, not a modelling one, and the differences above are its size on this slab.
 They are measured on volume means of one 400 ms beat, not a bound for other geometries.
 

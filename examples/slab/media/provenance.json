@@ -1,7 +1,7 @@
 {
   "provenance": {
-    "git_commit": "3d4b61c5046be5d031ca6b1e8b0ec07e0068edcd",
-    "git_dirty": true,
+    "git_commit": "ae0c6f1a13cedfc9adae34ae650e56cdfab10ba7",
+    "git_dirty": false,
     "versions": {
       "simcardemsx": "0.1.0",
       "fenics-dolfinx": "0.11.0.post0",
@@ -14,7 +14,7 @@
       "petsc4py": "3.25.1"
     },
     "n_ranks": 1,
-    "utc": "2026-11-28T09:14:57.928570+00:00"
+    "utc": "2026-11-28T09:22:44.760965+00:00"
   },
   "runs": {
     "zeta": {
@@ -373,5 +373,5 @@
     "compare_splits.py",
     "--media"
   ],
-  "date": "2026-11-28T09:14:57+00:00"
+  "date": "2026-11-28T09:22:44+00:00"
 }
