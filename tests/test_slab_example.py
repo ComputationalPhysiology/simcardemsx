@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 
@@ -87,9 +88,13 @@ def _run_slab(
     return _run_example(*CROSSBRIDGE, *args, output_dir=output_dir, seed=seed)
 
 
-def _run_post(output_dir: Path, *python_args: str) -> subprocess.CompletedProcess:
+def _run_post(
+    output_dir: Path,
+    *python_args: str,
+    post_args: Sequence[str] = (),
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, *python_args, "post.py", "--output-dir", str(output_dir)],
+        [sys.executable, *python_args, "post.py", "--output-dir", str(output_dir), *post_args],
         cwd=EXAMPLE_DIR,
         capture_output=True,
         text=True,
@@ -397,6 +402,14 @@ def test_slab_post_regenerates_the_plots(tmp_path):
     assert result.returncode == 0, result.stderr[-3000:]
     for name in POST_FILES:
         assert (output_dir / "post" / name).exists(), name
+
+    # --media: one run's GIF and provenance, outside post/ (the default folder is not
+    # touched by the test).
+    media = tmp_path / "media"
+    result = _run_post(output_dir, post_args=["--media", "--media-dir", str(media)])
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert (media / "slab.gif").stat().st_size < 2_000_000
+    assert "slab" in json.loads((media / "provenance.json").read_text())["runs"]
 
     with (output_dir / "post" / "traces.csv").open() as f:
         rows = list(csv.DictReader(f))

@@ -169,3 +169,77 @@ def test_write_p1_fields_averages_a_dg_source(tmp_path, shape):
     interpolated.interpolate(source)
     assert not np.allclose(shown[0.0], interpolated.x.array)
     assert (tmp_path / "fields.bp").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# media: off-screen GIFs and their provenance
+# ---------------------------------------------------------------------------
+
+
+def _cube():
+    return dolfinx.mesh.create_unit_cube(MPI.COMM_SELF, 2, 2, 2)
+
+
+def test_animate_writes_a_small_gif(tmp_path):
+    pytest.importorskip("pyvista")
+    imageio = pytest.importorskip("imageio")
+    mesh = _cube()
+    space = dolfinx.fem.functionspace(mesh, ("P", 1))
+    n = space.dofmap.index_map.size_local
+    out = demo_io.animate(
+        tmp_path / "m.gif",
+        [mesh],
+        lambda i: [(None, np.full(n, float(i)))],
+        3,
+        titles=["t"],
+        scalar="x",
+        clim=(0.0, 2.0),
+    )
+    assert out is not None and out.stat().st_size < 2_000_000
+    shape = imageio.v3.improps(out).shape
+    assert shape[0] == 3 and shape[2] <= 640
+
+
+def test_animate_refuses_wide_gifs(tmp_path):
+    mesh = _cube()
+    with pytest.raises(ValueError, match="640"):
+        demo_io.animate(
+            tmp_path / "m.gif",
+            [mesh],
+            lambda i: [],
+            1,
+            titles=["t"],
+            scalar="x",
+            clim=(0.0, 1.0),
+            size=(800, 360),
+        )
+
+
+def test_media_skip_without_pyvista(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pyvista", None)
+    with pytest.warns(UserWarning, match="pyvista"):
+        out = demo_io.animate(
+            tmp_path / "m.gif",
+            [_cube()],
+            lambda i: [],
+            1,
+            titles=["t"],
+            scalar="x",
+            clim=(0.0, 1.0),
+        )
+    assert out is None and not (tmp_path / "m.gif").exists()
+
+
+def test_write_media_provenance(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "config.resolved.toml").write_text('scheme = "stabilized"\n[mechanics]\ndt = 1.0\n')
+    folder = tmp_path / "media"
+    path = demo_io.write_media_provenance(folder, {"a": run}, ["python", "post.py", "--media"])
+    data = json.loads(path.read_text())
+    assert path == folder / "provenance.json"
+    assert data["command"] == ["python", "post.py", "--media"]
+    assert data["runs"]["a"]["scheme"] == "stabilized"
+    assert data["runs"]["a"]["mechanics"]["dt"] == 1.0
+    assert "git_commit" in data["provenance"] and "versions" in data["provenance"]
+    assert data["date"].startswith("20")

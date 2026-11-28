@@ -16,6 +16,10 @@ coupled problem), and writes ``post/``, replacing it whole:
 - ``log.png``: the Newton iterations and the mean stretch of every mechanics step, from
   ``log.csv``.
 
+With ``--media``, also ``media/slab.gif`` (the slab warped by ``u``, coloured by ``Ta``,
+one frame per saved mechanics time, at most 100) and ``media/provenance.json``, in
+``examples/slab/media/`` (or ``--media-dir``), outside ``post/``.
+
 Without matplotlib the plots are skipped, with a warning, and the rest is written.
 Serial only.
 """
@@ -41,9 +45,12 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 from demo_io import (  # noqa: E402
     Panel,
+    animate,
     cell_containing,
     figure,
+    media_available,
     plots_available,
+    write_media_provenance,
     write_p1_fields,
 )
 from demo_io import result_functions as demo_result_functions  # noqa: E402
@@ -52,6 +59,8 @@ from slab import main as slab  # noqa: E402
 
 #: Where the traces are taken: ``DataCollector``'s point, a corner of the slab.
 POINT = (0.0, 0.0, 0.0)
+MEDIA = HERE / "media"
+MAX_FRAMES = 100
 TRACE_FIELDS = (
     "t_ms",
     "v_point_mV",
@@ -86,13 +95,16 @@ def write_fields_and_traces(
     functions: Mapping[str, dolfinx.fem.Function],
     saved: Mapping[str, Mapping[float, np.ndarray]],
     quadrature_degree: int,
+    frames: list[tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> dict[str, np.ndarray]:
     """Write ``fields.bp`` and ``traces.csv`` into ``post_dir``; return the traces as
     columns, by :data:`TRACE_FIELDS`.
 
     ``functions`` are :func:`result_functions`'s, and ``saved`` their values by name
     and time, as :func:`~simcardemsx.results.read_results` returns them. The volume
-    means are taken at ``quadrature_degree``, the mechanics form's.
+    means are taken at ``quadrature_degree``, the mechanics form's. If ``frames`` is
+    given, ``(u, Ta)`` on P1 (``(n, 3)`` and ``(n,)``) is appended for every time ``Ta`` was
+    saved.
     """
     v, lmbda, tension, cai = (functions[name] for name in ("v", "lmbda", "tension_kPa", "cai"))
     mesh = v.function_space.mesh
@@ -127,6 +139,8 @@ def write_fields_and_traces(
             row["lmbda_point"], row["lmbda_mean"] = at_point(p1["lmbda"]), mean("lmbda")
         if t in saved["tension_kPa"]:
             row["Ta_point_kPa"], row["Ta_mean_kPa"] = at_point(p1["Ta"]), mean("Ta")
+            if frames is not None:
+                frames.append((p1["u"].x.array.reshape(-1, 3).copy(), p1["Ta"].x.array.copy()))
         rows.append(row)
 
     write_p1_fields(
@@ -202,6 +216,34 @@ def write_plots(
     )
 
 
+def write_media(
+    media_dir: Path,
+    mesh: dolfinx.mesh.Mesh,
+    frames: Sequence[tuple[np.ndarray, np.ndarray]],
+    output_dir: Path,
+    command: Sequence[str],
+) -> None:
+    """Write ``slab.gif`` and ``provenance.json`` into ``media_dir``: the slab warped by
+    ``u``, coloured by ``Ta``, from at most :data:`MAX_FRAMES` of ``frames`` (strided)."""
+    if not media_available():
+        return
+    if not frames:
+        raise SystemExit("--media needs Ta saved at some time: the run saved none")
+    step = -(-len(frames) // MAX_FRAMES)
+    shown = list(frames[::step])
+    top = max(float(max(Ta.max() for _, Ta in shown)), 1e-3)
+    animate(
+        media_dir / "slab.gif",
+        [mesh],
+        lambda i: [shown[i]],
+        len(shown),
+        titles=["slab, warped by u, coloured by Ta"],
+        scalar="Ta [kPa]",
+        clim=(0.0, top),
+    )
+    write_media_provenance(media_dir, {"slab": output_dir}, command)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
@@ -209,6 +251,17 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         required=True,
         help="The run's output folder (main.py's --output-dir).",
+    )
+    parser.add_argument(
+        "--media",
+        action="store_true",
+        help="Also write this run's GIF and provenance.json into --media-dir.",
+    )
+    parser.add_argument(
+        "--media-dir",
+        type=Path,
+        default=MEDIA,
+        help="Where --media writes (default: media/).",
     )
     args = parser.parse_args(argv)
     if MPI.COMM_WORLD.size > 1:
@@ -223,13 +276,18 @@ def main(argv: list[str] | None = None) -> None:
     post_dir = folder / "post"
     shutil.rmtree(post_dir, ignore_errors=True)
     post_dir.mkdir()
+    frames: list[tuple[np.ndarray, np.ndarray]] = []
     traces = write_fields_and_traces(
         post_dir,
         functions,
         saved,
         settings["mechanics"]["quadrature_degree"],
+        frames if args.media else None,
     )
     write_plots(post_dir, traces, log)
+    if args.media:
+        command = [Path(sys.argv[0]).name, *(sys.argv[1:] if argv is None else argv)]
+        write_media(args.media_dir, functions["v"].function_space.mesh, frames, folder, command)
 
 
 if __name__ == "__main__":

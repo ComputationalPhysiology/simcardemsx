@@ -626,3 +626,6 @@ libgl
 libosmesa
 imageio
 trame
+clim
+improps
+gifs
