@@ -66,12 +66,15 @@ python3 main.py --split cai --scheme stabilized
 python3 main.py --odefile ../odefiles/ToRORd_dynCl_endo_caisplit.ode \
     --crossbridge Land2017 --scheme stabilized --dt-mech 1
 python3 post.py --output-dir output/torord_land_zeta
-python3 post.py --output-dir output/torord_land_zeta --media   # media/slab.gif
+python3 post.py --output-dir output/torord_land_zeta --media   # output/torord_land_zeta/media/slab.gif
 python3 compare_splits.py --media                 # the three splits, the figure and the table
 ```
 
+`post.py --media` writes the run's `slab.gif` and `provenance.json` into `<output-dir>/media`
+(or `--media-dir`); without pyvista or imageio it skips them with a warning.
 `compare_splits.py [--overwrite] [--media] [--t-end 400] [--dt-mech 1]` runs `main.py` and
-`post.py` for each split into `output/splits/<split>/` (skipping runs that are done), writes
+`post.py` for each split into `output/splits/<split>/` (skipping runs that are done, and
+refusing a done run of another `--t-end` or `--dt-mech` unless `--overwrite` redoes it), writes
 `output/splits/splits.png`, prints the table above, and with `--media` writes `media/`.
 
 | Option | Meaning |
@@ -80,7 +83,7 @@ python3 compare_splits.py --media                 # the three splits, the figure
 | `--ep` | `monodomain` (default), `re+` or `re-`: reaction-eikonal EP with or without the monodomain PDE |
 | `--odefile` | A hand-made `.ode` file instead of `--split` |
 | `--scheme` | `monolithic` (default), `stabilized` or `segregated` |
-| `--crossbridge` | `Land2017`, `RDQ18`, `RDQ20MF` or `Lewalle2024`; needs the Ca_i split and `--scheme stabilized` or `segregated` |
+| `--crossbridge` | `Land2017`, `RDQ18`, `RDQ20MF` or `Lewalle2024`; needs the Ca_i split (`--split cai` or a hand-made Ca_i `--odefile`) and `--scheme stabilized` or `segregated` |
 | `--sl-ref` | Reference sarcomere length in µm (required for `RDQ18`) |
 | `--dt-mech`, `--t-end` | Mechanics time step and end time, in ms (defaults 1 and 400) |
 | `--output-dir` | Where the results go (default `output/torord_land_<split>/`, or `output/<odefile stem>/`) |

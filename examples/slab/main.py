@@ -1,13 +1,17 @@
-"""The worked example: EP and mechanics coupled on a slab, for any split of an ``.ode`` file.
+"""The worked example: EP and mechanics coupled on a slab, for any split of a cell model.
 
 EP (fenicsx-beat, monodomain) and mechanics (fenicsx-pulse, quasistatic) are coupled
-through :class:`~simcardemsx.controller.SimulationController`, with the ``mechanics``
-component of ``--odefile`` stepped inside the mechanics Newton iteration by
-:class:`~simcardemsx.backends.GeneratedActivation` (or, with ``--crossbridge``, a
-crossbridge model through :class:`~simcardemsx.backends.CrossbridgeSegregated`).
+through :class:`~simcardemsx.controller.SimulationController`. The cell model is
+ToR-ORd + Land, composed from odezoo at first run and split at its ``mechanics``
+component as ``--split`` says (default ``zeta``; ``odefiles/composed.py``), or a
+hand-made ``--odefile``. The ``mechanics`` component is stepped inside the mechanics
+Newton iteration by :class:`~simcardemsx.backends.GeneratedActivation` (or, with
+``--crossbridge``, which needs the Ca_i split, a crossbridge model through
+:class:`~simcardemsx.backends.CrossbridgeSegregated`).
 
-Output goes to ``--output-dir`` (default ``output/<odefile stem>/``), in the upstream
-CLIs' layout (:mod:`simcardemsx.results`):
+Output goes to ``--output-dir`` (default ``output/torord_land_<split>/``, or
+``output/<odefile stem>/`` for ``--odefile``), in the upstream CLIs' layout
+(:mod:`simcardemsx.results`):
 
 - ``config.resolved.toml``: :func:`settings`, rewritten by every run, fresh or restarted.
 - ``results.h5``: EP's ``v`` and ``cai`` (P1) every ``--save-every-ep`` ms, and ``u``,
@@ -69,6 +73,7 @@ HERE = Path(__file__).resolve().parent
 # scheme_comparison and demo_io sit next to this example, not in the installed package.
 sys.path.insert(0, str(HERE.parent))
 import demo_io  # noqa: E402
+import odefiles.composed as composition  # noqa: E402
 from odefiles.composed import (  # noqa: E402
     INITIAL_STATES,
     LAND_CALIBRATION,
@@ -358,8 +363,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Output directory (default: output/<odefile stem>). It must hold no results "
-        "of an earlier run, unless --overwrite or --restart is given.",
+        help="Output directory (default: output/torord_land_<split>, or "
+        "output/<odefile stem> for --odefile). It must hold no results of an earlier run, "
+        "unless --overwrite or --restart is given.",
     )
     parser.add_argument(
         "--snapshot-every",
@@ -405,6 +411,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.odefile is None:
         args.split = args.split or DEFAULT_SPLIT
+        if args.crossbridge is not None and args.split != "cai":
+            parser.error(
+                f"--crossbridge needs the Ca_i split, not the {args.split} split: pass "
+                "--split cai, or a hand-made Ca_i --odefile",
+            )
     if args.output_dir is None:
         stem = f"torord_land_{args.split}" if args.odefile is None else args.odefile.stem
         args.output_dir = Path("output") / stem
@@ -414,14 +425,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def model_odefile(args: argparse.Namespace) -> Path:
-    """The ``.ode`` file the run reads: ``--odefile``, or the composed split, which is
-    composed (once, from odezoo) into ``examples/odefiles/composed/``."""
-    return Path(args.odefile) if args.odefile is not None else torord_land(args.split)
+    """The ``.ode`` file the run reads: ``--odefile``, or the composed split, written into
+    ``examples/odefiles/composed/`` (composed from odezoo once per process).
+
+    Raises ``SystemExit`` with the reason, in :func:`demo_io.prepare_run`'s style, if
+    odezoo is not installed or cannot fetch the models.
+    """
+    if args.odefile is not None:
+        return Path(args.odefile)
+    if composition.odezoo is None:
+        raise SystemExit(
+            f"The composed {args.split} split needs odezoo, which is not installed: "
+            "pip install odezoo (or the demo extra), or run a hand-made --odefile",
+        )
+    try:
+        return torord_land(args.split)
+    except RuntimeError as error:
+        raise SystemExit(f"Cannot compose the {args.split} split: {error}") from error
 
 
 def settings(args: argparse.Namespace) -> dict[str, Any]:
-    """What ``config.resolved.toml`` holds: every argument, with ``odefile`` as its
-    path (as given), file name and sha256, and :func:`model_settings`.
+    """What ``config.resolved.toml`` holds: every argument, with ``odefile`` as the path,
+    file name and sha256 of the ``.ode`` file the run reads (:func:`model_odefile`:
+    ``--odefile`` as given, or the composed split's file), and :func:`model_settings`.
 
     TOML has no null, so an argument that is ``None`` is not in the file. Raises
     ``FileNotFoundError`` if the ``.ode`` file does not exist.
@@ -826,6 +852,14 @@ def main(argv: list[str] | None = None):
         dt_mech=dt_mech,
         dt_ep=run_settings["dt_ep"],
     )
+
+    if not args.restart and isinstance(backend, GeneratedActivation):
+        # The slab starts at rest in its reference configuration. GeneratedActivation's
+        # outputs (lmbda among them, which results.h5 saves at t = 0) are zero until its
+        # first post_solve; this sets lmbda to lambda(u_0), 1, without touching the
+        # states. EP already holds lambda = 1, so nothing is sent back. A restart restores
+        # all of it from the checkpoint instead.
+        backend.reset_stretch()
 
     a = material_parameters()["a"]
     recorder = Recorder(

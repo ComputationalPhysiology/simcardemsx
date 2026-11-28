@@ -15,6 +15,7 @@ import importlib
 import inspect
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -378,38 +379,51 @@ def test_physics_hash_follows_the_material_pulse_is_given(monkeypatch):
     assert physics_hash(after) != physics_hash(before)
 
 
-@pytest.mark.slow
-def test_slab_post_regenerates_the_plots(tmp_path):
-    """After a 2 ms run, ``post.py`` exits 0 and writes every file of ``post/``, with a
-    ``traces.csv`` row per saved time. Without matplotlib it still writes the data files
-    and skips the plots with a warning."""
-    output_dir = tmp_path / "out"
-    result = _run_slab("--t-end", "2", output_dir=output_dir)
-    assert result.returncode == 0, result.stderr[-3000:]
-
-    # matplotlib made unimportable for the whole process.
-    no_matplotlib = "import sys; sys.modules['matplotlib'] = None; import runpy; " + (
+def _without(module: str) -> str:
+    """A ``python -c`` script that runs ``post.py`` (its arguments after the script) with
+    ``module`` made unimportable for the whole process."""
+    return f"import sys; sys.modules[{module!r}] = None; import runpy; " + (
         "sys.argv = sys.argv[1:]; runpy.run_path('post.py', run_name='__main__')"
     )
-    result = _run_post(output_dir, "-c", no_matplotlib)
+
+
+@pytest.fixture(scope="module")
+def crossbridge_run(tmp_path_factory) -> Path:
+    """One 2 ms crossbridge run, shared by the ``post.py`` tests, which each copy it."""
+    output_dir = tmp_path_factory.mktemp("crossbridge_run") / "out"
+    result = _run_slab("--t-end", "2", output_dir=output_dir)
+    assert result.returncode == 0, result.stderr[-3000:]
+    return output_dir
+
+
+@pytest.mark.slow
+def test_slab_post_regenerates_the_plots(crossbridge_run, tmp_path):
+    """After a 2 ms run, ``post.py`` exits 0 and writes every file of ``post/``, with a
+    ``traces.csv`` row per saved time. Without matplotlib it still writes the data files
+    and skips the plots with a warning; without pyvista, ``--media`` writes every file of
+    ``post/`` and skips the media with a warning (as in CI's test job, which has neither
+    pyvista nor imageio)."""
+    output_dir = tmp_path / "out"
+    shutil.copytree(crossbridge_run, output_dir)
+
+    result = _run_post(output_dir, "-c", _without("matplotlib"))
     assert result.returncode == 0, result.stderr[-3000:]
     assert "the plots are skipped" in result.stderr
     for name in POST_DATA_FILES:
         assert (output_dir / "post" / name).exists(), name
     assert not list((output_dir / "post").glob("*.png"))
 
+    result = _run_post(output_dir, "-c", _without("pyvista"), post_args=["--media"])
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert "pyvista is not available: the media are skipped" in result.stderr
+    for name in POST_FILES:
+        assert (output_dir / "post" / name).exists(), name
+    assert not (output_dir / "media" / "slab.gif").exists()
+
     result = _run_post(output_dir)
     assert result.returncode == 0, result.stderr[-3000:]
     for name in POST_FILES:
         assert (output_dir / "post" / name).exists(), name
-
-    # --media: one run's GIF and provenance, outside post/ (the default folder is not
-    # touched by the test).
-    media = tmp_path / "media"
-    result = _run_post(output_dir, post_args=["--media", "--media-dir", str(media)])
-    assert result.returncode == 0, result.stderr[-3000:]
-    assert (media / "slab.gif").stat().st_size < 2_000_000
-    assert "slab" in json.loads((media / "provenance.json").read_text())["runs"]
 
     with (output_dir / "post" / "traces.csv").open() as f:
         rows = list(csv.DictReader(f))
@@ -427,6 +441,27 @@ def test_slab_post_regenerates_the_plots(tmp_path):
             assert np.isfinite(float(row[name])), (row["t_ms"], name)
     fields = output_dir / "post" / "fields.bp"
     assert any(b"cai" in p.read_bytes() for p in fields.glob("md.*"))
+
+
+@pytest.mark.slow
+def test_slab_post_media(crossbridge_run, tmp_path):
+    """``post.py --media`` writes the run's GIF and ``provenance.json`` into
+    ``<output-dir>/media`` by default, not into the committed ``examples/slab/media``."""
+    pytest.importorskip("pyvista")
+    imageio = pytest.importorskip("imageio")
+    output_dir = tmp_path / "out"
+    shutil.copytree(crossbridge_run, output_dir)
+    committed = {path.name: path.read_bytes() for path in (EXAMPLE_DIR / "media").iterdir()}
+
+    result = _run_post(output_dir, post_args=["--media"])
+    assert result.returncode == 0, result.stderr[-3000:]
+    gif = output_dir / "media" / "slab.gif"
+    assert gif.stat().st_size < 2_000_000
+    assert imageio.v3.improps(gif).shape[2] <= 640
+    assert "slab" in json.loads((output_dir / "media" / "provenance.json").read_text())["runs"]
+    for name in POST_FILES:
+        assert (output_dir / "post" / name).exists(), name
+    assert {path.name: path.read_bytes() for path in (EXAMPLE_DIR / "media").iterdir()} == committed
 
 
 @pytest.mark.slow
@@ -557,23 +592,50 @@ def test_the_default_is_the_composed_zeta_split():
     assert slab.parse_args(["--odefile", str(_odefile())]).split is None
 
 
+@pytest.mark.slow
 def test_composed_physics_holds_the_calibration_and_differs_from_the_hand_made_file():
+    """Slow: composing the split fetches from odezoo (or its cache)."""
     pytest.importorskip("odezoo")
-    from odefiles.composed import LAND_CALIBRATION
-
-    sys.path.insert(0, str(EXAMPLES))
-    try:
-        slab = _import("main")
-        composed = slab.physics(slab.parse_args(["--split", "zeta"]))
-        hand_made = slab.physics(slab.parse_args(["--odefile", str(_odefile())]))
-    finally:
-        sys.path.remove(str(EXAMPLES))
+    slab = _import("main")
+    composed = slab.physics(slab.parse_args(["--split", "zeta"]))
+    hand_made = slab.physics(slab.parse_args(["--odefile", str(_odefile())]))
     model = composed["cell_model"]
     assert model["source"] == "composed" and model["split"] == "zeta"
-    assert model["land_calibration"] == LAND_CALIBRATION
+    assert model["land_calibration"] == slab.LAND_CALIBRATION
     assert model["initial_states"] == {"B": 1.0}
     assert hand_made["cell_model"] == {"source": "file"}
     assert physics_hash(composed) != physics_hash(hand_made)
+
+
+@pytest.mark.parametrize("split", ["zeta", "catrpn", None])
+def test_crossbridge_needs_the_cai_split(split, capsys):
+    """``--crossbridge`` with a composed split other than ``cai`` (the default ``zeta``
+    included, ``None``) is refused by the parser, with the reason."""
+    slab = _import("main")
+    argv = ["--crossbridge", "Land2017", "--scheme", "stabilized"]
+    with pytest.raises(SystemExit):
+        slab.parse_args([*argv, *(["--split", split] if split else [])])
+    assert "--split cai" in capsys.readouterr().err
+    assert slab.parse_args([*argv, "--split", "cai"]).split == "cai"
+    assert slab.parse_args([*argv, "--odefile", str(_odefile())]).odefile == _odefile()
+
+
+def test_composed_split_without_odezoo_exits_with_the_reason(monkeypatch):
+    """A composed split with odezoo missing, or unable to fetch (offline), ends the run
+    with the reason before anything is built, as ``prepare_run``'s refusals do."""
+    slab = _import("main")
+    args = slab.parse_args(["--split", "cai"])
+    monkeypatch.setattr(slab.composition, "odezoo", None)
+    with pytest.raises(SystemExit, match="pip install odezoo"):
+        slab.physics(args)
+    monkeypatch.undo()
+
+    def offline(split):
+        raise RuntimeError("odezoo could not fetch the model torord_dyn_cl: no network")
+
+    monkeypatch.setattr(slab, "torord_land", offline)
+    with pytest.raises(SystemExit, match="Cannot compose the cai split: .*no network"):
+        slab.physics(args)
 
 
 @pytest.mark.slow
@@ -586,6 +648,12 @@ def test_slab_runs_each_composed_split(split, tmp_path):
     assert run["reached_t_end"] is True
     rows = list(csv.DictReader((tmp_path / "o" / "log.csv").open()))
     assert np.isfinite(float(rows[-1]["Ta_mean_kPa"]))
+    # The slab starts at rest in its reference configuration: λ = 1 at t = 0, in
+    # results.h5 as in log.csv, not the zero GeneratedActivation's outputs hold until its
+    # first post_solve.
+    assert float(rows[0]["lmbda_mean"]) == pytest.approx(1.0, abs=1e-12)
+    lmbda = _results(tmp_path / "o")["lmbda"]
+    assert lmbda[0.0] == pytest.approx(np.ones_like(lmbda[0.0]), abs=1e-12)
 
 
 def _compare_splits() -> ModuleType:
@@ -594,7 +662,7 @@ def _compare_splits() -> ModuleType:
 
 def _fabricated_traces(scale: dict[str, float]) -> dict[str, dict[str, np.ndarray]]:
     """Traces of three splits on four times: zeta is a ramp per quantity, the others are
-    zeta plus a constant offset of ``scale[quantity]`` times zeta's peak at the last time."""
+    zeta plus an offset at one time of ``scale[quantity]`` times zeta's range (max − min)."""
     t = np.array([0.0, 1.0, 2.0, 3.0])
     base = {
         "v_mean_mV": np.array([-80.0, -40.0, 20.0, -80.0]),
@@ -607,24 +675,33 @@ def _fabricated_traces(scale: dict[str, float]) -> dict[str, dict[str, np.ndarra
         traces[split] = {"t_ms": t}
         for name, values in base.items():
             shifted = values.copy()
-            shifted[2] += offset * scale[name] * np.max(np.abs(values))
+            shifted[2] += offset * scale[name] * (values.max() - values.min())
             traces[split][name] = shifted
     return traces
 
 
-def test_relative_differences_are_relative_to_the_peak_of_the_zeta_split():
+def test_relative_differences_are_relative_to_the_range_of_the_zeta_split():
+    """Each |difference| is divided by the zeta trace's range over the run, not by its
+    largest |value|: λ stays near 1, so max|λ| would hide a shortening of 10%."""
     cs = _compare_splits()
     traces = _fabricated_traces(
         {"v_mean_mV": 0.01, "cai_mean": 0.02, "Ta_mean_kPa": 0.03, "lmbda_mean": 0.04},
     )
     diff = cs.relative_differences(traces)
     assert set(diff) == {"cai", "catrpn"}
-    # The offset is added at one time to the zeta split's values: relative to zeta's peak.
     assert diff["cai"]["Ta_mean_kPa"] == pytest.approx(0.03)
-    assert diff["cai"]["lmbda_mean"] == pytest.approx(0.04)
+    assert diff["cai"]["lmbda_mean"] == pytest.approx(0.04)  # 0.004 / range 0.1
     assert diff["cai"]["v_mean_mV"] == pytest.approx(0.01)
     assert diff["catrpn"]["cai_mean"] == pytest.approx(0.04)
     assert diff["catrpn"]["Ta_mean_kPa"] == pytest.approx(0.06)
+
+
+def test_relative_differences_refuse_a_constant_reference():
+    cs = _compare_splits()
+    traces = _fabricated_traces(dict.fromkeys(cs.QUANTITIES, 0.01))
+    traces["zeta"]["Ta_mean_kPa"] = np.full(4, 2.0)
+    with pytest.raises(ValueError, match="Ta_mean_kPa"):
+        cs.relative_differences(traces)
 
 
 def test_relative_difference_series_skips_unsaved_times():
@@ -633,34 +710,66 @@ def test_relative_difference_series_skips_unsaved_times():
         {"v_mean_mV": 0.0, "cai_mean": 0.0, "Ta_mean_kPa": 0.1, "lmbda_mean": 0.0},
     )
     traces["cai"]["Ta_mean_kPa"][0] = np.nan
+    traces["zeta"]["lmbda_mean"][1] = np.nan
     series = cs.difference_series(traces)["cai"]["Ta_mean_kPa"]
     assert np.isnan(series[0])
     assert series[2] == pytest.approx(0.1)
     assert cs.relative_differences(traces)["cai"]["Ta_mean_kPa"] == pytest.approx(0.1)
+    assert np.isnan(cs.difference_series(traces)["cai"]["lmbda_mean"][1])
 
 
-def test_compare_splits_figure_has_five_rows(tmp_path):
+def test_compare_splits_figure_tells_the_differences_apart(tmp_path):
+    """Five rows; in the last, one line per split and quantity, the colour by split and
+    the line style by quantity, with a legend naming each split and each quantity."""
     pytest.importorskip("matplotlib")
     cs = _compare_splits()
-    traces = _fabricated_traces(
-        {"v_mean_mV": 0.01, "cai_mean": 0.0, "Ta_mean_kPa": 0.0, "lmbda_mean": 0.0},
-    )
+    traces = _fabricated_traces(dict.fromkeys(cs.QUANTITIES, 0.01))
     path = tmp_path / "splits.png"
-    cs.write_figure(path, traces)
+    fig = cs.write_figure(path, traces)
     assert path.stat().st_size > 1000
+    assert len(fig.axes) == 5
+    lines = fig.axes[4].get_lines()
+    assert len(lines) == 2 * len(cs.QUANTITIES)
+    styles = {(line.get_color(), line.get_linestyle()) for line in lines}
+    assert len(styles) == len(lines)
+    legend = {text.get_text() for text in fig.axes[4].get_legend().get_texts()}
+    assert {"cai split", "catrpn split", "v", "cai", "Ta", "stretch"} <= legend, legend
+
+
+def _done_run(folder: Path, t_end: float = 400.0, dt_mech: float = 1.0) -> None:
+    folder.mkdir()
+    (folder / "run.json").write_text(json.dumps({"failure": None}))
+    (folder / "config.resolved.toml").write_text(f"t_end = {t_end!r}\ndt_mech = {dt_mech!r}\n")
 
 
 def test_compare_splits_skips_the_done_runs_and_redoes_the_rest(tmp_path):
     cs = _compare_splits()
-    done = tmp_path / "zeta"
-    done.mkdir()
-    (done / "run.json").write_text(json.dumps({"failure": None}))
+    _done_run(tmp_path / "zeta")
     interrupted = tmp_path / "cai"
     interrupted.mkdir()
     (interrupted / "run.json").write_text(json.dumps({"failure": "KeyboardInterrupt()"}))
-    assert cs.pending_splits(tmp_path, ("zeta", "cai", "catrpn")) == ["cai", "catrpn"]
-    assert cs.pending_splits(tmp_path, ("zeta", "cai", "catrpn"), overwrite=True) == [
+    splits = ("zeta", "cai", "catrpn")
+    assert cs.pending_splits(tmp_path, splits, t_end=400.0, dt_mech=1.0) == ["cai", "catrpn"]
+    assert cs.pending_splits(tmp_path, splits, t_end=400.0, dt_mech=1.0, overwrite=True) == [
         "zeta",
         "cai",
         "catrpn",
     ]
+
+
+@pytest.mark.parametrize(("t_end", "dt_mech"), [(2.0, 1.0), (400.0, 0.5)])
+def test_compare_splits_refuses_a_done_run_of_another_length_or_step(tmp_path, t_end, dt_mech):
+    """A finished run of another ``--t-end`` or ``--dt-mech`` is not reused: the comparison
+    is refused, naming the run and ``--overwrite``, which redoes it."""
+    cs = _compare_splits()
+    _done_run(tmp_path / "zeta", t_end=t_end, dt_mech=dt_mech)
+    with pytest.raises(ValueError, match="--overwrite") as refusal:
+        cs.pending_splits(tmp_path, ("zeta", "cai"), t_end=400.0, dt_mech=1.0)
+    assert str(tmp_path / "zeta") in str(refusal.value)
+    assert cs.pending_splits(
+        tmp_path,
+        ("zeta", "cai"),
+        t_end=400.0,
+        dt_mech=1.0,
+        overwrite=True,
+    ) == ["zeta", "cai"]

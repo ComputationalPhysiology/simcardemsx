@@ -258,3 +258,45 @@ def test_write_media_provenance_falls_back_to_run_json(tmp_path, monkeypatch):
     path = demo_io.write_media_provenance(tmp_path / "media", {"a": run}, ["x"])
     data = json.loads(path.read_text())
     assert data["runs"]["a"] == {"scheme": "stabilized", "dt_mech_ms": 1.0}
+
+
+def test_write_media_provenance_records_each_runs_own_provenance(tmp_path, monkeypatch):
+    """Beside a run's settings, the ``provenance`` and ``history`` of its ``run.json``: the
+    commit that ran it, which may differ from the one that drew the media."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "config.resolved.toml").write_text('scheme = "stabilized"\n')
+    ran = {"git_commit": "abc123", "git_dirty": False}
+    (run / "run.json").write_text(
+        json.dumps({"scheme": "stabilized", "provenance": ran, "history": [ran, ran]}),
+    )
+    monkeypatch.chdir(tmp_path)
+    data = json.loads(demo_io.write_media_provenance(tmp_path / "m", {"a": run}, ["x"]).read_text())
+    assert data["runs"]["a"]["scheme"] == "stabilized"
+    assert data["runs"]["a"]["provenance"] == ran
+    assert data["runs"]["a"]["history"] == [ran, ran]
+
+
+def test_write_media_provenance_records_paths_relative_to_the_repository(tmp_path):
+    """Paths inside the repository are recorded relative to its root, so the committed
+    file does not name the machine it was made on; paths outside it are kept."""
+    repo = Path(demo_io.__file__).resolve().parent.parent
+    run = tmp_path / "run"
+    run.mkdir()
+    inside = repo / "examples" / "slab" / "output" / "splits" / "zeta"
+    odefile = repo / "examples" / "odefiles" / "composed" / "torord_land_zeta.ode"
+    (run / "config.resolved.toml").write_text(
+        f'output_dir = "{inside}"\nelsewhere = "{tmp_path}"\n[odefile]\npath = "{odefile}"\n',
+    )
+    data = json.loads(
+        demo_io.write_media_provenance(
+            tmp_path / "m",
+            {"a": run},
+            ["compare_splits.py", "--root", str(inside.parent)],
+        ).read_text(),
+    )
+    record = data["runs"]["a"]
+    assert record["output_dir"] == "examples/slab/output/splits/zeta"
+    assert record["odefile"]["path"] == "examples/odefiles/composed/torord_land_zeta.ode"
+    assert record["elsewhere"] == str(tmp_path)
+    assert data["command"] == ["compare_splits.py", "--root", "examples/slab/output/splits"]

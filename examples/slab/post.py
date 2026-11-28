@@ -16,9 +16,11 @@ coupled problem), and writes ``post/``, replacing it whole:
 - ``log.png``: the Newton iterations and the mean stretch of every mechanics step, from
   ``log.csv``.
 
-With ``--media``, also ``media/slab.gif`` (the slab warped by ``u``, coloured by ``Ta``,
-one frame per saved mechanics time, at most 100) and ``media/provenance.json``, in
-``examples/slab/media/`` (or ``--media-dir``), outside ``post/``.
+With ``--media``, also ``slab.gif`` (the slab warped by ``u``, coloured by ``Ta``, one
+frame per saved mechanics time, at most 100) and ``provenance.json``, in
+``<output-dir>/media/`` (or ``--media-dir``), outside ``post/``. Without pyvista or
+imageio they are skipped, with a warning, and ``post/`` is written as usual. The slab's
+committed media (``examples/slab/media/``) are ``compare_splits.py --media``'s, not these.
 
 Without matplotlib the plots are skipped, with a warning, and the rest is written.
 Serial only.
@@ -59,7 +61,6 @@ from slab import main as slab  # noqa: E402
 
 #: Where the traces are taken: ``DataCollector``'s point, a corner of the slab.
 POINT = (0.0, 0.0, 0.0)
-MEDIA = HERE / "media"
 MAX_FRAMES = 100
 TRACE_FIELDS = (
     "t_ms",
@@ -261,8 +262,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--media-dir",
         type=Path,
-        default=MEDIA,
-        help="Where --media writes (default: media/).",
+        default=None,
+        help="Where --media writes (default: <output-dir>/media).",
     )
     args = parser.parse_args(argv)
     if MPI.COMM_WORLD.size > 1:
@@ -288,7 +289,8 @@ def main(argv: list[str] | None = None) -> None:
     write_plots(post_dir, traces, log)
     if args.media:
         command = [Path(sys.argv[0]).name, *(sys.argv[1:] if argv is None else argv)]
-        write_media(args.media_dir, functions["v"].function_space.mesh, frames, folder, command)
+        media_dir = folder / "media" if args.media_dir is None else args.media_dir
+        write_media(media_dir, functions["v"].function_space.mesh, frames, folder, command)
 
 
 if __name__ == "__main__":

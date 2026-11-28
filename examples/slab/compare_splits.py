@@ -5,14 +5,21 @@ this directory (or anywhere: the runs are subprocesses started in it).
 
 For each split in ``odefiles.composed.SPLITS`` it runs ``main.py --split <s>`` and then
 ``post.py`` into ``output/splits/<s>/``, unless that run is done
-(``scheme_comparison.run.is_done``; ``--overwrite`` redoes all of them). It then writes
+(``scheme_comparison.run.is_done``; ``--overwrite`` redoes all of them). A done run of
+another ``--t-end`` or ``--dt-mech`` is not reused: the comparison is refused, naming
+``--overwrite``. It then writes
 
 - ``output/splits/splits.png``: ``v``, ``cai``, ``Ta`` and the stretch, as volume means,
   with the three splits overlaid, and a fifth row with each split's difference from the
-  zeta split in every quantity, relative to that quantity's peak in the zeta split;
+  zeta split in every quantity, relative to that quantity's range in the zeta split
+  (colour by split, line style by quantity);
 - a table on stdout: what crosses for each split (:func:`~simcardemsx.transfer_plan.resolve`:
   EP to mechanics, mechanics to EP, and whether the stretch goes to EP), the run's
   ``loop_s``, and the largest relative difference from zeta in ``Ta`` and in the stretch.
+
+A relative difference is ``|x_split − x_zeta|`` divided by the range (max − min) of
+``x_zeta`` over the run, so that the stretch, which stays near 1, is measured against how
+far it moves.
 
 With ``--media`` it also copies ``splits.png`` into ``media/`` and writes
 ``media/splits.gif`` (the three slabs side by side, warped by ``u`` and coloured by ``Ta``
@@ -46,6 +53,13 @@ QUANTITIES = {
     "Ta_mean_kPa": "Ta (kPa)",
     "lmbda_mean": "stretch",
 }
+#: The line style of each quantity in the difference row, where colour is the split's.
+DIFFERENCE_STYLES = {
+    "v_mean_mV": "-",
+    "cai_mean": "--",
+    "Ta_mean_kPa": "-.",
+    "lmbda_mean": ":",
+}
 #: Distinguishable by colour and by line style, since the curves nearly coincide.
 STYLES = {
     "zeta": ("#2a78d6", "-", 2.6),
@@ -57,16 +71,24 @@ Traces = Mapping[str, Mapping[str, np.ndarray]]
 
 
 def difference_series(traces: Traces) -> dict[str, dict[str, np.ndarray]]:
-    """``|x_split - x_zeta| / max|x_zeta|`` at every time, by split and quantity, for each
-    split other than the reference. ``nan`` where either was not saved."""
+    """``|x_split - x_zeta| / (max x_zeta - min x_zeta)`` at every time, by split and
+    quantity, for each split other than the reference: the difference relative to the
+    range of the reference over the run. ``nan`` where either was not saved.
+
+    Raises ``ValueError`` for a quantity that is constant in the reference, which has no
+    range to divide by.
+    """
     reference = traces[REFERENCE]
+    ranges = {name: np.nanmax(reference[name]) - np.nanmin(reference[name]) for name in QUANTITIES}
+    flat = sorted(name for name, extent in ranges.items() if not extent > 0.0)
+    if flat:
+        raise ValueError(f"The {REFERENCE} split's {flat} do not change: no range to divide by")
     result: dict[str, dict[str, np.ndarray]] = {}
     for split, values in traces.items():
         if split == REFERENCE:
             continue
         result[split] = {
-            name: np.abs(values[name] - reference[name]) / np.nanmax(np.abs(reference[name]))
-            for name in QUANTITIES
+            name: np.abs(values[name] - reference[name]) / ranges[name] for name in QUANTITIES
         }
     return result
 
@@ -79,9 +101,43 @@ def relative_differences(traces: Traces) -> dict[str, dict[str, float]]:
     }
 
 
-def pending_splits(root: Path, splits: Sequence[str], overwrite: bool = False) -> list[str]:
-    """The splits whose run in ``root/<split>`` has to be (re)done."""
-    return [s for s in splits if overwrite or not is_done(root / s)]
+def pending_splits(
+    root: Path,
+    splits: Sequence[str],
+    *,
+    t_end: float,
+    dt_mech: float,
+    overwrite: bool = False,
+) -> list[str]:
+    """The splits whose run in ``root/<split>`` has to be (re)done: all of them with
+    ``overwrite``, else those not done (``scheme_comparison.run.is_done``).
+
+    Raises ``ValueError``, naming ``--overwrite``, if a done run's
+    ``config.resolved.toml`` has another ``t_end`` or ``dt_mech`` (ms) than asked for:
+    it is not silently reused.
+    """
+    from simcardemsx.results import read_resolved_settings
+
+    if overwrite:
+        return list(splits)
+    pending, other = [], []
+    for split in splits:
+        folder = root / split
+        if not is_done(folder):
+            pending.append(split)
+            continue
+        toml = folder / "config.resolved.toml"
+        settings = read_resolved_settings(toml) if toml.exists() else {}
+        found = (settings.get("t_end"), settings.get("dt_mech"))
+        if found != (t_end, dt_mech):
+            other.append(f"{folder} (t_end {found[0]} ms, dt_mech {found[1]} ms)")
+    if other:
+        raise ValueError(
+            f"Finished runs of another length or step than t_end {t_end:g} ms, dt_mech "
+            f"{dt_mech:g} ms: {', '.join(other)}. Pass --overwrite to redo them, or --root "
+            "for another folder.",
+        )
+    return pending
 
 
 def read_traces(folder: Path) -> dict[str, np.ndarray]:
@@ -94,11 +150,13 @@ def read_traces(folder: Path) -> dict[str, np.ndarray]:
     return {name: data[:, i] for i, name in enumerate(header)}
 
 
-def write_figure(path: Path, traces: Traces) -> None:
+def write_figure(path: Path, traces: Traces):
     """Five rows over a shared time axis: the four volume means of every split, and the
-    splits' differences from zeta relative to zeta's peak."""
+    splits' differences from zeta relative to zeta's range (:func:`difference_series`),
+    coloured by split and styled by quantity. Returns the matplotlib ``Figure``."""
     from demo_io import GRID, INK, INK_SECONDARY
     from matplotlib.figure import Figure
+    from matplotlib.lines import Line2D
 
     fig = Figure(figsize=(7.0, 0.8 + 2.2 * 5), layout="constrained")
     axes = fig.subplots(5, 1, sharex=True)
@@ -115,8 +173,7 @@ def write_figure(path: Path, traces: Traces) -> None:
 
     for ax, (name, label) in zip(axes[:4], QUANTITIES.items()):
         for split, values in traces.items():
-            # The stretch is saved as 0 at t = 0, before the first mechanics step.
-            keep = np.isfinite(values[name]) & (name != "lmbda_mean" or values[name] != 0.0)
+            keep = np.isfinite(values[name])
             colour, line, width = STYLES[split]
             ax.plot(
                 values["t_ms"][keep],
@@ -132,21 +189,46 @@ def write_figure(path: Path, traces: Traces) -> None:
 
     ax = axes[4]
     t = traces[REFERENCE]["t_ms"]
-    for split, by_name in difference_series(traces).items():
+    differences = difference_series(traces)
+    for split, by_name in differences.items():
         for name, series in by_name.items():
             keep = np.isfinite(series)
             ax.plot(
                 t[keep],
                 series[keep],
                 color=STYLES[split][0],
-                linestyle=STYLES[split][1],
-                linewidth=1.0,
+                linestyle=DIFFERENCE_STYLES[name],
+                linewidth=1.1,
                 alpha=0.9,
             )
     ax.set_yscale("symlog", linthresh=1e-6)
-    style(ax, "|difference from zeta| / peak, each split and quantity")
+    handles = [
+        Line2D([], [], color=STYLES[split][0], linewidth=2.0, label=f"{split} split")
+        for split in differences
+    ] + [
+        Line2D(
+            [],
+            [],
+            color=INK_SECONDARY,
+            linestyle=DIFFERENCE_STYLES[name],
+            linewidth=1.1,
+            label=label.split(" (")[0],
+        )
+        for name, label in QUANTITIES.items()
+    ]
+    ax.legend(
+        handles=handles,
+        fontsize=7,
+        ncol=3,
+        loc="lower right",
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.9,
+    )
+    style(ax, "|difference from zeta| / range of zeta, each split and quantity")
     ax.set_xlabel("t (ms)", color=INK_SECONDARY)
     fig.savefig(path, dpi=110)
+    return fig
 
 
 def run_split(split: str, folder: Path, dt_mech: float, t_end: float) -> None:
@@ -158,9 +240,9 @@ def run_split(split: str, folder: Path, dt_mech: float, t_end: float) -> None:
             "--split",
             split,
             "--dt-mech",
-            f"{dt_mech:g}",
+            repr(float(dt_mech)),
             "--t-end",
-            f"{t_end:g}",
+            repr(float(t_end)),
             "--output-dir",
             str(folder),
             "--overwrite",
@@ -218,7 +300,8 @@ def table(root: Path, traces: Traces, splits: Sequence[str]) -> str:
     lines.insert(1, "  ".join("-" * w for w in widths))
     lines.append("")
     lines.append(
-        "differences are the largest |x - x_zeta| / max|x_zeta| of the volume means over time",
+        "differences are the largest |x - x_zeta| / (max x_zeta - min x_zeta) of the volume "
+        "means over time",
     )
     for split, d in diffs.items():
         lines.append(f"{split}: " + ", ".join(f"{n} {v:.3e}" for n, v in d.items()))
@@ -290,7 +373,17 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     splits = tuple(SPLITS)
     root: Path = args.root.resolve()
-    for split in pending_splits(root, splits, args.overwrite):
+    try:
+        pending = pending_splits(
+            root,
+            splits,
+            t_end=args.t_end,
+            dt_mech=args.dt_mech,
+            overwrite=args.overwrite,
+        )
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    for split in pending:
         run_split(split, root / split, args.dt_mech, args.t_end)
     traces = {split: read_traces(root / split) for split in splits}
     from demo_io import plots_available

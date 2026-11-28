@@ -592,11 +592,40 @@ def animate(
     return path
 
 
-def _run_settings(folder: Path) -> dict[str, Any]:
-    toml = folder / "config.resolved.toml"
+#: The repository root: ``provenance.json`` records the paths under it relative to it.
+REPOSITORY = Path(__file__).resolve().parent.parent
+
+
+def _relative_to_repository(value: Any) -> Any:
+    """``value`` with every absolute path under :data:`REPOSITORY`, at any depth of dicts
+    and lists, made relative to it; other values as they are."""
+    if isinstance(value, dict):
+        return {key: _relative_to_repository(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_relative_to_repository(item) for item in value]
+    if isinstance(value, str) and value.startswith("/"):
+        try:
+            return Path(value).relative_to(REPOSITORY).as_posix()
+        except ValueError:
+            return value
+    return value
+
+
+def _run_record(folder: Path) -> dict[str, Any]:
+    """A run's settings, from its ``config.resolved.toml``, or from its ``run.json`` for a
+    run that has none, and the ``provenance`` and ``history`` of its ``run.json``."""
+    toml, run_json = folder / "config.resolved.toml", folder / "run.json"
+    run = json.loads(run_json.read_text()) if run_json.exists() else None
     if toml.exists():
-        return read_resolved_settings(toml)
-    return json.loads((folder / "run.json").read_text())
+        record = read_resolved_settings(toml)
+    elif run is not None:
+        record = dict(run)
+    else:
+        raise FileNotFoundError(f"{folder} holds neither config.resolved.toml nor run.json")
+    for key in ("provenance", "history"):
+        if run is not None and key in run:
+            record[key] = run[key]
+    return record
 
 
 def write_media_provenance(
@@ -605,19 +634,21 @@ def write_media_provenance(
     command: Sequence[str],
 ) -> Path:
     """Write ``folder/provenance.json`` for the media in ``folder``: this process's
-    :func:`~simcardemsx.provenance.provenance` (``provenance``), the settings of each
-    named run (``runs``, from its ``config.resolved.toml``, or from its ``run.json`` for a
-    run that has none, such as a one-element study), the ``command`` line and the UTC
-    ``date``. Returns the path."""
+    :func:`~simcardemsx.provenance.provenance` (``provenance``: the commit that drew the
+    media), each named run (``runs``: its settings, from its ``config.resolved.toml``, or
+    from its ``run.json`` for a run that has none, such as a one-element study, and its
+    ``run.json``'s ``provenance`` and ``history``: the commits that ran it), the
+    ``command`` line and the UTC ``date``. Paths under the repository are recorded
+    relative to its root. Returns the path."""
     folder.mkdir(parents=True, exist_ok=True)
     record = {
-        "provenance": provenance(Path(__file__).resolve().parent),
-        "runs": {name: _run_settings(Path(d)) for name, d in output_dirs.items()},
+        "provenance": provenance(REPOSITORY / "examples"),
+        "runs": {name: _run_record(Path(d)) for name, d in output_dirs.items()},
         "command": list(command),
         "date": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
     path = folder / "provenance.json"
-    path.write_text(json.dumps(record, indent=2, default=str) + "\n")
+    path.write_text(json.dumps(_relative_to_repository(record), indent=2, default=str) + "\n")
     return path
 
 
