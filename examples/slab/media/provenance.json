@@ -1,6 +1,6 @@
 {
   "provenance": {
-    "git_commit": "ae0c6f1a13cedfc9adae34ae650e56cdfab10ba7",
+    "git_commit": "cdea06d7904302546921c256a92f303992d3e649",
     "git_dirty": false,
     "versions": {
       "simcardemsx": "0.1.0",
@@ -14,7 +14,7 @@
       "petsc4py": "3.25.1"
     },
     "n_ranks": 1,
-    "utc": "2026-11-28T09:22:44.760965+00:00"
+    "utc": "2026-11-28T11:14:04.288046+00:00"
   },
   "runs": {
     "zeta": {
@@ -23,7 +23,7 @@
       "ep_mode": "monodomain",
       "dt_mech": 1.0,
       "t_end": 400.0,
-      "output_dir": "/home/shared/examples/slab/output/splits/zeta",
+      "output_dir": "examples/slab/output/splits/zeta",
       "save_every": 1.0,
       "save_every_ep": 1.0,
       "checkpoint_every": 50.0,
@@ -31,7 +31,7 @@
       "overwrite": true,
       "dt_ep": 0.05,
       "odefile": {
-        "path": "/home/shared/examples/odefiles/composed/torord_land_zeta.ode",
+        "path": "examples/odefiles/composed/torord_land_zeta.ode",
         "name": "torord_land_zeta.ode",
         "sha256": "bd5181ab2d5ee61f9b568770cd5ae1468ee262bee83a9347f1eefd7b1f4e4de6"
       },
@@ -132,7 +132,43 @@
           "Z0": "u_z = 0",
           "base": "free"
         }
-      }
+      },
+      "provenance": {
+        "git_commit": "625af152d56c96bc9713c802ba0fa00248fb9f76",
+        "git_dirty": false,
+        "versions": {
+          "simcardemsx": "0.1.0",
+          "fenics-dolfinx": "0.11.0.post0",
+          "fenicsx-pulse": "0.11.1",
+          "fenicsx-beat": "0.14.0",
+          "gotranx": "2.11.0",
+          "crossbridge": "0.3.4",
+          "io4dolfinx": "1.3.0",
+          "numpy": "2.5.3",
+          "petsc4py": "3.25.1"
+        },
+        "n_ranks": 1,
+        "utc": "2026-11-28T10:36:13.620479+00:00"
+      },
+      "history": [
+        {
+          "git_commit": "625af152d56c96bc9713c802ba0fa00248fb9f76",
+          "git_dirty": false,
+          "versions": {
+            "simcardemsx": "0.1.0",
+            "fenics-dolfinx": "0.11.0.post0",
+            "fenicsx-pulse": "0.11.1",
+            "fenicsx-beat": "0.14.0",
+            "gotranx": "2.11.0",
+            "crossbridge": "0.3.4",
+            "io4dolfinx": "1.3.0",
+            "numpy": "2.5.3",
+            "petsc4py": "3.25.1"
+          },
+          "n_ranks": 1,
+          "utc": "2026-11-28T10:35:34.572321+00:00"
+        }
+      ]
     },
     "cai": {
       "split": "cai",
@@ -140,7 +176,7 @@
       "ep_mode": "monodomain",
       "dt_mech": 1.0,
       "t_end": 400.0,
-      "output_dir": "/home/shared/examples/slab/output/splits/cai",
+      "output_dir": "examples/slab/output/splits/cai",
       "save_every": 1.0,
       "save_every_ep": 1.0,
       "checkpoint_every": 50.0,
@@ -148,7 +184,7 @@
       "overwrite": true,
       "dt_ep": 0.05,
       "odefile": {
-        "path": "/home/shared/examples/odefiles/composed/torord_land_cai.ode",
+        "path": "examples/odefiles/composed/torord_land_cai.ode",
         "name": "torord_land_cai.ode",
         "sha256": "fc77eae087138c3791ef94f82b65e298b938cb72a4692c7c00f4e8feb87fc641"
       },
@@ -249,7 +285,43 @@
           "Z0": "u_z = 0",
           "base": "free"
         }
-      }
+      },
+      "provenance": {
+        "git_commit": "625af152d56c96bc9713c802ba0fa00248fb9f76",
+        "git_dirty": false,
+        "versions": {
+          "simcardemsx": "0.1.0",
+          "fenics-dolfinx": "0.11.0.post0",
+          "fenicsx-pulse": "0.11.1",
+          "fenicsx-beat": "0.14.0",
+          "gotranx": "2.11.0",
+          "crossbridge": "0.3.4",
+          "io4dolfinx": "1.3.0",
+          "numpy": "2.5.3",
+          "petsc4py": "3.25.1"
+        },
+        "n_ranks": 1,
+        "utc": "2026-11-28T10:37:04.210673+00:00"
+      },
+      "history": [
+        {
+          "git_commit": "625af152d56c96bc9713c802ba0fa00248fb9f76",
+          "git_dirty": false,
+          "versions": {
+            "simcardemsx": "0.1.0",
+            "fenics-dolfinx": "0.11.0.post0",
+            "fenicsx-pulse": "0.11.1",
+            "fenicsx-beat": "0.14.0",
+            "gotranx": "2.11.0",
+            "crossbridge": "0.3.4",
+            "io4dolfinx": "1.3.0",
+            "numpy": "2.5.3",
+            "petsc4py": "3.25.1"
+          },
+          "n_ranks": 1,
+          "utc": "2026-11-28T10:36:25.742648+00:00"
+        }
+      ]
     },
     "catrpn": {
       "split": "catrpn",
@@ -257,7 +329,7 @@
       "ep_mode": "monodomain",
       "dt_mech": 1.0,
       "t_end": 400.0,
-      "output_dir": "/home/shared/examples/slab/output/splits/catrpn",
+      "output_dir": "examples/slab/output/splits/catrpn",
       "save_every": 1.0,
       "save_every_ep": 1.0,
       "checkpoint_every": 50.0,
@@ -265,7 +337,7 @@
       "overwrite": true,
       "dt_ep": 0.05,
       "odefile": {
-        "path": "/home/shared/examples/odefiles/composed/torord_land_catrpn.ode",
+        "path": "examples/odefiles/composed/torord_land_catrpn.ode",
         "name": "torord_land_catrpn.ode",
         "sha256": "dd5fa8eb4d2daedd25c92f261f9bd3c7e2c1d782bfb134e45eba2b95a7a8f6fe"
       },
@@ -366,12 +438,48 @@
           "Z0": "u_z = 0",
           "base": "free"
         }
-      }
+      },
+      "provenance": {
+        "git_commit": "625af152d56c96bc9713c802ba0fa00248fb9f76",
+        "git_dirty": false,
+        "versions": {
+          "simcardemsx": "0.1.0",
+          "fenics-dolfinx": "0.11.0.post0",
+          "fenicsx-pulse": "0.11.1",
+          "fenicsx-beat": "0.14.0",
+          "gotranx": "2.11.0",
+          "crossbridge": "0.3.4",
+          "io4dolfinx": "1.3.0",
+          "numpy": "2.5.3",
+          "petsc4py": "3.25.1"
+        },
+        "n_ranks": 1,
+        "utc": "2026-11-28T10:38:00.102459+00:00"
+      },
+      "history": [
+        {
+          "git_commit": "625af152d56c96bc9713c802ba0fa00248fb9f76",
+          "git_dirty": false,
+          "versions": {
+            "simcardemsx": "0.1.0",
+            "fenics-dolfinx": "0.11.0.post0",
+            "fenicsx-pulse": "0.11.1",
+            "fenicsx-beat": "0.14.0",
+            "gotranx": "2.11.0",
+            "crossbridge": "0.3.4",
+            "io4dolfinx": "1.3.0",
+            "numpy": "2.5.3",
+            "petsc4py": "3.25.1"
+          },
+          "n_ranks": 1,
+          "utc": "2026-11-28T10:37:16.515996+00:00"
+        }
+      ]
     }
   },
   "command": [
     "compare_splits.py",
     "--media"
   ],
-  "date": "2026-11-28T09:22:44+00:00"
+  "date": "2026-11-28T11:14:49+00:00"
 }

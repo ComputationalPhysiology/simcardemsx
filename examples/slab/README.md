@@ -17,23 +17,31 @@ by the displacement and colored by the active tension `Ta`, on one color range:
 
 ![v, cai, Ta and the stretch of the three splits, and their differences](media/splits.png)
 
-Made by `python3 compare_splits.py --media` (400 ms, `--dt-mech 1`), at commit `ae0c6f1`
-on a clean tree (`provenance.json` records `git_dirty: false`, the versions and each run's
-settings). **Computed locally, not by CI.**
+Made by `python3 compare_splits.py --overwrite --media` (400 ms, `--dt-mech 1`). The three
+runs ran at commit `625af15` and the media were drawn from them at `cdea06d`, both on a clean
+tree: `provenance.json` records each run's own provenance (`runs.<split>.provenance`, with
+`git_dirty: false`) beside its settings, and the drawing's (`provenance`), with the versions.
+**Computed locally, not by CI.**
 
 The splits are not the same model solved three times, but three ways of cutting one model, with
-different things crossing between EP and mechanics, so they differ numerically. Measured, as the
-largest `|x − x_zeta| / max|x_zeta|` over time of each volume mean:
+different things crossing between EP and mechanics, so they differ numerically. Measured, for
+each volume mean, as the largest difference from the zeta split over time divided by the range
+of the zeta split's trace (its maximum minus its minimum over the run),
+`|x − x_zeta| / (max x_zeta − min x_zeta)`:
 
 | split | `v` | `cai` | `Ta` | stretch |
 | --- | --- | --- | --- | --- |
-| `cai` | 8.0e-3 | 3.4e-2 | 3.5e-2 | 3.6e-3 |
-| `catrpn` | 1.0e-3 | 4.2e-3 | 1.3e-2 | 2.6e-3 |
+| `cai` | 5.8e-3 | 4.0e-2 | 3.5e-2 | 1.9e-2 |
+| `catrpn` | 7.6e-4 | 4.8e-3 | 1.3e-2 | 1.4e-2 |
 
-The splits agree to within a few percent of the peak in `Ta` and `cai` (the largest `Ta`
-difference is the Ca_i split's, 3.5e-2 of zeta's peak), within 0.4% in the stretch and within 1% in `v`. Which split to use
-is a numerical choice, not a modelling one, and the differences above are its size on this slab.
-They are measured on volume means of one 400 ms beat, not a bound for other geometries.
+The range is the scale because the stretch stays near 1: the zeta slab shortens by 18.6% (its
+mean stretch falls from 1 to 0.814), so a difference divided by the stretch's largest value
+would look about five times smaller than it is. The splits agree to within 4% of each
+quantity's range: the Ca_i split differs most, by 4.0e-2 in `cai` and 3.5e-2 in `Ta`; the
+stretch differs by 1.9e-2 (Ca_i) and 1.4e-2 (CaTRPN) of its 0.186 excursion; and `v` agrees to
+within 0.6%. Which split to use is a numerical choice, not a modelling one, and the differences
+above are its size on this slab. They are measured on volume means of one 400 ms beat, not a
+bound for other geometries.
 
 ## The composed model
 
@@ -55,7 +63,7 @@ What crosses between EP and mechanics, as `resolve()` finds it (measured by `com
 | `cai` | `cai` | `J_TRPN` | yes |
 | `catrpn` | `CaTRPN` | none | yes |
 
-The loop took 37.5 s (`zeta`), 36.7 s (`cai`) and 35.9 s (`catrpn`) for the 400 ms.
+The loop took 39.0 s (`zeta`), 38.4 s (`cai`) and 43.5 s (`catrpn`) for the 400 ms.
 
 ## Running
 
