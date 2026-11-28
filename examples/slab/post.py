@@ -60,6 +60,8 @@ TRACE_FIELDS = (
     "lmbda_mean",
     "Ta_point_kPa",
     "Ta_mean_kPa",
+    "cai_point",
+    "cai_mean",
 )
 PLOTS = (
     "ep_volume_averages.png",
@@ -92,13 +94,15 @@ def write_fields_and_traces(
     and time, as :func:`~simcardemsx.results.read_results` returns them. The volume
     means are taken at ``quadrature_degree``, the mechanics form's.
     """
-    v, lmbda, tension = (functions[name] for name in ("v", "lmbda", "tension_kPa"))
+    v, lmbda, tension, cai = (functions[name] for name in ("v", "lmbda", "tension_kPa", "cai"))
     mesh = v.function_space.mesh
 
     # The volume means use the mechanics form's measure, as log.csv's do.
     dx = ufl.Measure("dx", domain=mesh, metadata={"quadrature_degree": quadrature_degree})
     volume = dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * dx)).real
-    integrals = {name: dolfinx.fem.form(f * dx) for name, f in (("v", v), ("lmbda", lmbda))}
+    integrals = {
+        name: dolfinx.fem.form(f * dx) for name, f in (("v", v), ("lmbda", lmbda), ("cai", cai))
+    }
     integrals["Ta"] = dolfinx.fem.form(tension * dx)
 
     point = np.array([POINT], dtype=np.float64)
@@ -117,6 +121,8 @@ def write_fields_and_traces(
         row["t_ms"] = t
         if t in saved["v"]:
             row["v_point_mV"], row["v_mean_mV"] = at_point(v), mean("v")
+        if t in saved["cai"]:
+            row["cai_point"], row["cai_mean"] = at_point(p1["cai"]), mean("cai")
         if t in saved["lmbda"]:
             row["lmbda_point"], row["lmbda_mean"] = at_point(p1["lmbda"]), mean("lmbda")
         if t in saved["tension_kPa"]:
@@ -127,7 +133,7 @@ def write_fields_and_traces(
         post_dir / "fields.bp",
         functions,
         saved,
-        {"u": "u", "v": "v", "lmbda": "lmbda", "Ta": "tension_kPa"},
+        {"u": "u", "v": "v", "cai": "cai", "lmbda": "lmbda", "Ta": "tension_kPa"},
         trace,
     )
 
@@ -150,9 +156,18 @@ def write_plots(
     t = traces["t_ms"]
     figure(
         post_dir / "ep_volume_averages.png",
-        [Panel("v, volume mean (mV)", t, traces["v_mean_mV"])],
+        [
+            Panel("v, volume mean (mV)", t, traces["v_mean_mV"]),
+            Panel("Ca_i, volume mean (mM)", t, traces["cai_mean"]),
+        ],
     )
-    figure(post_dir / "ep_point_traces.png", [Panel(f"v {where} (mV)", t, traces["v_point_mV"])])
+    figure(
+        post_dir / "ep_point_traces.png",
+        [
+            Panel(f"v {where} (mV)", t, traces["v_point_mV"]),
+            Panel(f"Ca_i {where} (mM)", t, traces["cai_point"]),
+        ],
+    )
     figure(
         post_dir / "mech_volume_averages.png",
         [

@@ -408,6 +408,12 @@ def test_slab_post_regenerates_the_plots(tmp_path):
         assert float(row["lmbda_mean"]) == pytest.approx(float(logged["lmbda_mean"]), rel=1e-12)
         assert float(row["Ta_mean_kPa"]) == pytest.approx(float(logged["Ta_mean_kPa"]), rel=1e-12)
     assert float(rows[-1]["Ta_mean_kPa"]) > 0.0
+    # Ca_i is traced and written to fields.bp, from every saved time on.
+    for row in rows[1:]:
+        for name in ("cai_point", "cai_mean"):
+            assert np.isfinite(float(row[name])), (row["t_ms"], name)
+    fields = output_dir / "post" / "fields.bp"
+    assert any(b"cai" in p.read_bytes() for p in fields.glob("md.*"))
 
 
 @pytest.mark.slow
